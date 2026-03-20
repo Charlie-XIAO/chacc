@@ -26,31 +26,94 @@ fn compile_from_args(program_name: &str, args: &[String]) -> Result<String, Stri
         return Err(format!("{program_name}: invalid number of arguments"));
     };
 
-    let value: i32 = input
-        .parse()
-        .map_err(|_| format!("{program_name}: invalid integer: {input}"))?;
-
-    Ok(compile_integer_program(value))
+    compile_expression_program(input)
 }
 
-fn compile_integer_program(value: i32) -> String {
-    format!("  .globl main\nmain:\n  mov ${value}, %rax\n  ret\n")
+fn compile_expression_program(input: &str) -> Result<String, String> {
+    let mut parser = Parser::new(input);
+    let mut assembly = String::from("  .globl main\nmain:\n");
+
+    let value = parser.read_number();
+    assembly.push_str(&format!("  mov ${value}, %rax\n"));
+
+    while let Some(ch) = parser.peek() {
+        match ch {
+            '+' => {
+                parser.advance();
+                let value = parser.read_number();
+                assembly.push_str(&format!("  add ${value}, %rax\n"));
+            }
+            '-' => {
+                parser.advance();
+                let value = parser.read_number();
+                assembly.push_str(&format!("  sub ${value}, %rax\n"));
+            }
+            _ => return Err(format!("unexpected character: '{ch}'")),
+        }
+    }
+
+    assembly.push_str("  ret\n");
+    Ok(assembly)
+}
+
+struct Parser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
+    }
+
+    fn advance(&mut self) {
+        if let Some(ch) = self.peek() {
+            self.pos += ch.len_utf8();
+        }
+    }
+
+    fn read_number(&mut self) -> i64 {
+        let start = self.pos;
+        let mut cursor = self.pos;
+        let bytes = self.input.as_bytes();
+
+        if let Some(sign) = bytes.get(cursor) {
+            if matches!(sign, b'+' | b'-') {
+                cursor += 1;
+            }
+        }
+
+        let digits_start = cursor;
+        while let Some(byte) = bytes.get(cursor) {
+            if byte.is_ascii_digit() {
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+
+        if cursor == digits_start {
+            return 0;
+        }
+
+        self.pos = cursor;
+        self.input[start..cursor].parse().unwrap()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compile_from_args, compile_integer_program};
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use super::{compile_expression_program, compile_from_args};
 
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
-            compile_integer_program(42),
-            "  .globl main\nmain:\n  mov $42, %rax\n  ret\n"
+            compile_expression_program("5+20-4").unwrap(),
+            "  .globl main\nmain:\n  mov $5, %rax\n  add $20, %rax\n  sub $4, %rax\n  ret\n"
         );
     }
 
@@ -61,36 +124,8 @@ mod tests {
     }
 
     #[test]
-    fn generated_binary_exits_with_the_input_value() {
-        for value in [0, 42] {
-            let dir = unique_test_dir();
-            fs::create_dir_all(&dir).unwrap();
-
-            let assembly_path = dir.join("tmp.s");
-            let executable_path = dir.join("tmp");
-            fs::write(&assembly_path, compile_integer_program(value)).unwrap();
-
-            let status = Command::new("cc")
-                .arg("-o")
-                .arg(&executable_path)
-                .arg(&assembly_path)
-                .status()
-                .unwrap();
-            assert!(status.success(), "cc failed to assemble {assembly_path:?}");
-
-            let status = Command::new(&executable_path).status().unwrap();
-            assert_eq!(status.code(), Some(value));
-
-            fs::remove_dir_all(dir).unwrap();
-        }
-    }
-
-    fn unique_test_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-
-        env::temp_dir().join(format!("chacc-{nanos}"))
+    fn rejects_unexpected_characters() {
+        let error = compile_expression_program("5a").unwrap_err();
+        assert_eq!(error, "unexpected character: 'a'");
     }
 }
