@@ -5,6 +5,7 @@ mod codegen;
 mod parse;
 mod tokenize;
 
+use ast::Program;
 use codegen::Codegen;
 use parse::TokenCursor;
 use tokenize::tokenize;
@@ -13,11 +14,10 @@ use tokenize::tokenize;
 pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
     let mut parser = TokenCursor::new(input, tokens);
-    let stmts = parser.parse_program()?;
+    let Program { body, locals } = parser.parse_program()?;
+    let mut codegen = Codegen::new(locals);
 
-    let mut codegen = Codegen::new();
-
-    for stmt in &stmts {
+    for stmt in &body {
         codegen.gen_stmt(stmt)?;
         codegen.assert_balanced();
     }
@@ -43,7 +43,7 @@ mod tests {
                 "main:\n",
                 "  push %rbp\n",
                 "  mov %rsp, %rbp\n",
-                "  sub $208, %rsp\n",
+                "  sub $0, %rsp\n",
                 "  mov $7, %rax\n",
                 "  push %rax\n",
                 "  mov $6, %rax\n",
@@ -69,7 +69,7 @@ mod tests {
                 "main:\n",
                 "  push %rbp\n",
                 "  mov %rsp, %rbp\n",
-                "  sub $208, %rsp\n",
+                "  sub $0, %rsp\n",
                 "  mov $20, %rax\n",
                 "  push %rax\n",
                 "  mov $10, %rax\n",
@@ -92,7 +92,7 @@ mod tests {
                 "main:\n",
                 "  push %rbp\n",
                 "  mov %rsp, %rbp\n",
-                "  sub $208, %rsp\n",
+                "  sub $0, %rsp\n",
                 "  mov $1, %rax\n",
                 "  push %rax\n",
                 "  mov $0, %rax\n",
@@ -110,13 +110,13 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_assignment() {
         assert_eq!(
-            compile_expression_program("a=3; a;").unwrap(),
+            compile_expression_program("foo=3; foo;").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
                 "  push %rbp\n",
                 "  mov %rsp, %rbp\n",
-                "  sub $208, %rsp\n",
+                "  sub $16, %rsp\n",
                 "  lea -8(%rbp), %rax\n",
                 "  push %rax\n",
                 "  mov $3, %rax\n",
@@ -134,37 +134,13 @@ mod tests {
     #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
-            tokenize(" a=3; z=5; a+z;").unwrap(),
+            tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
             vec![
                 Token {
                     kind: TokenKind::Ident,
-                    lexeme: "a",
+                    lexeme: "foo123",
                     value: 0,
                     offset: 1,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "=",
-                    value: 0,
-                    offset: 2,
-                },
-                Token {
-                    kind: TokenKind::Num,
-                    lexeme: "3",
-                    value: 3,
-                    offset: 3,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ";",
-                    value: 0,
-                    offset: 4,
-                },
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "z",
-                    value: 0,
-                    offset: 6,
                 },
                 Token {
                     kind: TokenKind::Punct,
@@ -174,8 +150,8 @@ mod tests {
                 },
                 Token {
                     kind: TokenKind::Num,
-                    lexeme: "5",
-                    value: 5,
+                    lexeme: "3",
+                    value: 3,
                     offset: 8,
                 },
                 Token {
@@ -186,33 +162,57 @@ mod tests {
                 },
                 Token {
                     kind: TokenKind::Ident,
-                    lexeme: "a",
+                    lexeme: "bar",
                     value: 0,
                     offset: 11,
                 },
                 Token {
                     kind: TokenKind::Punct,
-                    lexeme: "+",
+                    lexeme: "=",
                     value: 0,
-                    offset: 12,
+                    offset: 14,
                 },
                 Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "z",
-                    value: 0,
-                    offset: 13,
+                    kind: TokenKind::Num,
+                    lexeme: "5",
+                    value: 5,
+                    offset: 15,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: ";",
                     value: 0,
-                    offset: 14,
+                    offset: 16,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "foo123",
+                    value: 0,
+                    offset: 18,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "+",
+                    value: 0,
+                    offset: 24,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "bar",
+                    value: 0,
+                    offset: 25,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: ";",
+                    value: 0,
+                    offset: 28,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 15,
+                    offset: 29,
                 },
             ]
         );
@@ -220,8 +220,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_tokens() {
-        let error = compile_expression_program("1+foo;").unwrap_err();
-        assert_eq!(error, "1+foo;\n   ^ expected ';'");
+        let error = compile_expression_program("1+@;").unwrap_err();
+        assert_eq!(error, "1+@;\n  ^ expected an expression");
     }
 
     #[test]
@@ -245,7 +245,7 @@ mod tests {
                 "main:\n",
                 "  push %rbp\n",
                 "  mov %rsp, %rbp\n",
-                "  sub $208, %rsp\n",
+                "  sub $0, %rsp\n",
                 "  mov $10, %rax\n",
                 "  neg %rax\n",
                 "  neg %rax\n",
@@ -290,7 +290,13 @@ mod tests {
 
     #[test]
     fn evaluates_assignments() {
-        for (input, expected) in [("a=3; a;", 3), ("a=3; z=5; a+z;", 8), ("a=b=3; a+b;", 6)] {
+        for (input, expected) in [
+            ("a=3; a;", 3),
+            ("a=3; z=5; a+z;", 8),
+            ("a=b=3; a+b;", 6),
+            ("foo=3; foo;", 3),
+            ("foo123=3; bar=5; foo123+bar;", 8),
+        ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }

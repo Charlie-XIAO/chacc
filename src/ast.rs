@@ -1,5 +1,19 @@
 //! AST node definitions shared by the parser and code generator.
 
+/// A local variable stored in the current function's stack frame.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LocalVar {
+    pub(crate) name: String,
+    pub(crate) offset: i32,
+}
+
+/// The parsed program plus its local-variable table.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Program {
+    pub(crate) body: Vec<Stmt>,
+    pub(crate) locals: Vec<LocalVar>,
+}
+
 /// Binary operators supported by the current expression grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BinaryOp {
@@ -18,7 +32,8 @@ pub(crate) enum BinaryOp {
 pub(crate) enum Node {
     Num(i64),
     Neg(Box<Node>),
-    Var(char),
+    /// Index into the program's local-variable table.
+    Var(usize),
     Assign {
         lhs: Box<Node>,
         rhs: Box<Node>,

@@ -1,6 +1,6 @@
 //! Recursive-descent parser for chacc expressions.
 
-use crate::ast::{BinaryOp, Node, Stmt};
+use crate::ast::{BinaryOp, LocalVar, Node, Program, Stmt};
 use crate::tokenize::{Token, TokenKind, format_error_at};
 
 /// Cursor over the token stream during parsing.
@@ -8,6 +8,7 @@ pub(crate) struct TokenCursor<'a> {
     input: &'a str,
     tokens: Vec<Token<'a>>,
     pos: usize,
+    locals: Vec<LocalVar>,
 }
 
 impl<'a> TokenCursor<'a> {
@@ -17,6 +18,7 @@ impl<'a> TokenCursor<'a> {
             input,
             tokens,
             pos: 0,
+            locals: Vec::new(),
         }
     }
 
@@ -26,14 +28,17 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// Parse `program = stmt*`.
-    pub(crate) fn parse_program(&mut self) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn parse_program(&mut self) -> Result<Program, String> {
         let mut stmts = Vec::new();
 
         while !self.at_eof() {
             stmts.push(self.parse_stmt()?);
         }
 
-        Ok(stmts)
+        Ok(Program {
+            body: stmts,
+            locals: std::mem::take(&mut self.locals),
+        })
     }
 
     /// Check whether the current token is EOF.
@@ -193,7 +198,7 @@ impl<'a> TokenCursor<'a> {
         let tok = self.current();
         if tok.kind == TokenKind::Ident {
             self.advance();
-            return Ok(Node::Var(tok.lexeme.chars().next().unwrap()));
+            return Ok(Node::Var(self.find_or_create_local(tok.lexeme)));
         }
 
         if tok.kind == TokenKind::Num {
@@ -227,5 +232,18 @@ impl<'a> TokenCursor<'a> {
         }
         self.advance();
         Ok(())
+    }
+
+    /// Find an existing local or create a new one.
+    fn find_or_create_local(&mut self, name: &str) -> usize {
+        if let Some(index) = self.locals.iter().position(|local| local.name == name) {
+            return index;
+        }
+
+        self.locals.push(LocalVar {
+            name: name.to_owned(),
+            offset: 0,
+        });
+        self.locals.len() - 1
     }
 }

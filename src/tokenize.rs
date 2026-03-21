@@ -60,15 +60,16 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             continue;
         }
 
-        if ch.is_ascii_lowercase() {
+        if is_ident1(ch) {
+            let len = rest.bytes().take_while(|byte| is_ident2(*byte)).count();
             tokens.push(Token {
                 kind: TokenKind::Ident,
-                lexeme: &rest[..1],
+                lexeme: &rest[..len],
                 value: 0,
                 offset,
             });
-            rest = &rest[1..];
-            offset += 1;
+            rest = &rest[len..];
+            offset += len;
             continue;
         }
 
@@ -83,6 +84,20 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         offset,
     });
     Ok(tokens)
+}
+
+/// Return whether the byte is valid at the start of an identifier.
+///
+/// Identifiers must start with an ASCII letter or underscore.
+fn is_ident1(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+/// Return whether the byte is valid after the first identifier byte.
+///
+/// Identifiers can contain ASCII letters, digits, or underscores.
+fn is_ident2(byte: u8) -> bool {
+    is_ident1(byte) || byte.is_ascii_digit()
 }
 
 /// Read a punctuator token and return its length.

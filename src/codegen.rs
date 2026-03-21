@@ -1,24 +1,30 @@
 //! Assembly generation from the AST.
 
-use crate::ast::{BinaryOp, Node, Stmt};
+use crate::ast::{BinaryOp, LocalVar, Node, Stmt};
 
 /// Stateful code generator for a single function body.
 pub(crate) struct Codegen {
     assembly: String,
     depth: i32,
+    locals: Vec<LocalVar>,
 }
 
 impl Codegen {
     /// Create a code generator with the standard function prologue.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(mut locals: Vec<LocalVar>) -> Self {
+        let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
         assembly.push_str("  .globl main\n");
         assembly.push_str("main:\n");
         assembly.push_str("  push %rbp\n");
         assembly.push_str("  mov %rsp, %rbp\n");
-        assembly.push_str("  sub $208, %rsp\n");
+        assembly.push_str(&format!("  sub ${stack_size}, %rsp\n"));
 
-        Self { assembly, depth: 0 }
+        Self {
+            assembly,
+            depth: 0,
+            locals,
+        }
     }
 
     /// Emit a statement.
@@ -44,12 +50,10 @@ impl Codegen {
     /// Emit the address of an lvalue expression into `%rax`.
     fn gen_addr(&mut self, node: &Node) -> Result<(), String> {
         match node {
-            Node::Var(name) => {
-                // Map variable names 'a'..'z' to stack slots 1..26 and give
-                // each slot 8 bytes of space
-                let offset = (u32::from(*name) - u32::from('a') + 1) * 8;
+            Node::Var(local_id) => {
+                let offset = self.locals[*local_id].offset;
                 self.assembly
-                    .push_str(&format!("  lea -{offset}(%rbp), %rax\n"));
+                    .push_str(&format!("  lea {offset}(%rbp), %rax\n"));
                 Ok(())
             },
             _ => Err("not an lvalue".to_owned()),
@@ -129,4 +133,21 @@ impl Codegen {
         self.assembly.push_str(&format!("  pop {register}\n"));
         self.depth -= 1;
     }
+}
+
+/// Assign stack offsets to locals and return the aligned stack size.
+fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i32 {
+    let mut offset = 0;
+
+    for local in locals.iter_mut().rev() {
+        offset += 8;
+        local.offset = -offset;
+    }
+
+    align_to(offset, 16)
+}
+
+/// Round `n` up to the nearest multiple of `align`.
+fn align_to(n: i32, align: i32) -> i32 {
+    (n + align - 1) / align * align
 }
