@@ -11,6 +11,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parse CLI arguments, compile the expression, and print assembly.
 fn run() -> Result<(), String> {
     let mut args = env::args();
     let program_name = args.next().unwrap_or_else(|| "chacc".to_owned());
@@ -21,6 +22,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the CLI shape and compile the single input expression.
 fn compile_from_args(program_name: &str, args: &[String]) -> Result<String, String> {
     let [input] = args else {
         return Err(format!("{program_name}: invalid number of arguments"));
@@ -29,91 +31,162 @@ fn compile_from_args(program_name: &str, args: &[String]) -> Result<String, Stri
     compile_expression_program(input)
 }
 
+/// Compile an expression into a tiny `main` function.
 fn compile_expression_program(input: &str) -> Result<String, String> {
-    let mut parser = Parser::new(input);
+    let tokens = tokenize(input)?;
+    let mut parser = Parser::new(tokens);
     let mut assembly = String::from("  .globl main\nmain:\n");
 
-    let value = parser.read_number();
+    let value = parser.get_number()?;
     assembly.push_str(&format!("  mov ${value}, %rax\n"));
+    parser.advance();
 
-    while let Some(ch) = parser.peek() {
-        match ch {
-            '+' => {
-                parser.advance();
-                let value = parser.read_number();
-                assembly.push_str(&format!("  add ${value}, %rax\n"));
-            }
-            '-' => {
-                parser.advance();
-                let value = parser.read_number();
-                assembly.push_str(&format!("  sub ${value}, %rax\n"));
-            }
-            _ => return Err(format!("unexpected character: '{ch}'")),
+    while !parser.at_eof() {
+        if parser.equal("+") {
+            parser.advance();
+            let value = parser.get_number()?;
+            assembly.push_str(&format!("  add ${value}, %rax\n"));
+            parser.advance();
+            continue;
         }
+
+        parser.skip("-")?;
+        let value = parser.get_number()?;
+        assembly.push_str(&format!("  sub ${value}, %rax\n"));
+        parser.advance();
     }
 
     assembly.push_str("  ret\n");
     Ok(assembly)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TokenKind {
+    Punct,
+    Num,
+    Eof,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Token<'a> {
+    kind: TokenKind,
+    lexeme: &'a str,
+    value: i64,
+}
+
+/// Convert the input string into tokens.
+fn tokenize(mut input: &str) -> Result<Vec<Token<'_>>, String> {
+    let mut tokens = Vec::new();
+
+    while !input.is_empty() {
+        let ch = input.as_bytes()[0];
+
+        if ch.is_ascii_whitespace() {
+            input = &input[1..];
+            continue;
+        }
+
+        if matches!(ch, b'+' | b'-') {
+            tokens.push(Token {
+                kind: TokenKind::Punct,
+                lexeme: &input[..1],
+                value: 0,
+            });
+            input = &input[1..];
+            continue;
+        }
+
+        if ch.is_ascii_digit() {
+            let len = input.bytes().take_while(u8::is_ascii_digit).count();
+            let lexeme = &input[..len];
+            tokens.push(Token {
+                kind: TokenKind::Num,
+                lexeme,
+                value: lexeme.parse().unwrap(),
+            });
+            input = &input[len..];
+            continue;
+        }
+
+        return Err("invalid token".to_owned());
+    }
+
+    // EOF sentinel
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        lexeme: "",
+        value: 0,
+    });
+    Ok(tokens)
+}
+
 struct Parser<'a> {
-    input: &'a str,
+    tokens: Vec<Token<'a>>,
     pos: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
+    /// Create a parser over a token stream.
+    fn new(tokens: Vec<Token<'a>>) -> Self {
+        Self { tokens, pos: 0 }
     }
 
-    fn peek(&self) -> Option<char> {
-        self.input[self.pos..].chars().next()
-    }
-
+    /// Advance to the next token.
     fn advance(&mut self) {
-        if let Some(ch) = self.peek() {
-            self.pos += ch.len_utf8();
-        }
+        self.pos += 1;
     }
 
-    fn read_number(&mut self) -> i64 {
-        let start = self.pos;
-        let mut cursor = self.pos;
-        let bytes = self.input.as_bytes();
+    /// Check whether the current token is EOF.
+    fn at_eof(&self) -> bool {
+        self.current().kind == TokenKind::Eof
+    }
 
-        if let Some(sign) = bytes.get(cursor) {
-            if matches!(sign, b'+' | b'-') {
-                cursor += 1;
-            }
+    /// Return the current token.
+    fn current(&self) -> Token<'a> {
+        self.tokens[self.pos]
+    }
+
+    /// Check whether the current token matches a punctuator.
+    fn equal(&self, expected: &str) -> bool {
+        let tok = self.current();
+        tok.kind == TokenKind::Punct && tok.lexeme == expected
+    }
+
+    /// Consume a specific punctuator.
+    fn skip(&mut self, expected: &str) -> Result<(), String> {
+        if !self.equal(expected) {
+            return Err(format!("expected '{expected}'"));
         }
+        self.advance();
+        Ok(())
+    }
 
-        let digits_start = cursor;
-        while let Some(byte) = bytes.get(cursor) {
-            if byte.is_ascii_digit() {
-                cursor += 1;
-            } else {
-                break;
-            }
+    /// Read the current numeric literal.
+    fn get_number(&self) -> Result<i64, String> {
+        let tok = self.current();
+        if tok.kind != TokenKind::Num {
+            return Err("expected a number".to_owned());
         }
-
-        if cursor == digits_start {
-            return 0;
-        }
-
-        self.pos = cursor;
-        self.input[start..cursor].parse().unwrap()
+        Ok(tok.value)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compile_expression_program, compile_from_args};
+    use super::{Token, TokenKind, compile_expression_program, compile_from_args, tokenize};
 
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
             compile_expression_program("5+20-4").unwrap(),
-            "  .globl main\nmain:\n  mov $5, %rax\n  add $20, %rax\n  sub $4, %rax\n  ret\n"
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  mov $5, %rax\n",
+                "  add $20, %rax\n",
+                "  sub $4, %rax\n",
+                "  ret\n",
+            )
         );
     }
 
@@ -124,8 +197,47 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unexpected_characters() {
+    fn tokenizes_numbers_punctuation_and_whitespace() {
+        assert_eq!(
+            tokenize(" 12 + 34 - 5 ").unwrap(),
+            vec![
+                Token {
+                    kind: TokenKind::Num,
+                    lexeme: "12",
+                    value: 12,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "+",
+                    value: 0,
+                },
+                Token {
+                    kind: TokenKind::Num,
+                    lexeme: "34",
+                    value: 34,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "-",
+                    value: 0,
+                },
+                Token {
+                    kind: TokenKind::Num,
+                    lexeme: "5",
+                    value: 5,
+                },
+                Token {
+                    kind: TokenKind::Eof,
+                    lexeme: "",
+                    value: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_tokens() {
         let error = compile_expression_program("5a").unwrap_err();
-        assert_eq!(error, "unexpected character: 'a'");
+        assert_eq!(error, "invalid token");
     }
 }
