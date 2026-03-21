@@ -79,15 +79,16 @@ fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             continue;
         }
 
-        if ch.is_ascii_punctuation() {
+        let punct_len = read_punct(rest);
+        if punct_len != 0 {
             tokens.push(Token {
                 kind: TokenKind::Punct,
-                lexeme: &rest[..1],
+                lexeme: &rest[..punct_len],
                 value: 0,
                 offset,
             });
-            rest = &rest[1..];
-            offset += 1;
+            rest = &rest[punct_len..];
+            offset += punct_len;
             continue;
         }
 
@@ -118,6 +119,23 @@ fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     Ok(tokens)
 }
 
+/// Read a punctuator token and return its length.
+fn read_punct(input: &str) -> usize {
+    if ["==", "!=", "<=", ">="]
+        .into_iter()
+        .any(|prefix| input.starts_with(prefix))
+    {
+        return 2;
+    }
+
+    usize::from(
+        input
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_punctuation),
+    )
+}
+
 /// Format an error with a caret pointing at the given byte offset.
 fn format_error_at(input: &str, offset: usize, message: &str) -> String {
     format!("{input}\n{}^ {message}", " ".repeat(offset))
@@ -129,6 +147,10 @@ enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -174,8 +196,67 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `expr = mul ("+" mul | "-" mul)*`.
+    /// Parse `expr = equality`.
     fn parse_expr(&mut self) -> Result<Node, String> {
+        self.parse_equality()
+    }
+
+    /// Parse `equality = relational ("==" relational | "!=" relational)*`.
+    fn parse_equality(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_relational()?;
+
+        loop {
+            if self.equal("==") {
+                self.advance();
+                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?);
+                continue;
+            }
+
+            if self.equal("!=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `relational = add ("<" add | "<=" add | ">" add | ">=" add)*`.
+    fn parse_relational(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_add()?;
+
+        loop {
+            if self.equal("<") {
+                self.advance();
+                node = Node::binary(BinaryOp::Lt, node, self.parse_add()?);
+                continue;
+            }
+
+            if self.equal("<=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Le, node, self.parse_add()?);
+                continue;
+            }
+
+            if self.equal(">") {
+                self.advance();
+                node = Node::binary(BinaryOp::Lt, self.parse_add()?, node);
+                continue;
+            }
+
+            if self.equal(">=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Le, self.parse_add()?, node);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `add = mul ("+" mul | "-" mul)*`.
+    fn parse_add(&mut self) -> Result<Node, String> {
         let mut node = self.parse_mul()?;
 
         loop {
@@ -309,6 +390,26 @@ fn gen_expr(node: &Node, assembly: &mut String, depth: &mut i32) {
                     assembly.push_str("  cqo\n");
                     assembly.push_str("  idiv %rdi\n");
                 }
+                BinaryOp::Eq => {
+                    assembly.push_str("  cmp %rdi, %rax\n");
+                    assembly.push_str("  sete %al\n");
+                    assembly.push_str("  movzb %al, %rax\n");
+                }
+                BinaryOp::Ne => {
+                    assembly.push_str("  cmp %rdi, %rax\n");
+                    assembly.push_str("  setne %al\n");
+                    assembly.push_str("  movzb %al, %rax\n");
+                }
+                BinaryOp::Lt => {
+                    assembly.push_str("  cmp %rdi, %rax\n");
+                    assembly.push_str("  setl %al\n");
+                    assembly.push_str("  movzb %al, %rax\n");
+                }
+                BinaryOp::Le => {
+                    assembly.push_str("  cmp %rdi, %rax\n");
+                    assembly.push_str("  setle %al\n");
+                    assembly.push_str("  movzb %al, %rax\n");
+                }
             }
         }
     }
@@ -372,6 +473,25 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_equality() {
+        assert_eq!(
+            compile_expression_program("0==1").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  mov $1, %rax\n",
+                "  push %rax\n",
+                "  mov $0, %rax\n",
+                "  pop %rdi\n",
+                "  cmp %rdi, %rax\n",
+                "  sete %al\n",
+                "  movzb %al, %rax\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn parses_the_single_input_argument() {
         let cli = Cli::try_parse_from(["chacc", "12 + 34"]).unwrap();
         assert_eq!(cli.input, "12 + 34");
@@ -395,7 +515,7 @@ mod tests {
     #[test]
     fn tokenizes_numbers_punctuation_and_whitespace() {
         assert_eq!(
-            tokenize(" (12 + 34) / 5 ").unwrap(),
+            tokenize(" (12 + 34) <= 5 ").unwrap(),
             vec![
                 Token {
                     kind: TokenKind::Punct,
@@ -429,7 +549,7 @@ mod tests {
                 },
                 Token {
                     kind: TokenKind::Punct,
-                    lexeme: "/",
+                    lexeme: "<=",
                     value: 0,
                     offset: 11,
                 },
@@ -437,13 +557,13 @@ mod tests {
                     kind: TokenKind::Num,
                     lexeme: "5",
                     value: 5,
-                    offset: 13,
+                    offset: 14,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 15,
+                    offset: 16,
                 },
             ]
         );
@@ -480,5 +600,62 @@ mod tests {
                 "  ret\n",
             )
         );
+    }
+
+    #[test]
+    fn evaluates_comparisons() {
+        for (input, expected) in [
+            ("0==1", 0),
+            ("42==42", 1),
+            ("0!=1", 1),
+            ("42!=42", 0),
+            ("0<1", 1),
+            ("1<1", 0),
+            ("2<1", 0),
+            ("0<=1", 1),
+            ("1<=1", 1),
+            ("2<=1", 0),
+            ("1>0", 1),
+            ("1>1", 0),
+            ("1>2", 0),
+            ("1>=0", 1),
+            ("1>=1", 1),
+            ("1>=2", 0),
+        ] {
+            let asm = compile_expression_program(input).unwrap();
+            assert!(asm.contains("movzb %al, %rax"), "{input}: {asm}");
+            assert_eq!(eval_with_cc(&asm), expected, "{input}");
+        }
+    }
+
+    fn eval_with_cc(assembly: &str) -> i32 {
+        use std::fs;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let dir = std::env::temp_dir().join(format!(
+            "chacc-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        fs::create_dir(&dir).unwrap();
+        let asm_path = dir.join("tmp.s");
+        let exe_path = dir.join("tmp");
+        fs::write(&asm_path, assembly).unwrap();
+
+        let status = Command::new("cc")
+            .arg("-o")
+            .arg(&exe_path)
+            .arg(&asm_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let status = Command::new(&exe_path).status().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        status.code().unwrap()
     }
 }
