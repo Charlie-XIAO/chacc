@@ -1,8 +1,19 @@
-use std::env;
 use std::process::ExitCode;
 
+use clap::Parser;
+
+#[derive(Debug, Parser)]
+struct Cli {
+    input: String,
+}
+
 fn main() -> ExitCode {
-    match run() {
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    };
+
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("{message}");
@@ -11,30 +22,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Parse CLI arguments, compile the expression, and print assembly.
-fn run() -> Result<(), String> {
-    let mut args = env::args();
-    let program_name = args.next().unwrap_or_else(|| "chacc".to_owned());
-    let argv: Vec<String> = args.collect();
-    let assembly = compile_from_args(&program_name, &argv)?;
-
+/// Compile the input expression and print assembly.
+fn run(cli: Cli) -> Result<(), String> {
+    let assembly = compile_expression_program(&cli.input)?;
     print!("{assembly}");
     Ok(())
-}
-
-/// Validate the CLI shape and compile the single input expression.
-fn compile_from_args(program_name: &str, args: &[String]) -> Result<String, String> {
-    let [input] = args else {
-        return Err(format!("{program_name}: invalid number of arguments"));
-    };
-
-    compile_expression_program(input)
 }
 
 /// Compile an expression into a tiny `main` function.
 fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
-    let mut parser = Parser::new(tokens);
+    let mut parser = TokenCursor::new(tokens);
     let mut assembly = String::from("  .globl main\nmain:\n");
 
     let value = parser.get_number()?;
@@ -120,12 +118,12 @@ fn tokenize(mut input: &str) -> Result<Vec<Token<'_>>, String> {
     Ok(tokens)
 }
 
-struct Parser<'a> {
+struct TokenCursor<'a> {
     tokens: Vec<Token<'a>>,
     pos: usize,
 }
 
-impl<'a> Parser<'a> {
+impl<'a> TokenCursor<'a> {
     /// Create a parser over a token stream.
     fn new(tokens: Vec<Token<'a>>) -> Self {
         Self { tokens, pos: 0 }
@@ -173,7 +171,9 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Token, TokenKind, compile_expression_program, compile_from_args, tokenize};
+    use clap::Parser;
+
+    use super::{Cli, Token, TokenKind, compile_expression_program, tokenize};
 
     #[test]
     fn emits_expected_assembly() {
@@ -191,9 +191,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_single_input_argument() {
+        let cli = Cli::try_parse_from(["chacc", "12 + 34"]).unwrap();
+        assert_eq!(cli.input, "12 + 34");
+    }
+
+    #[test]
     fn rejects_the_wrong_number_of_arguments() {
-        let error = compile_from_args("chacc", &[]).unwrap_err();
-        assert_eq!(error, "chacc: invalid number of arguments");
+        let error = Cli::try_parse_from(["chacc"]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
