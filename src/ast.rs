@@ -42,6 +42,10 @@ pub struct Node {
 pub enum NodeKind {
     /// A numeric literal.
     Num(i64),
+    /// An address-of expression.
+    Addr(Box<Node>),
+    /// A pointer dereference.
+    Deref(Box<Node>),
     /// A unary negation.
     Neg(Box<Node>),
     /// A local variable.
@@ -60,6 +64,22 @@ pub enum NodeKind {
 }
 
 impl Node {
+    /// Construct an address-of node.
+    pub fn addr(node: Node, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: NodeKind::Addr(Box::new(node)),
+        }
+    }
+
+    /// Construct a dereference node.
+    pub fn deref(node: Node, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: NodeKind::Deref(Box::new(node)),
+        }
+    }
+
     /// Construct a binary AST node.
     pub fn binary(op: BinaryOp, lhs: Node, rhs: Node, offset: usize) -> Self {
         Self {

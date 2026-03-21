@@ -233,6 +233,32 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_address_and_deref() {
+        assert_eq!(
+            compile_expression_program("{ x=3; return *&x; }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $16, %rsp\n",
+                "  lea -8(%rbp), %rax\n",
+                "  push %rax\n",
+                "  mov $3, %rax\n",
+                "  pop %rdi\n",
+                "  mov %rax, (%rdi)\n",
+                "  lea -8(%rbp), %rax\n",
+                "  mov (%rax), %rax\n",
+                "  jmp .L.return\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -380,6 +406,13 @@ mod tests {
             ("{ i=0; j=0; for (i=0; i<=10; i=i+1) j=i+j; return j; }", 55),
             ("{ for (;;) {return 3;} return 5; }", 3),
             ("{ i=0; while(i<10) { i=i+1; } return i; }", 10),
+            ("{ x=3; return *&x; }", 3),
+            ("{ x=3; y=&x; z=&y; return **z; }", 3),
+            ("{ x=3; y=5; return *(&x+8); }", 5),
+            ("{ x=3; y=5; return *(&y-8); }", 3),
+            ("{ x=3; y=&x; *y=5; return x; }", 5),
+            ("{ x=3; y=5; *(&x+8)=7; return y; }", 7),
+            ("{ x=3; y=5; *(&y-8)=7; return x; }", 7),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");

@@ -284,7 +284,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <unary> ::= ("+" | "-") <unary> | <primary>
+    /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <primary>
     /// ```
     fn parse_unary(&mut self) -> Result<Node, String> {
         if self.at_punct("+") {
@@ -296,6 +296,18 @@ impl<'a> TokenCursor<'a> {
             let offset = self.current().offset;
             self.advance();
             return Ok(Node::neg(self.parse_unary()?, offset));
+        }
+
+        if self.at_punct("&") {
+            let offset = self.current().offset;
+            self.advance();
+            return Ok(Node::addr(self.parse_unary()?, offset));
+        }
+
+        if self.at_punct("*") {
+            let offset = self.current().offset;
+            self.advance();
+            return Ok(Node::deref(self.parse_unary()?, offset));
         }
 
         self.parse_primary()

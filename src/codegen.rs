@@ -115,6 +115,7 @@ impl<'a> Codegen<'a> {
                     .push_str(&format!("  lea {offset}(%rbp), %rax\n"));
                 Ok(())
             },
+            NodeKind::Deref(expr) => self.gen_expr(expr),
             _ => Err(format_error_at(self.input, node.offset, "not an lvalue")),
         }
     }
@@ -124,6 +125,13 @@ impl<'a> Codegen<'a> {
         match &node.kind {
             NodeKind::Num(value) => {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
+            },
+            NodeKind::Addr(expr) => {
+                self.gen_addr(expr)?;
+            },
+            NodeKind::Deref(expr) => {
+                self.gen_expr(expr)?;
+                self.assembly.push_str("  mov (%rax), %rax\n");
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
