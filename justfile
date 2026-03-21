@@ -10,6 +10,10 @@ fmt:
 lint:
     cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
 
+alias t := test
+alias tu := test-unit
+alias ti := test-integration
+
 test: test-unit test-integration
 
 test-unit:
