@@ -5,7 +5,7 @@ mod codegen;
 mod parse;
 mod tokenize;
 
-use codegen::gen_stmt;
+use codegen::Codegen;
 use parse::TokenCursor;
 use tokenize::tokenize;
 
@@ -15,17 +15,14 @@ pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let mut parser = TokenCursor::new(input, tokens);
     let stmts = parser.parse_program()?;
 
-    let mut assembly =
-        String::from("  .globl main\nmain:\n  push %rbp\n  mov %rsp, %rbp\n  sub $208, %rsp\n");
-    let mut depth = 0;
+    let mut codegen = Codegen::new();
 
     for stmt in &stmts {
-        gen_stmt(stmt, &mut assembly, &mut depth)?;
-        assert_eq!(depth, 0);
+        codegen.gen_stmt(stmt)?;
+        codegen.assert_balanced();
     }
 
-    assembly.push_str("  mov %rbp, %rsp\n  pop %rbp\n  ret\n");
-    Ok(assembly)
+    Ok(codegen.finish())
 }
 
 #[cfg(test)]
