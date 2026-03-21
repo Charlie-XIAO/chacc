@@ -32,7 +32,7 @@ fn run(cli: Cli) -> Result<(), String> {
 /// Compile an expression into a tiny `main` function.
 fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
-    let mut parser = TokenCursor::new(tokens);
+    let mut parser = TokenCursor::new(input, tokens);
     let mut assembly = String::from("  .globl main\nmain:\n");
 
     let value = parser.get_number()?;
@@ -70,43 +70,51 @@ struct Token<'a> {
     kind: TokenKind,
     lexeme: &'a str,
     value: i64,
+    offset: usize,
 }
 
 /// Convert the input string into tokens.
-fn tokenize(mut input: &str) -> Result<Vec<Token<'_>>, String> {
+fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     let mut tokens = Vec::new();
+    let mut rest = input;
+    let mut offset = 0;
 
-    while !input.is_empty() {
-        let ch = input.as_bytes()[0];
+    while !rest.is_empty() {
+        let ch = rest.as_bytes()[0];
 
         if ch.is_ascii_whitespace() {
-            input = &input[1..];
+            rest = &rest[1..];
+            offset += 1;
             continue;
         }
 
         if matches!(ch, b'+' | b'-') {
             tokens.push(Token {
                 kind: TokenKind::Punct,
-                lexeme: &input[..1],
+                lexeme: &rest[..1],
                 value: 0,
+                offset,
             });
-            input = &input[1..];
+            rest = &rest[1..];
+            offset += 1;
             continue;
         }
 
         if ch.is_ascii_digit() {
-            let len = input.bytes().take_while(u8::is_ascii_digit).count();
-            let lexeme = &input[..len];
+            let len = rest.bytes().take_while(u8::is_ascii_digit).count();
+            let lexeme = &rest[..len];
             tokens.push(Token {
                 kind: TokenKind::Num,
                 lexeme,
                 value: lexeme.parse().unwrap(),
+                offset,
             });
-            input = &input[len..];
+            rest = &rest[len..];
+            offset += len;
             continue;
         }
 
-        return Err("invalid token".to_owned());
+        return Err(format_error_at(input, offset, "invalid token"));
     }
 
     // EOF sentinel
@@ -114,19 +122,30 @@ fn tokenize(mut input: &str) -> Result<Vec<Token<'_>>, String> {
         kind: TokenKind::Eof,
         lexeme: "",
         value: 0,
+        offset,
     });
     Ok(tokens)
 }
 
+/// Format an error with a caret pointing at the given byte offset.
+fn format_error_at(input: &str, offset: usize, message: &str) -> String {
+    format!("{input}\n{}^ {message}", " ".repeat(offset))
+}
+
 struct TokenCursor<'a> {
+    input: &'a str,
     tokens: Vec<Token<'a>>,
     pos: usize,
 }
 
 impl<'a> TokenCursor<'a> {
     /// Create a parser over a token stream.
-    fn new(tokens: Vec<Token<'a>>) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
+        Self {
+            input,
+            tokens,
+            pos: 0,
+        }
     }
 
     /// Advance to the next token.
@@ -153,7 +172,7 @@ impl<'a> TokenCursor<'a> {
     /// Consume a specific punctuator.
     fn skip(&mut self, expected: &str) -> Result<(), String> {
         if !self.equal(expected) {
-            return Err(format!("expected '{expected}'"));
+            return Err(self.error_current(&format!("expected '{expected}'")));
         }
         self.advance();
         Ok(())
@@ -163,9 +182,14 @@ impl<'a> TokenCursor<'a> {
     fn get_number(&self) -> Result<i64, String> {
         let tok = self.current();
         if tok.kind != TokenKind::Num {
-            return Err("expected a number".to_owned());
+            return Err(self.error_current("expected a number"));
         }
         Ok(tok.value)
+    }
+
+    /// Format an error at the current token.
+    fn error_current(&self, message: &str) -> String {
+        format_error_at(self.input, self.current().offset, message)
     }
 }
 
@@ -214,31 +238,37 @@ mod tests {
                     kind: TokenKind::Num,
                     lexeme: "12",
                     value: 12,
+                    offset: 1,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: "+",
                     value: 0,
+                    offset: 4,
                 },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "34",
                     value: 34,
+                    offset: 6,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: "-",
                     value: 0,
+                    offset: 9,
                 },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "5",
                     value: 5,
+                    offset: 11,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
+                    offset: 13,
                 },
             ]
         );
@@ -247,6 +277,12 @@ mod tests {
     #[test]
     fn rejects_invalid_tokens() {
         let error = compile_expression_program("5a").unwrap_err();
-        assert_eq!(error, "invalid token");
+        assert_eq!(error, "5a\n ^ invalid token");
+    }
+
+    #[test]
+    fn reports_parser_errors_at_the_token() {
+        let error = compile_expression_program("1+").unwrap_err();
+        assert_eq!(error, "1+\n  ^ expected a number");
     }
 }
