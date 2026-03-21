@@ -50,6 +50,7 @@ impl<'a> TokenCursor<'a> {
     /// ```bnf
     /// <stmt> ::= "return" <expr> ";"
     ///          | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
+    ///          | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///          | "{" <compound-stmt>
     ///          | <expr-stmt>
     /// ```
@@ -77,6 +78,31 @@ impl<'a> TokenCursor<'a> {
                 cond,
                 then_branch,
                 else_branch,
+            });
+        }
+
+        if self.at_keyword("for") {
+            self.advance();
+            self.skip("(")?;
+            let init = Box::new(self.parse_expr_stmt()?);
+            let cond = if self.at_punct(";") {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            self.skip(";")?;
+            let inc = if self.at_punct(")") {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            self.skip(")")?;
+            let body = Box::new(self.parse_stmt()?);
+            return Ok(Stmt::For {
+                init,
+                cond,
+                inc,
+                body,
             });
         }
 

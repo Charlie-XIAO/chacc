@@ -38,6 +38,28 @@ impl Codegen {
                 self.assembly.push_str("  jmp .L.return\n");
                 Ok(())
             },
+            Stmt::For {
+                init,
+                cond,
+                inc,
+                body,
+            } => {
+                let label = self.take_label();
+                self.gen_stmt(init)?;
+                self.assembly.push_str(&format!(".L.begin.{label}:\n"));
+                if let Some(cond) = cond {
+                    self.gen_expr(cond)?;
+                    self.assembly.push_str("  cmp $0, %rax\n");
+                    self.assembly.push_str(&format!("  je  .L.end.{label}\n"));
+                }
+                self.gen_stmt(body)?;
+                if let Some(inc) = inc {
+                    self.gen_expr(inc)?;
+                }
+                self.assembly.push_str(&format!("  jmp .L.begin.{label}\n"));
+                self.assembly.push_str(&format!(".L.end.{label}:\n"));
+                Ok(())
+            },
             Stmt::If {
                 cond,
                 then_branch,
