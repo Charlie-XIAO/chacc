@@ -33,28 +33,18 @@ fn run(cli: Cli) -> Result<(), String> {
 fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
     let mut parser = TokenCursor::new(input, tokens);
-    let mut assembly = String::from("  .globl main\nmain:\n");
+    let node = parser.parse_expr()?;
 
-    let value = parser.get_number()?;
-    assembly.push_str(&format!("  mov ${value}, %rax\n"));
-    parser.advance();
-
-    while !parser.at_eof() {
-        if parser.equal("+") {
-            parser.advance();
-            let value = parser.get_number()?;
-            assembly.push_str(&format!("  add ${value}, %rax\n"));
-            parser.advance();
-            continue;
-        }
-
-        parser.skip("-")?;
-        let value = parser.get_number()?;
-        assembly.push_str(&format!("  sub ${value}, %rax\n"));
-        parser.advance();
+    if !parser.at_eof() {
+        return Err(parser.error_current("extra token"));
     }
 
+    let mut assembly = String::from("  .globl main\nmain:\n");
+    let mut depth = 0;
+    gen_expr(&node, &mut assembly, &mut depth);
     assembly.push_str("  ret\n");
+
+    assert_eq!(depth, 0);
     Ok(assembly)
 }
 
@@ -88,7 +78,7 @@ fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             continue;
         }
 
-        if matches!(ch, b'+' | b'-') {
+        if ch.is_ascii_punctuation() {
             tokens.push(Token {
                 kind: TokenKind::Punct,
                 lexeme: &rest[..1],
@@ -132,6 +122,35 @@ fn format_error_at(input: &str, offset: usize, message: &str) -> String {
     format!("{input}\n{}^ {message}", " ".repeat(offset))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Node {
+    Num(i64),
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    },
+}
+
+impl Node {
+    /// Construct a binary AST node.
+    fn binary(op: BinaryOp, lhs: Node, rhs: Node) -> Self {
+        Self::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+}
+
 struct TokenCursor<'a> {
     input: &'a str,
     tokens: Vec<Token<'a>>,
@@ -146,6 +165,66 @@ impl<'a> TokenCursor<'a> {
             tokens,
             pos: 0,
         }
+    }
+
+    /// Parse `expr = mul ("+" mul | "-" mul)*`.
+    fn parse_expr(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_mul()?;
+
+        loop {
+            if self.equal("+") {
+                self.advance();
+                node = Node::binary(BinaryOp::Add, node, self.parse_mul()?);
+                continue;
+            }
+
+            if self.equal("-") {
+                self.advance();
+                node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `mul = primary ("*" primary | "/" primary)*`.
+    fn parse_mul(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_primary()?;
+
+        loop {
+            if self.equal("*") {
+                self.advance();
+                node = Node::binary(BinaryOp::Mul, node, self.parse_primary()?);
+                continue;
+            }
+
+            if self.equal("/") {
+                self.advance();
+                node = Node::binary(BinaryOp::Div, node, self.parse_primary()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `primary = "(" expr ")" | num`.
+    fn parse_primary(&mut self) -> Result<Node, String> {
+        if self.equal("(") {
+            self.advance();
+            let node = self.parse_expr()?;
+            self.skip(")")?;
+            return Ok(node);
+        }
+
+        let tok = self.current();
+        if tok.kind == TokenKind::Num {
+            self.advance();
+            return Ok(Node::Num(tok.value));
+        }
+
+        Err(self.error_current("expected an expression"))
     }
 
     /// Advance to the next token.
@@ -178,19 +257,47 @@ impl<'a> TokenCursor<'a> {
         Ok(())
     }
 
-    /// Read the current numeric literal.
-    fn get_number(&self) -> Result<i64, String> {
-        let tok = self.current();
-        if tok.kind != TokenKind::Num {
-            return Err(self.error_current("expected a number"));
-        }
-        Ok(tok.value)
-    }
-
     /// Format an error at the current token.
     fn error_current(&self, message: &str) -> String {
         format_error_at(self.input, self.current().offset, message)
     }
+}
+
+/// Emit assembly for the given expression node.
+fn gen_expr(node: &Node, assembly: &mut String, depth: &mut i32) {
+    match node {
+        Node::Num(value) => {
+            assembly.push_str(&format!("  mov ${value}, %rax\n"));
+        }
+        Node::Binary { op, lhs, rhs } => {
+            gen_expr(rhs, assembly, depth);
+            push(assembly, depth);
+            gen_expr(lhs, assembly, depth);
+            pop("%rdi", assembly, depth);
+
+            match op {
+                BinaryOp::Add => assembly.push_str("  add %rdi, %rax\n"),
+                BinaryOp::Sub => assembly.push_str("  sub %rdi, %rax\n"),
+                BinaryOp::Mul => assembly.push_str("  imul %rdi, %rax\n"),
+                BinaryOp::Div => {
+                    assembly.push_str("  cqo\n");
+                    assembly.push_str("  idiv %rdi\n");
+                }
+            }
+        }
+    }
+}
+
+/// Push `%rax` onto the temporary expression stack.
+fn push(assembly: &mut String, depth: &mut i32) {
+    assembly.push_str("  push %rax\n");
+    *depth += 1;
+}
+
+/// Pop the top of the temporary stack into a register.
+fn pop(register: &str, assembly: &mut String, depth: &mut i32) {
+    assembly.push_str(&format!("  pop {register}\n"));
+    *depth -= 1;
 }
 
 #[cfg(test)]
@@ -202,13 +309,19 @@ mod tests {
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
-            compile_expression_program("5+20-4").unwrap(),
+            compile_expression_program("5+6*7").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
+                "  mov $7, %rax\n",
+                "  push %rax\n",
+                "  mov $6, %rax\n",
+                "  pop %rdi\n",
+                "  imul %rdi, %rax\n",
+                "  push %rax\n",
                 "  mov $5, %rax\n",
-                "  add $20, %rax\n",
-                "  sub $4, %rax\n",
+                "  pop %rdi\n",
+                "  add %rdi, %rax\n",
                 "  ret\n",
             )
         );
@@ -232,43 +345,55 @@ mod tests {
     #[test]
     fn tokenizes_numbers_punctuation_and_whitespace() {
         assert_eq!(
-            tokenize(" 12 + 34 - 5 ").unwrap(),
+            tokenize(" (12 + 34) / 5 ").unwrap(),
             vec![
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "(",
+                    value: 0,
+                    offset: 1,
+                },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "12",
                     value: 12,
-                    offset: 1,
+                    offset: 2,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: "+",
                     value: 0,
-                    offset: 4,
+                    offset: 5,
                 },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "34",
                     value: 34,
-                    offset: 6,
+                    offset: 7,
                 },
                 Token {
                     kind: TokenKind::Punct,
-                    lexeme: "-",
+                    lexeme: ")",
                     value: 0,
                     offset: 9,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "/",
+                    value: 0,
+                    offset: 11,
                 },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "5",
                     value: 5,
-                    offset: 11,
+                    offset: 13,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 13,
+                    offset: 15,
                 },
             ]
         );
@@ -276,13 +401,19 @@ mod tests {
 
     #[test]
     fn rejects_invalid_tokens() {
-        let error = compile_expression_program("5a").unwrap_err();
-        assert_eq!(error, "5a\n ^ invalid token");
+        let error = compile_expression_program("1+foo").unwrap_err();
+        assert_eq!(error, "1+foo\n  ^ invalid token");
     }
 
     #[test]
-    fn reports_parser_errors_at_the_token() {
+    fn reports_missing_expressions() {
         let error = compile_expression_program("1+").unwrap_err();
-        assert_eq!(error, "1+\n  ^ expected a number");
+        assert_eq!(error, "1+\n  ^ expected an expression");
+    }
+
+    #[test]
+    fn reports_extra_tokens() {
+        let error = compile_expression_program("1 2").unwrap_err();
+        assert_eq!(error, "1 2\n  ^ extra token");
     }
 }
