@@ -72,8 +72,13 @@ impl<'a> TokenCursor<'a> {
         Ok(stmts)
     }
 
-    /// Parse `expr-stmt = expr ";"`.
+    /// Parse `expr-stmt = expr? ";"`.
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
+        if self.at_punct(";") {
+            self.advance();
+            return Ok(Stmt::Block(Vec::new()));
+        }
+
         let expr = self.parse_expr()?;
         self.skip(";")?;
         Ok(Stmt::Expr(expr))

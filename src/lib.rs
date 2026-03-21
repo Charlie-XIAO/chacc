@@ -344,6 +344,9 @@ mod tests {
     fn evaluates_multiple_statements() {
         let asm = compile_expression_program("{ 1; 2; 3; }").unwrap();
         assert_eq!(eval_with_cc(&asm), 3);
+
+        let asm = compile_expression_program("{ ;;; return 5; }").unwrap();
+        assert_eq!(eval_with_cc(&asm), 5);
     }
 
     #[test]
@@ -371,6 +374,7 @@ mod tests {
             ("{ 1; return 2; 3; }", 2),
             ("{ 1; 2; return 3; }", 3),
             ("{ {1; {2;} return 3;} }", 3),
+            ("{ ;;; return 5; }", 5),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
