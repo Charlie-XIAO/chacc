@@ -4,6 +4,7 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 struct Cli {
+    #[arg(allow_hyphen_values = true)]
     input: String,
 }
 
@@ -133,6 +134,7 @@ enum BinaryOp {
 #[derive(Debug, Eq, PartialEq)]
 enum Node {
     Num(i64),
+    Neg(Box<Node>),
     Binary {
         op: BinaryOp,
         lhs: Box<Node>,
@@ -148,6 +150,11 @@ impl Node {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }
+    }
+
+    /// Construct a unary negation node.
+    fn neg(node: Node) -> Self {
+        Self::Neg(Box::new(node))
     }
 }
 
@@ -188,25 +195,40 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `mul = primary ("*" primary | "/" primary)*`.
+    /// Parse `mul = unary ("*" unary | "/" unary)*`.
     fn parse_mul(&mut self) -> Result<Node, String> {
-        let mut node = self.parse_primary()?;
+        let mut node = self.parse_unary()?;
 
         loop {
             if self.equal("*") {
                 self.advance();
-                node = Node::binary(BinaryOp::Mul, node, self.parse_primary()?);
+                node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?);
                 continue;
             }
 
             if self.equal("/") {
                 self.advance();
-                node = Node::binary(BinaryOp::Div, node, self.parse_primary()?);
+                node = Node::binary(BinaryOp::Div, node, self.parse_unary()?);
                 continue;
             }
 
             return Ok(node);
         }
+    }
+
+    /// Parse `unary = ("+" | "-") unary | primary`.
+    fn parse_unary(&mut self) -> Result<Node, String> {
+        if self.equal("+") {
+            self.advance();
+            return self.parse_unary();
+        }
+
+        if self.equal("-") {
+            self.advance();
+            return Ok(Node::neg(self.parse_unary()?));
+        }
+
+        self.parse_primary()
     }
 
     /// Parse `primary = "(" expr ")" | num`.
@@ -269,6 +291,10 @@ fn gen_expr(node: &Node, assembly: &mut String, depth: &mut i32) {
         Node::Num(value) => {
             assembly.push_str(&format!("  mov ${value}, %rax\n"));
         }
+        Node::Neg(expr) => {
+            gen_expr(expr, assembly, depth);
+            assembly.push_str("  neg %rax\n");
+        }
         Node::Binary { op, lhs, rhs } => {
             gen_expr(rhs, assembly, depth);
             push(assembly, depth);
@@ -328,9 +354,33 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_unary_minus() {
+        assert_eq!(
+            compile_expression_program("-10+20").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  mov $20, %rax\n",
+                "  push %rax\n",
+                "  mov $10, %rax\n",
+                "  neg %rax\n",
+                "  pop %rdi\n",
+                "  add %rdi, %rax\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn parses_the_single_input_argument() {
         let cli = Cli::try_parse_from(["chacc", "12 + 34"]).unwrap();
         assert_eq!(cli.input, "12 + 34");
+    }
+
+    #[test]
+    fn parses_hyphen_prefixed_input() {
+        let cli = Cli::try_parse_from(["chacc", "-10+20"]).unwrap();
+        assert_eq!(cli.input, "-10+20");
     }
 
     #[test]
@@ -415,5 +465,20 @@ mod tests {
     fn reports_extra_tokens() {
         let error = compile_expression_program("1 2").unwrap_err();
         assert_eq!(error, "1 2\n  ^ extra token");
+    }
+
+    #[test]
+    fn parses_nested_unary_operators() {
+        assert_eq!(
+            compile_expression_program("- - +10").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  mov $10, %rax\n",
+                "  neg %rax\n",
+                "  neg %rax\n",
+                "  ret\n",
+            )
+        );
     }
 }
