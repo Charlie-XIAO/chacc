@@ -1,6 +1,13 @@
 //! Assembly generation from the AST.
 
-use crate::ast::{BinaryOp, Node};
+use crate::ast::{BinaryOp, Node, Stmt};
+
+/// Emit assembly for a statement.
+pub(crate) fn gen_stmt(stmt: &Stmt, assembly: &mut String, depth: &mut i32) {
+    match stmt {
+        Stmt::Expr(expr) => gen_expr(expr, assembly, depth),
+    }
+}
 
 /// Emit assembly for the given expression node.
 pub(crate) fn gen_expr(node: &Node, assembly: &mut String, depth: &mut i32) {

@@ -5,26 +5,25 @@ mod codegen;
 mod parse;
 mod tokenize;
 
-use codegen::gen_expr;
+use codegen::gen_stmt;
 use parse::TokenCursor;
 use tokenize::tokenize;
 
-/// Compile an expression into a tiny `main` function.
+/// Compile the input program into a tiny `main` function.
 pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
     let mut parser = TokenCursor::new(input, tokens);
-    let node = parser.parse_expr()?;
-
-    if !parser.at_eof() {
-        return Err(parser.error_current("extra token"));
-    }
+    let stmts = parser.parse_program()?;
 
     let mut assembly = String::from("  .globl main\nmain:\n");
     let mut depth = 0;
-    gen_expr(&node, &mut assembly, &mut depth);
-    assembly.push_str("  ret\n");
 
-    assert_eq!(depth, 0);
+    for stmt in &stmts {
+        gen_stmt(stmt, &mut assembly, &mut depth);
+        assert_eq!(depth, 0);
+    }
+
+    assembly.push_str("  ret\n");
     Ok(assembly)
 }
 
@@ -40,7 +39,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
-            compile_expression_program("5+6*7").unwrap(),
+            compile_expression_program("5+6*7;").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -61,7 +60,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_unary_minus() {
         assert_eq!(
-            compile_expression_program("-10+20").unwrap(),
+            compile_expression_program("-10+20;").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -79,7 +78,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_equality() {
         assert_eq!(
-            compile_expression_program("0==1").unwrap(),
+            compile_expression_program("0==1;").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -154,26 +153,26 @@ mod tests {
 
     #[test]
     fn rejects_invalid_tokens() {
-        let error = compile_expression_program("1+foo").unwrap_err();
-        assert_eq!(error, "1+foo\n  ^ invalid token");
+        let error = compile_expression_program("1+foo;").unwrap_err();
+        assert_eq!(error, "1+foo;\n  ^ invalid token");
     }
 
     #[test]
     fn reports_missing_expressions() {
-        let error = compile_expression_program("1+").unwrap_err();
-        assert_eq!(error, "1+\n  ^ expected an expression");
+        let error = compile_expression_program("1+;").unwrap_err();
+        assert_eq!(error, "1+;\n  ^ expected an expression");
     }
 
     #[test]
-    fn reports_extra_tokens() {
-        let error = compile_expression_program("1 2").unwrap_err();
-        assert_eq!(error, "1 2\n  ^ extra token");
+    fn reports_missing_semicolons() {
+        let error = compile_expression_program("1 2;").unwrap_err();
+        assert_eq!(error, "1 2;\n  ^ expected ';'");
     }
 
     #[test]
     fn parses_nested_unary_operators() {
         assert_eq!(
-            compile_expression_program("- - +10").unwrap(),
+            compile_expression_program("- - +10;").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -188,27 +187,33 @@ mod tests {
     #[test]
     fn evaluates_comparisons() {
         for (input, expected) in [
-            ("0==1", 0),
-            ("42==42", 1),
-            ("0!=1", 1),
-            ("42!=42", 0),
-            ("0<1", 1),
-            ("1<1", 0),
-            ("2<1", 0),
-            ("0<=1", 1),
-            ("1<=1", 1),
-            ("2<=1", 0),
-            ("1>0", 1),
-            ("1>1", 0),
-            ("1>2", 0),
-            ("1>=0", 1),
-            ("1>=1", 1),
-            ("1>=2", 0),
+            ("0==1;", 0),
+            ("42==42;", 1),
+            ("0!=1;", 1),
+            ("42!=42;", 0),
+            ("0<1;", 1),
+            ("1<1;", 0),
+            ("2<1;", 0),
+            ("0<=1;", 1),
+            ("1<=1;", 1),
+            ("2<=1;", 0),
+            ("1>0;", 1),
+            ("1>1;", 0),
+            ("1>2;", 0),
+            ("1>=0;", 1),
+            ("1>=1;", 1),
+            ("1>=2;", 0),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert!(asm.contains("movzb %al, %rax"), "{input}: {asm}");
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn evaluates_multiple_statements() {
+        let asm = compile_expression_program("1; 2; 3;").unwrap();
+        assert_eq!(eval_with_cc(&asm), 3);
     }
 
     /// Assemble and run generated code, returning the exit status.

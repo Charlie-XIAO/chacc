@@ -40,3 +40,9 @@ impl Node {
         Self::Neg(Box::new(node))
     }
 }
+
+/// Statements supported by the current language.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum Stmt {
+    Expr(Node),
+}

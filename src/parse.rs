@@ -1,6 +1,6 @@
 //! Recursive-descent parser for chacc expressions.
 
-use crate::ast::{BinaryOp, Node};
+use crate::ast::{BinaryOp, Node, Stmt};
 use crate::tokenize::{Token, TokenKind, format_error_at};
 
 /// Cursor over the token stream during parsing.
@@ -25,6 +25,17 @@ impl<'a> TokenCursor<'a> {
         self.parse_equality()
     }
 
+    /// Parse `program = stmt*`.
+    pub(crate) fn parse_program(&mut self) -> Result<Vec<Stmt>, String> {
+        let mut stmts = Vec::new();
+
+        while !self.at_eof() {
+            stmts.push(self.parse_stmt()?);
+        }
+
+        Ok(stmts)
+    }
+
     /// Check whether the current token is EOF.
     pub(crate) fn at_eof(&self) -> bool {
         self.current().kind == TokenKind::Eof
@@ -33,6 +44,18 @@ impl<'a> TokenCursor<'a> {
     /// Format an error at the current token.
     pub(crate) fn error_current(&self, message: &str) -> String {
         format_error_at(self.input, self.current().offset, message)
+    }
+
+    /// Parse `stmt = expr-stmt`.
+    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        self.parse_expr_stmt()
+    }
+
+    /// Parse `expr-stmt = expr ";"`.
+    fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
+        let expr = self.parse_expr()?;
+        self.skip(";")?;
+        Ok(Stmt::Expr(expr))
     }
 
     /// Parse `equality = relational ("==" relational | "!=" relational)*`.
