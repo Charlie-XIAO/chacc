@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
-            compile_expression_program("5+6*7;").unwrap(),
+            compile_expression_program("{ 5+6*7; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_unary_minus() {
         assert_eq!(
-            compile_expression_program("-10+20;").unwrap(),
+            compile_expression_program("{ -10+20; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_equality() {
         assert_eq!(
-            compile_expression_program("0==1;").unwrap(),
+            compile_expression_program("{ 0==1; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_assignment() {
         assert_eq!(
-            compile_expression_program("foo=3; foo;").unwrap(),
+            compile_expression_program("{ foo=3; foo; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_return() {
         assert_eq!(
-            compile_expression_program("return 42;").unwrap(),
+            compile_expression_program("{ return 42; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -277,26 +277,26 @@ mod tests {
 
     #[test]
     fn rejects_invalid_tokens() {
-        let error = compile_expression_program("1+@;").unwrap_err();
-        assert_eq!(error, "1+@;\n  ^ expected an expression");
+        let error = compile_expression_program("{ 1+@; }").unwrap_err();
+        assert_eq!(error, "{ 1+@; }\n    ^ expected an expression");
     }
 
     #[test]
     fn reports_missing_expressions() {
-        let error = compile_expression_program("1+;").unwrap_err();
-        assert_eq!(error, "1+;\n  ^ expected an expression");
+        let error = compile_expression_program("{ 1+; }").unwrap_err();
+        assert_eq!(error, "{ 1+; }\n    ^ expected an expression");
     }
 
     #[test]
     fn reports_missing_semicolons() {
-        let error = compile_expression_program("1 2;").unwrap_err();
-        assert_eq!(error, "1 2;\n  ^ expected ';'");
+        let error = compile_expression_program("{ 1 2; }").unwrap_err();
+        assert_eq!(error, "{ 1 2; }\n    ^ expected ';'");
     }
 
     #[test]
     fn parses_nested_unary_operators() {
         assert_eq!(
-            compile_expression_program("- - +10;").unwrap(),
+            compile_expression_program("{ - - +10; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -317,22 +317,22 @@ mod tests {
     #[test]
     fn evaluates_comparisons() {
         for (input, expected) in [
-            ("0==1;", 0),
-            ("42==42;", 1),
-            ("0!=1;", 1),
-            ("42!=42;", 0),
-            ("0<1;", 1),
-            ("1<1;", 0),
-            ("2<1;", 0),
-            ("0<=1;", 1),
-            ("1<=1;", 1),
-            ("2<=1;", 0),
-            ("1>0;", 1),
-            ("1>1;", 0),
-            ("1>2;", 0),
-            ("1>=0;", 1),
-            ("1>=1;", 1),
-            ("1>=2;", 0),
+            ("{ 0==1; }", 0),
+            ("{ 42==42; }", 1),
+            ("{ 0!=1; }", 1),
+            ("{ 42!=42; }", 0),
+            ("{ 0<1; }", 1),
+            ("{ 1<1; }", 0),
+            ("{ 2<1; }", 0),
+            ("{ 0<=1; }", 1),
+            ("{ 1<=1; }", 1),
+            ("{ 2<=1; }", 0),
+            ("{ 1>0; }", 1),
+            ("{ 1>1; }", 0),
+            ("{ 1>2; }", 0),
+            ("{ 1>=0; }", 1),
+            ("{ 1>=1; }", 1),
+            ("{ 1>=2; }", 0),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert!(asm.contains("movzb %al, %rax"), "{input}: {asm}");
@@ -342,18 +342,18 @@ mod tests {
 
     #[test]
     fn evaluates_multiple_statements() {
-        let asm = compile_expression_program("1; 2; 3;").unwrap();
+        let asm = compile_expression_program("{ 1; 2; 3; }").unwrap();
         assert_eq!(eval_with_cc(&asm), 3);
     }
 
     #[test]
     fn evaluates_assignments() {
         for (input, expected) in [
-            ("a=3; a;", 3),
-            ("a=3; z=5; a+z;", 8),
-            ("a=b=3; a+b;", 6),
-            ("foo=3; foo;", 3),
-            ("foo123=3; bar=5; foo123+bar;", 8),
+            ("{ a=3; a; }", 3),
+            ("{ a=3; z=5; a+z; }", 8),
+            ("{ a=b=3; a+b; }", 6),
+            ("{ foo=3; foo; }", 3),
+            ("{ foo123=3; bar=5; foo123+bar; }", 8),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -363,13 +363,14 @@ mod tests {
     #[test]
     fn evaluates_returns() {
         for (input, expected) in [
-            ("return 0;", 0),
-            ("return 42;", 42),
-            ("a=3; return a;", 3),
-            ("a=3; z=5; return a+z;", 8),
-            ("return 1; 2; 3;", 1),
-            ("1; return 2; 3;", 2),
-            ("1; 2; return 3;", 3),
+            ("{ return 0; }", 0),
+            ("{ return 42; }", 42),
+            ("{ a=3; return a; }", 3),
+            ("{ a=3; z=5; return a+z; }", 8),
+            ("{ return 1; 2; 3; }", 1),
+            ("{ 1; return 2; 3; }", 2),
+            ("{ 1; 2; return 3; }", 3),
+            ("{ {1; {2;} return 3;} }", 3),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -378,7 +379,7 @@ mod tests {
 
     #[test]
     fn rejects_non_lvalues_on_assignment() {
-        let error = compile_expression_program("1=2;").unwrap_err();
+        let error = compile_expression_program("{ 1=2; }").unwrap_err();
         assert_eq!(error, "not an lvalue");
     }
 

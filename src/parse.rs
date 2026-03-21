@@ -27,23 +27,15 @@ impl<'a> TokenCursor<'a> {
         self.parse_assign()
     }
 
-    /// Parse `program = stmt*`.
+    /// Parse `program = "{" compound-stmt`.
     pub(crate) fn parse_program(&mut self) -> Result<Program, String> {
-        let mut stmts = Vec::new();
-
-        while !self.at_eof() {
-            stmts.push(self.parse_stmt()?);
-        }
+        self.skip("{")?;
+        let body = self.parse_compound_stmt()?;
 
         Ok(Program {
-            body: stmts,
+            body: vec![Stmt::Block(body)],
             locals: std::mem::take(&mut self.locals),
         })
-    }
-
-    /// Check whether the current token is EOF.
-    pub(crate) fn at_eof(&self) -> bool {
-        self.current().kind == TokenKind::Eof
     }
 
     /// Format an error at the current token.
@@ -51,7 +43,7 @@ impl<'a> TokenCursor<'a> {
         format_error_at(self.input, self.current().offset, message)
     }
 
-    /// Parse `stmt = "return" expr ";" | expr-stmt`.
+    /// Parse `stmt = "return" expr ";" | "{" compound-stmt | expr-stmt`.
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_keyword("return") {
             self.advance();
@@ -60,7 +52,24 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::Return(expr));
         }
 
+        if self.at_punct("{") {
+            self.advance();
+            return Ok(Stmt::Block(self.parse_compound_stmt()?));
+        }
+
         self.parse_expr_stmt()
+    }
+
+    /// Parse `compound-stmt = stmt* "}"`.
+    fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>, String> {
+        let mut stmts = Vec::new();
+
+        while !self.at_punct("}") {
+            stmts.push(self.parse_stmt()?);
+        }
+
+        self.advance();
+        Ok(stmts)
     }
 
     /// Parse `expr-stmt = expr ";"`.

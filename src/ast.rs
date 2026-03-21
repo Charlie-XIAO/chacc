@@ -74,4 +74,5 @@ impl Node {
 pub(crate) enum Stmt {
     Expr(Node),
     Return(Node),
+    Block(Vec<Stmt>),
 }

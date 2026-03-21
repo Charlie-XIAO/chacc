@@ -36,6 +36,12 @@ impl Codegen {
                 self.assembly.push_str("  jmp .L.return\n");
                 Ok(())
             },
+            Stmt::Block(stmts) => {
+                for stmt in stmts {
+                    self.gen_stmt(stmt)?;
+                }
+                Ok(())
+            },
         }
     }
 
