@@ -2,7 +2,7 @@
 
 /// Token categories used by the parser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TokenKind {
+pub enum TokenKind {
     Ident,
     Keyword,
     Punct,
@@ -12,15 +12,15 @@ pub(crate) enum TokenKind {
 
 /// A token with its source slice and byte offset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Token<'a> {
-    pub(crate) kind: TokenKind,
-    pub(crate) lexeme: &'a str,
-    pub(crate) value: i64,
-    pub(crate) offset: usize,
+pub struct Token<'a> {
+    pub kind: TokenKind,
+    pub lexeme: &'a str,
+    pub value: i64,
+    pub offset: usize,
 }
 
 /// Convert the input string into tokens.
-pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
+pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     let mut tokens = Vec::new();
     let mut rest = input;
     let mut offset = 0;
@@ -39,12 +39,12 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         if ch.is_ascii_digit() {
             let len = rest.bytes().take_while(u8::is_ascii_digit).count();
             let lexeme = &rest[..len];
-            tokens.push(Token {
-                kind: TokenKind::Num,
+            tokens.push(Token::new(
+                TokenKind::Num,
                 lexeme,
-                value: lexeme.parse().unwrap(),
+                lexeme.parse().unwrap(),
                 offset,
-            });
+            ));
             rest = &rest[len..];
             offset += len;
             continue;
@@ -59,12 +59,7 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             } else {
                 TokenKind::Ident
             };
-            tokens.push(Token {
-                kind,
-                lexeme,
-                value: 0,
-                offset,
-            });
+            tokens.push(Token::new(kind, lexeme, 0, offset));
             rest = &rest[len..];
             offset += len;
             continue;
@@ -73,12 +68,7 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         // Punctuator
         let punct_len = read_punct(rest);
         if punct_len != 0 {
-            tokens.push(Token {
-                kind: TokenKind::Punct,
-                lexeme: &rest[..punct_len],
-                value: 0,
-                offset,
-            });
+            tokens.push(Token::new(TokenKind::Punct, &rest[..punct_len], 0, offset));
             rest = &rest[punct_len..];
             offset += punct_len;
             continue;
@@ -88,13 +78,20 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     }
 
     // EOF sentinel
-    tokens.push(Token {
-        kind: TokenKind::Eof,
-        lexeme: "",
-        value: 0,
-        offset,
-    });
+    tokens.push(Token::new(TokenKind::Eof, "", 0, offset));
     Ok(tokens)
+}
+
+impl<'a> Token<'a> {
+    /// Construct a token.
+    pub fn new(kind: TokenKind, lexeme: &'a str, value: i64, offset: usize) -> Self {
+        Self {
+            kind,
+            lexeme,
+            value,
+            offset,
+        }
+    }
 }
 
 /// Return whether the identifier is a reserved keyword.
@@ -134,6 +131,6 @@ fn read_punct(input: &str) -> usize {
 }
 
 /// Format an error with a caret pointing at the given byte offset.
-pub(crate) fn format_error_at(input: &str, offset: usize, message: &str) -> String {
+pub fn format_error_at(input: &str, offset: usize, message: &str) -> String {
     format!("{input}\n{}^ {message}", " ".repeat(offset))
 }

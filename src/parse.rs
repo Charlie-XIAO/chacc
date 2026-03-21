@@ -4,7 +4,7 @@ use crate::ast::{BinaryOp, LocalVar, Node, Program, Stmt};
 use crate::tokenize::{Token, TokenKind, format_error_at};
 
 /// Cursor over the token stream during parsing.
-pub(crate) struct TokenCursor<'a> {
+pub struct TokenCursor<'a> {
     input: &'a str,
     tokens: Vec<Token<'a>>,
     pos: usize,
@@ -13,7 +13,7 @@ pub(crate) struct TokenCursor<'a> {
 
 impl<'a> TokenCursor<'a> {
     /// Create a parser over a token stream.
-    pub(crate) fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
         Self {
             input,
             tokens,
@@ -25,14 +25,14 @@ impl<'a> TokenCursor<'a> {
     /// ```bnf
     /// <expr> ::= <assign>
     /// ```
-    pub(crate) fn parse_expr(&mut self) -> Result<Node, String> {
+    pub fn parse_expr(&mut self) -> Result<Node, String> {
         self.parse_assign()
     }
 
     /// ```bnf
     /// <program> ::= "{" <compound-stmt>
     /// ```
-    pub(crate) fn parse_program(&mut self) -> Result<Program, String> {
+    pub fn parse_program(&mut self) -> Result<Program, String> {
         let offset = self.current().offset;
         self.skip("{")?;
         let body = self.parse_compound_stmt()?;
@@ -44,7 +44,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// Format an error at the current token.
-    pub(crate) fn error_current(&self, message: &str) -> String {
+    pub fn error_current(&self, message: &str) -> String {
         format_error_at(self.input, self.current().offset, message)
     }
 
@@ -85,7 +85,7 @@ impl<'a> TokenCursor<'a> {
             let offset = self.current().offset;
             self.advance();
             self.skip("(")?;
-            let init = Some(Box::new(self.parse_expr_stmt()?));
+            let init = Box::new(self.parse_expr_stmt()?);
             let cond = if self.at_punct(";") {
                 None
             } else {
@@ -106,11 +106,11 @@ impl<'a> TokenCursor<'a> {
             let offset = self.current().offset;
             self.advance();
             self.skip("(")?;
-            let cond = Some(self.parse_expr()?);
+            let cond = self.parse_expr()?;
             self.skip(")")?;
             let body = Box::new(self.parse_stmt()?);
             // "while" can be desugared into "for" without init and inc
-            return Ok(Stmt::for_(None, cond, None, body, offset));
+            return Ok(Stmt::while_(cond, body, offset));
         }
 
         if self.at_punct("{") {

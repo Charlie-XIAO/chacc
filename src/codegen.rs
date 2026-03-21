@@ -4,7 +4,7 @@ use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Stmt, StmtKind};
 use crate::tokenize::format_error_at;
 
 /// Stateful code generator for a single function body.
-pub(crate) struct Codegen<'a> {
+pub struct Codegen<'a> {
     input: &'a str,
     assembly: String,
     depth: i32,
@@ -14,7 +14,7 @@ pub(crate) struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator with the standard function prologue.
-    pub(crate) fn new(input: &'a str, mut locals: Vec<LocalVar>) -> Self {
+    pub fn new(input: &'a str, mut locals: Vec<LocalVar>) -> Self {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
         assembly.push_str("  .globl main\n");
@@ -33,7 +33,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a statement.
-    pub(crate) fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+    pub fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr),
             StmtKind::Return(expr) => {
@@ -41,7 +41,7 @@ impl<'a> Codegen<'a> {
                 self.assembly.push_str("  jmp .L.return\n");
                 Ok(())
             },
-            StmtKind::For {
+            StmtKind::Loop {
                 init,
                 cond,
                 inc,
@@ -93,12 +93,12 @@ impl<'a> Codegen<'a> {
     }
 
     /// Check that the temporary expression stack is balanced.
-    pub(crate) fn assert_balanced(&self) {
+    pub fn assert_balanced(&self) {
         assert_eq!(self.depth, 0);
     }
 
     /// Finish code generation and return the final assembly.
-    pub(crate) fn finish(mut self) -> String {
+    pub fn finish(mut self) -> String {
         self.assembly.push_str(".L.return:\n");
         self.assembly.push_str("  mov %rbp, %rsp\n");
         self.assembly.push_str("  pop %rbp\n");

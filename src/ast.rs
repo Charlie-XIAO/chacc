@@ -2,21 +2,21 @@
 
 /// A local variable stored in the current function's stack frame.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct LocalVar {
-    pub(crate) name: String,
-    pub(crate) offset: i32,
+pub struct LocalVar {
+    pub name: String,
+    pub offset: i32,
 }
 
 /// The parsed program plus its local-variable table.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Program {
-    pub(crate) body: Vec<Stmt>,
-    pub(crate) locals: Vec<LocalVar>,
+pub struct Program {
+    pub body: Vec<Stmt>,
+    pub locals: Vec<LocalVar>,
 }
 
 /// Binary operators supported by the current expression grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BinaryOp {
+pub enum BinaryOp {
     Add,
     Sub,
     Mul,
@@ -29,14 +29,14 @@ pub(crate) enum BinaryOp {
 
 /// Expression nodes produced by the parser.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Node {
-    pub(crate) offset: usize,
-    pub(crate) kind: NodeKind,
+pub struct Node {
+    pub offset: usize,
+    pub kind: NodeKind,
 }
 
 /// The specific expression form carried by a node.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum NodeKind {
+pub enum NodeKind {
     Num(i64),
     Neg(Box<Node>),
     /// Index into the program's local-variable table.
@@ -54,7 +54,7 @@ pub(crate) enum NodeKind {
 
 impl Node {
     /// Construct a binary AST node.
-    pub(crate) fn binary(op: BinaryOp, lhs: Node, rhs: Node, offset: usize) -> Self {
+    pub fn binary(op: BinaryOp, lhs: Node, rhs: Node, offset: usize) -> Self {
         Self {
             offset,
             kind: NodeKind::Binary {
@@ -66,7 +66,7 @@ impl Node {
     }
 
     /// Construct a unary negation node.
-    pub(crate) fn neg(node: Node, offset: usize) -> Self {
+    pub fn neg(node: Node, offset: usize) -> Self {
         Self {
             offset,
             kind: NodeKind::Neg(Box::new(node)),
@@ -74,7 +74,7 @@ impl Node {
     }
 
     /// Construct an assignment node.
-    pub(crate) fn assign(lhs: Node, rhs: Node, offset: usize) -> Self {
+    pub fn assign(lhs: Node, rhs: Node, offset: usize) -> Self {
         Self {
             offset,
             kind: NodeKind::Assign {
@@ -85,7 +85,7 @@ impl Node {
     }
 
     /// Construct a numeric literal node.
-    pub(crate) fn num(value: i64, offset: usize) -> Self {
+    pub fn num(value: i64, offset: usize) -> Self {
         Self {
             offset,
             kind: NodeKind::Num(value),
@@ -93,7 +93,7 @@ impl Node {
     }
 
     /// Construct a local-variable node.
-    pub(crate) fn var(local_id: usize, offset: usize) -> Self {
+    pub fn var(local_id: usize, offset: usize) -> Self {
         Self {
             offset,
             kind: NodeKind::Var(local_id),
@@ -103,18 +103,17 @@ impl Node {
 
 /// Statements supported by the current language.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Stmt {
-    pub(crate) offset: usize,
-    pub(crate) kind: StmtKind,
+pub struct Stmt {
+    pub offset: usize,
+    pub kind: StmtKind,
 }
 
 /// The specific statement form carried by a statement node.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum StmtKind {
+pub enum StmtKind {
     Expr(Node),
     Return(Node),
-    /// Loop statement; `init`, `cond`, and `inc` are optional.
-    For {
+    Loop {
         init: Option<Box<Stmt>>,
         cond: Option<Node>,
         inc: Option<Node>,
@@ -130,7 +129,7 @@ pub(crate) enum StmtKind {
 
 impl Stmt {
     /// Construct an expression statement.
-    pub(crate) fn expr(expr: Node, offset: usize) -> Self {
+    pub fn expr(expr: Node, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Expr(expr),
@@ -138,7 +137,7 @@ impl Stmt {
     }
 
     /// Construct a return statement.
-    pub(crate) fn return_(expr: Node, offset: usize) -> Self {
+    pub fn return_(expr: Node, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Return(expr),
@@ -146,16 +145,16 @@ impl Stmt {
     }
 
     /// Construct a block statement.
-    pub(crate) fn block(stmts: Vec<Stmt>, offset: usize) -> Self {
+    pub fn block(stmts: Vec<Stmt>, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Block(stmts),
         }
     }
 
-    /// Construct a loop statement.
-    pub(crate) fn for_(
-        init: Option<Box<Stmt>>,
+    /// Construct a for-loop statement.
+    pub fn for_(
+        init: Box<Stmt>,
         cond: Option<Node>,
         inc: Option<Node>,
         body: Box<Stmt>,
@@ -163,8 +162,8 @@ impl Stmt {
     ) -> Self {
         Self {
             offset,
-            kind: StmtKind::For {
-                init,
+            kind: StmtKind::Loop {
+                init: Some(init),
                 cond,
                 inc,
                 body,
@@ -172,8 +171,21 @@ impl Stmt {
         }
     }
 
+    /// Construct a while-loop statement.
+    pub fn while_(cond: Node, body: Box<Stmt>, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Loop {
+                init: None,
+                cond: Some(cond),
+                inc: None,
+                body,
+            },
+        }
+    }
+
     /// Construct a conditional statement.
-    pub(crate) fn if_(
+    pub fn if_(
         cond: Node,
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,

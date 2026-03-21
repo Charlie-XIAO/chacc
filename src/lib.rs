@@ -237,84 +237,19 @@ mod tests {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
             vec![
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "foo123",
-                    value: 0,
-                    offset: 1,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "=",
-                    value: 0,
-                    offset: 7,
-                },
-                Token {
-                    kind: TokenKind::Num,
-                    lexeme: "3",
-                    value: 3,
-                    offset: 8,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ";",
-                    value: 0,
-                    offset: 9,
-                },
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "bar",
-                    value: 0,
-                    offset: 11,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "=",
-                    value: 0,
-                    offset: 14,
-                },
-                Token {
-                    kind: TokenKind::Num,
-                    lexeme: "5",
-                    value: 5,
-                    offset: 15,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ";",
-                    value: 0,
-                    offset: 16,
-                },
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "foo123",
-                    value: 0,
-                    offset: 18,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "+",
-                    value: 0,
-                    offset: 24,
-                },
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "bar",
-                    value: 0,
-                    offset: 25,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ";",
-                    value: 0,
-                    offset: 28,
-                },
-                Token {
-                    kind: TokenKind::Eof,
-                    lexeme: "",
-                    value: 0,
-                    offset: 29,
-                },
+                Token::new(TokenKind::Ident, "foo123", 0, 1),
+                Token::new(TokenKind::Punct, "=", 0, 7),
+                Token::new(TokenKind::Num, "3", 3, 8),
+                Token::new(TokenKind::Punct, ";", 0, 9),
+                Token::new(TokenKind::Ident, "bar", 0, 11),
+                Token::new(TokenKind::Punct, "=", 0, 14),
+                Token::new(TokenKind::Num, "5", 5, 15),
+                Token::new(TokenKind::Punct, ";", 0, 16),
+                Token::new(TokenKind::Ident, "foo123", 0, 18),
+                Token::new(TokenKind::Punct, "+", 0, 24),
+                Token::new(TokenKind::Ident, "bar", 0, 25),
+                Token::new(TokenKind::Punct, ";", 0, 28),
+                Token::new(TokenKind::Eof, "", 0, 29),
             ]
         );
     }
@@ -324,54 +259,14 @@ mod tests {
         assert_eq!(
             tokenize("if else for while return foo;").unwrap(),
             vec![
-                Token {
-                    kind: TokenKind::Keyword,
-                    lexeme: "if",
-                    value: 0,
-                    offset: 0,
-                },
-                Token {
-                    kind: TokenKind::Keyword,
-                    lexeme: "else",
-                    value: 0,
-                    offset: 3,
-                },
-                Token {
-                    kind: TokenKind::Keyword,
-                    lexeme: "for",
-                    value: 0,
-                    offset: 8,
-                },
-                Token {
-                    kind: TokenKind::Keyword,
-                    lexeme: "while",
-                    value: 0,
-                    offset: 12,
-                },
-                Token {
-                    kind: TokenKind::Keyword,
-                    lexeme: "return",
-                    value: 0,
-                    offset: 18,
-                },
-                Token {
-                    kind: TokenKind::Ident,
-                    lexeme: "foo",
-                    value: 0,
-                    offset: 25,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ";",
-                    value: 0,
-                    offset: 28,
-                },
-                Token {
-                    kind: TokenKind::Eof,
-                    lexeme: "",
-                    value: 0,
-                    offset: 29,
-                },
+                Token::new(TokenKind::Keyword, "if", 0, 0),
+                Token::new(TokenKind::Keyword, "else", 0, 3),
+                Token::new(TokenKind::Keyword, "for", 0, 8),
+                Token::new(TokenKind::Keyword, "while", 0, 12),
+                Token::new(TokenKind::Keyword, "return", 0, 18),
+                Token::new(TokenKind::Ident, "foo", 0, 25),
+                Token::new(TokenKind::Punct, ";", 0, 28),
+                Token::new(TokenKind::Eof, "", 0, 29),
             ]
         );
     }
