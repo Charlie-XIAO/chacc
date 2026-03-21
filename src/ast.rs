@@ -18,6 +18,11 @@ pub(crate) enum BinaryOp {
 pub(crate) enum Node {
     Num(i64),
     Neg(Box<Node>),
+    Var(char),
+    Assign {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    },
     Binary {
         op: BinaryOp,
         lhs: Box<Node>,
@@ -38,6 +43,14 @@ impl Node {
     /// Construct a unary negation node.
     pub(crate) fn neg(node: Node) -> Self {
         Self::Neg(Box::new(node))
+    }
+
+    /// Construct an assignment node.
+    pub(crate) fn assign(lhs: Node, rhs: Node) -> Self {
+        Self::Assign {
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
     }
 }
 

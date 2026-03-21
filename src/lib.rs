@@ -15,15 +15,16 @@ pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let mut parser = TokenCursor::new(input, tokens);
     let stmts = parser.parse_program()?;
 
-    let mut assembly = String::from("  .globl main\nmain:\n");
+    let mut assembly =
+        String::from("  .globl main\nmain:\n  push %rbp\n  mov %rsp, %rbp\n  sub $208, %rsp\n");
     let mut depth = 0;
 
     for stmt in &stmts {
-        gen_stmt(stmt, &mut assembly, &mut depth);
+        gen_stmt(stmt, &mut assembly, &mut depth)?;
         assert_eq!(depth, 0);
     }
 
-    assembly.push_str("  ret\n");
+    assembly.push_str("  mov %rbp, %rsp\n  pop %rbp\n  ret\n");
     Ok(assembly)
 }
 
@@ -43,6 +44,9 @@ mod tests {
             concat!(
                 "  .globl main\n",
                 "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $208, %rsp\n",
                 "  mov $7, %rax\n",
                 "  push %rax\n",
                 "  mov $6, %rax\n",
@@ -52,6 +56,8 @@ mod tests {
                 "  mov $5, %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
                 "  ret\n",
             )
         );
@@ -64,12 +70,17 @@ mod tests {
             concat!(
                 "  .globl main\n",
                 "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $208, %rsp\n",
                 "  mov $20, %rax\n",
                 "  push %rax\n",
                 "  mov $10, %rax\n",
                 "  neg %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
                 "  ret\n",
             )
         );
@@ -82,6 +93,9 @@ mod tests {
             concat!(
                 "  .globl main\n",
                 "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $208, %rsp\n",
                 "  mov $1, %rax\n",
                 "  push %rax\n",
                 "  mov $0, %rax\n",
@@ -89,63 +103,119 @@ mod tests {
                 "  cmp %rdi, %rax\n",
                 "  sete %al\n",
                 "  movzb %al, %rax\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
                 "  ret\n",
             )
         );
     }
 
     #[test]
-    fn tokenizes_numbers_punctuation_and_whitespace() {
+    fn emits_expected_assembly_for_assignment() {
         assert_eq!(
-            tokenize(" (12 + 34) <= 5 ").unwrap(),
+            compile_expression_program("a=3; a;").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $208, %rsp\n",
+                "  lea -8(%rbp), %rax\n",
+                "  push %rax\n",
+                "  mov $3, %rax\n",
+                "  pop %rdi\n",
+                "  mov %rax, (%rdi)\n",
+                "  lea -8(%rbp), %rax\n",
+                "  mov (%rax), %rax\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
+    fn tokenizes_identifiers_punctuation_and_whitespace() {
+        assert_eq!(
+            tokenize(" a=3; z=5; a+z;").unwrap(),
             vec![
                 Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "(",
+                    kind: TokenKind::Ident,
+                    lexeme: "a",
                     value: 0,
                     offset: 1,
                 },
                 Token {
-                    kind: TokenKind::Num,
-                    lexeme: "12",
-                    value: 12,
+                    kind: TokenKind::Punct,
+                    lexeme: "=",
+                    value: 0,
                     offset: 2,
                 },
                 Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "+",
-                    value: 0,
-                    offset: 5,
-                },
-                Token {
                     kind: TokenKind::Num,
-                    lexeme: "34",
-                    value: 34,
+                    lexeme: "3",
+                    value: 3,
+                    offset: 3,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: ";",
+                    value: 0,
+                    offset: 4,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "z",
+                    value: 0,
+                    offset: 6,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "=",
+                    value: 0,
                     offset: 7,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: ")",
-                    value: 0,
-                    offset: 9,
-                },
-                Token {
-                    kind: TokenKind::Punct,
-                    lexeme: "<=",
-                    value: 0,
-                    offset: 11,
                 },
                 Token {
                     kind: TokenKind::Num,
                     lexeme: "5",
                     value: 5,
+                    offset: 8,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: ";",
+                    value: 0,
+                    offset: 9,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "a",
+                    value: 0,
+                    offset: 11,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: "+",
+                    value: 0,
+                    offset: 12,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "z",
+                    value: 0,
+                    offset: 13,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: ";",
+                    value: 0,
                     offset: 14,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 16,
+                    offset: 15,
                 },
             ]
         );
@@ -154,7 +224,7 @@ mod tests {
     #[test]
     fn rejects_invalid_tokens() {
         let error = compile_expression_program("1+foo;").unwrap_err();
-        assert_eq!(error, "1+foo;\n  ^ invalid token");
+        assert_eq!(error, "1+foo;\n   ^ expected ';'");
     }
 
     #[test]
@@ -176,9 +246,14 @@ mod tests {
             concat!(
                 "  .globl main\n",
                 "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $208, %rsp\n",
                 "  mov $10, %rax\n",
                 "  neg %rax\n",
                 "  neg %rax\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
                 "  ret\n",
             )
         );
@@ -214,6 +289,20 @@ mod tests {
     fn evaluates_multiple_statements() {
         let asm = compile_expression_program("1; 2; 3;").unwrap();
         assert_eq!(eval_with_cc(&asm), 3);
+    }
+
+    #[test]
+    fn evaluates_assignments() {
+        for (input, expected) in [("a=3; a;", 3), ("a=3; z=5; a+z;", 8), ("a=b=3; a+b;", 6)] {
+            let asm = compile_expression_program(input).unwrap();
+            assert_eq!(eval_with_cc(&asm), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_lvalues_on_assignment() {
+        let error = compile_expression_program("1=2;").unwrap_err();
+        assert_eq!(error, "not an lvalue");
     }
 
     /// Assemble and run generated code, returning the exit status.

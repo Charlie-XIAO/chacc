@@ -20,9 +20,9 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `expr = equality`.
+    /// Parse `expr = assign`.
     pub(crate) fn parse_expr(&mut self) -> Result<Node, String> {
-        self.parse_equality()
+        self.parse_assign()
     }
 
     /// Parse `program = stmt*`.
@@ -56,6 +56,18 @@ impl<'a> TokenCursor<'a> {
         let expr = self.parse_expr()?;
         self.skip(";")?;
         Ok(Stmt::Expr(expr))
+    }
+
+    /// Parse `assign = equality ("=" assign)?`.
+    fn parse_assign(&mut self) -> Result<Node, String> {
+        let node = self.parse_equality()?;
+
+        if self.equal("=") {
+            self.advance();
+            return Ok(Node::assign(node, self.parse_assign()?));
+        }
+
+        Ok(node)
     }
 
     /// Parse `equality = relational ("==" relational | "!=" relational)*`.
@@ -169,7 +181,7 @@ impl<'a> TokenCursor<'a> {
         self.parse_primary()
     }
 
-    /// Parse `primary = "(" expr ")" | num`.
+    /// Parse `primary = "(" expr ")" | ident | num`.
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.equal("(") {
             self.advance();
@@ -179,6 +191,11 @@ impl<'a> TokenCursor<'a> {
         }
 
         let tok = self.current();
+        if tok.kind == TokenKind::Ident {
+            self.advance();
+            return Ok(Node::Var(tok.lexeme.chars().next().unwrap()));
+        }
+
         if tok.kind == TokenKind::Num {
             self.advance();
             return Ok(Node::Num(tok.value));

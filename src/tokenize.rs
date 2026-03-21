@@ -3,6 +3,7 @@
 /// Token categories used by the parser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TokenKind {
+    Ident,
     Punct,
     Num,
     Eof,
@@ -56,6 +57,18 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             });
             rest = &rest[len..];
             offset += len;
+            continue;
+        }
+
+        if ch.is_ascii_lowercase() {
+            tokens.push(Token {
+                kind: TokenKind::Ident,
+                lexeme: &rest[..1],
+                value: 0,
+                offset,
+            });
+            rest = &rest[1..];
+            offset += 1;
             continue;
         }
 
