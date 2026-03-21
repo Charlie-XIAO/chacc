@@ -1,0 +1,191 @@
+//! Recursive-descent parser for chacc expressions.
+
+use crate::ast::{BinaryOp, Node};
+use crate::tokenize::{Token, TokenKind, format_error_at};
+
+/// Cursor over the token stream during parsing.
+pub(crate) struct TokenCursor<'a> {
+    input: &'a str,
+    tokens: Vec<Token<'a>>,
+    pos: usize,
+}
+
+impl<'a> TokenCursor<'a> {
+    /// Create a parser over a token stream.
+    pub(crate) fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
+        Self {
+            input,
+            tokens,
+            pos: 0,
+        }
+    }
+
+    /// Parse `expr = equality`.
+    pub(crate) fn parse_expr(&mut self) -> Result<Node, String> {
+        self.parse_equality()
+    }
+
+    /// Check whether the current token is EOF.
+    pub(crate) fn at_eof(&self) -> bool {
+        self.current().kind == TokenKind::Eof
+    }
+
+    /// Format an error at the current token.
+    pub(crate) fn error_current(&self, message: &str) -> String {
+        format_error_at(self.input, self.current().offset, message)
+    }
+
+    /// Parse `equality = relational ("==" relational | "!=" relational)*`.
+    fn parse_equality(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_relational()?;
+
+        loop {
+            if self.equal("==") {
+                self.advance();
+                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?);
+                continue;
+            }
+
+            if self.equal("!=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `relational = add ("<" add | "<=" add | ">" add | ">=" add)*`.
+    fn parse_relational(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_add()?;
+
+        loop {
+            if self.equal("<") {
+                self.advance();
+                node = Node::binary(BinaryOp::Lt, node, self.parse_add()?);
+                continue;
+            }
+
+            if self.equal("<=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Le, node, self.parse_add()?);
+                continue;
+            }
+
+            if self.equal(">") {
+                self.advance();
+                node = Node::binary(BinaryOp::Lt, self.parse_add()?, node);
+                continue;
+            }
+
+            if self.equal(">=") {
+                self.advance();
+                node = Node::binary(BinaryOp::Le, self.parse_add()?, node);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `add = mul ("+" mul | "-" mul)*`.
+    fn parse_add(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_mul()?;
+
+        loop {
+            if self.equal("+") {
+                self.advance();
+                node = Node::binary(BinaryOp::Add, node, self.parse_mul()?);
+                continue;
+            }
+
+            if self.equal("-") {
+                self.advance();
+                node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `mul = unary ("*" unary | "/" unary)*`.
+    fn parse_mul(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_unary()?;
+
+        loop {
+            if self.equal("*") {
+                self.advance();
+                node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?);
+                continue;
+            }
+
+            if self.equal("/") {
+                self.advance();
+                node = Node::binary(BinaryOp::Div, node, self.parse_unary()?);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// Parse `unary = ("+" | "-") unary | primary`.
+    fn parse_unary(&mut self) -> Result<Node, String> {
+        if self.equal("+") {
+            self.advance();
+            return self.parse_unary();
+        }
+
+        if self.equal("-") {
+            self.advance();
+            return Ok(Node::neg(self.parse_unary()?));
+        }
+
+        self.parse_primary()
+    }
+
+    /// Parse `primary = "(" expr ")" | num`.
+    fn parse_primary(&mut self) -> Result<Node, String> {
+        if self.equal("(") {
+            self.advance();
+            let node = self.parse_expr()?;
+            self.skip(")")?;
+            return Ok(node);
+        }
+
+        let tok = self.current();
+        if tok.kind == TokenKind::Num {
+            self.advance();
+            return Ok(Node::Num(tok.value));
+        }
+
+        Err(self.error_current("expected an expression"))
+    }
+
+    /// Advance to the next token.
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
+
+    /// Return the current token.
+    fn current(&self) -> Token<'a> {
+        self.tokens[self.pos]
+    }
+
+    /// Check whether the current token matches a punctuator.
+    fn equal(&self, expected: &str) -> bool {
+        let tok = self.current();
+        tok.kind == TokenKind::Punct && tok.lexeme == expected
+    }
+
+    /// Consume a specific punctuator.
+    fn skip(&mut self, expected: &str) -> Result<(), String> {
+        if !self.equal(expected) {
+            return Err(self.error_current(&format!("expected '{expected}'")));
+        }
+        self.advance();
+        Ok(())
+    }
+}

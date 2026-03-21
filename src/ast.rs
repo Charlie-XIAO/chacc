@@ -1,0 +1,42 @@
+//! AST node definitions shared by the parser and code generator.
+
+/// Binary operators supported by the current expression grammar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+}
+
+/// Expression nodes produced by the parser.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum Node {
+    Num(i64),
+    Neg(Box<Node>),
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    },
+}
+
+impl Node {
+    /// Construct a binary AST node.
+    pub(crate) fn binary(op: BinaryOp, lhs: Node, rhs: Node) -> Self {
+        Self::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    /// Construct a unary negation node.
+    pub(crate) fn neg(node: Node) -> Self {
+        Self::Neg(Box::new(node))
+    }
+}
