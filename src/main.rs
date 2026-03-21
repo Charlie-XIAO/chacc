@@ -20,7 +20,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("{message}");
             ExitCode::FAILURE
-        }
+        },
     }
 }
 
