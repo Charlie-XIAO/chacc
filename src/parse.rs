@@ -1,7 +1,7 @@
-//! Recursive-descent parser for chacc expressions.
+//! A recursive-descent parser.
 
 use crate::ast::{BinaryOp, LocalVar, Node, Program, Stmt};
-use crate::tokenize::{Token, TokenKind, format_error_at};
+use crate::tokenize::{Keyword, Token, TokenKind, format_error_at};
 
 /// Cursor over the token stream during parsing.
 pub struct TokenCursor<'a> {
@@ -34,7 +34,7 @@ impl<'a> TokenCursor<'a> {
     /// ```
     pub fn parse_program(&mut self) -> Result<Program, String> {
         let offset = self.current().offset;
-        self.skip("{")?;
+        self.skip_punct("{")?;
         let body = self.parse_compound_stmt()?;
 
         Ok(Program {
@@ -57,22 +57,22 @@ impl<'a> TokenCursor<'a> {
     ///          | <expr-stmt>
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
-        if self.at_keyword("return") {
+        if self.at_keyword(Keyword::Return) {
             let offset = self.current().offset;
             self.advance();
             let expr = self.parse_expr()?;
-            self.skip(";")?;
+            self.skip_punct(";")?;
             return Ok(Stmt::return_(expr, offset));
         }
 
-        if self.at_keyword("if") {
+        if self.at_keyword(Keyword::If) {
             let offset = self.current().offset;
             self.advance();
-            self.skip("(")?;
+            self.skip_punct("(")?;
             let cond = self.parse_expr()?;
-            self.skip(")")?;
+            self.skip_punct(")")?;
             let then_branch = Box::new(self.parse_stmt()?);
-            let else_branch = if self.at_keyword("else") {
+            let else_branch = if self.at_keyword(Keyword::Else) {
                 self.advance();
                 Some(Box::new(self.parse_stmt()?))
             } else {
@@ -81,33 +81,33 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::if_(cond, then_branch, else_branch, offset));
         }
 
-        if self.at_keyword("for") {
+        if self.at_keyword(Keyword::For) {
             let offset = self.current().offset;
             self.advance();
-            self.skip("(")?;
+            self.skip_punct("(")?;
             let init = Box::new(self.parse_expr_stmt()?);
             let cond = if self.at_punct(";") {
                 None
             } else {
                 Some(self.parse_expr()?)
             };
-            self.skip(";")?;
+            self.skip_punct(";")?;
             let inc = if self.at_punct(")") {
                 None
             } else {
                 Some(self.parse_expr()?)
             };
-            self.skip(")")?;
+            self.skip_punct(")")?;
             let body = Box::new(self.parse_stmt()?);
             return Ok(Stmt::for_(init, cond, inc, body, offset));
         }
 
-        if self.at_keyword("while") {
+        if self.at_keyword(Keyword::While) {
             let offset = self.current().offset;
             self.advance();
-            self.skip("(")?;
+            self.skip_punct("(")?;
             let cond = self.parse_expr()?;
-            self.skip(")")?;
+            self.skip_punct(")")?;
             let body = Box::new(self.parse_stmt()?);
             // "while" can be desugared into "for" without init and inc
             return Ok(Stmt::while_(cond, body, offset));
@@ -148,7 +148,7 @@ impl<'a> TokenCursor<'a> {
 
         let offset = self.current().offset;
         let expr = self.parse_expr()?;
-        self.skip(";")?;
+        self.skip_punct(";")?;
         Ok(Stmt::expr(expr, offset))
     }
 
@@ -308,19 +308,19 @@ impl<'a> TokenCursor<'a> {
         if self.at_punct("(") {
             self.advance();
             let node = self.parse_expr()?;
-            self.skip(")")?;
+            self.skip_punct(")")?;
             return Ok(node);
         }
 
         let tok = self.current();
-        if tok.kind == TokenKind::Ident {
+        if let TokenKind::Ident(name) = tok.kind {
             self.advance();
-            return Ok(Node::var(self.find_or_create_local(tok.lexeme), tok.offset));
+            return Ok(Node::var(self.find_or_create_local(name), tok.offset));
         }
 
-        if tok.kind == TokenKind::Num {
+        if let TokenKind::Num(value) = tok.kind {
             self.advance();
-            return Ok(Node::num(tok.value, tok.offset));
+            return Ok(Node::num(value, tok.offset));
         }
 
         Err(self.error_current("expected an expression"))
@@ -339,17 +339,20 @@ impl<'a> TokenCursor<'a> {
     /// Check whether the current token matches a punctuator.
     fn at_punct(&self, expected: &str) -> bool {
         let tok = self.current();
-        tok.kind == TokenKind::Punct && tok.lexeme == expected
+        tok.kind == TokenKind::Punct(expected)
     }
 
     /// Check whether the current token matches a keyword.
-    fn at_keyword(&self, expected: &str) -> bool {
+    fn at_keyword(&self, expected: Keyword) -> bool {
         let tok = self.current();
-        tok.kind == TokenKind::Keyword && tok.lexeme == expected
+        tok.kind == TokenKind::Keyword(expected)
     }
 
     /// Consume a specific punctuator.
-    fn skip(&mut self, expected: &str) -> Result<(), String> {
+    ///
+    /// This returns an error if the current token does not match the expected
+    /// punctuator.
+    fn skip_punct(&mut self, expected: &str) -> Result<(), String> {
         if !self.at_punct(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
@@ -358,15 +361,17 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// Find an existing local or create a new one.
+    ///
+    /// An index of the local variable is returned, which will be used to assign
+    /// offset during code generation.
     fn find_or_create_local(&mut self, name: &str) -> usize {
         if let Some(index) = self.locals.iter().position(|local| local.name == name) {
             return index;
         }
 
-        // Stable local id - offset assigned later
         self.locals.push(LocalVar {
             name: name.to_owned(),
-            offset: 0,
+            offset: 0, // To be assigned later during codegen
         });
         self.locals.len() - 1
     }

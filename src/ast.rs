@@ -1,20 +1,22 @@
-//! AST node definitions shared by the parser and code generator.
+//! AST node definitions.
 
 /// A local variable stored in the current function's stack frame.
 #[derive(Debug, Eq, PartialEq)]
 pub struct LocalVar {
     pub name: String,
+    /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i32,
 }
 
-/// The parsed program plus its local-variable table.
+/// The parsed program.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Program {
     pub body: Vec<Stmt>,
+    /// The local variable table used by the program.
     pub locals: Vec<LocalVar>,
 }
 
-/// Binary operators supported by the current expression grammar.
+/// Binary operators.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BinaryOp {
     Add,
@@ -27,24 +29,29 @@ pub enum BinaryOp {
     Le,
 }
 
-/// Expression nodes produced by the parser.
+/// An AST node representing an expression.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Node {
-    pub offset: usize,
     pub kind: NodeKind,
+    /// The offset from the start of the source code in bytes.
+    pub offset: usize,
 }
 
-/// The specific expression form carried by a node.
+/// The specific expression form carried by [`Node`].
 #[derive(Debug, Eq, PartialEq)]
 pub enum NodeKind {
+    /// A numeric literal.
     Num(i64),
+    /// A unary negation.
     Neg(Box<Node>),
-    /// Index into the program's local-variable table.
+    /// A local variable.
+    ///
+    /// The `usize` is the local variable's ID, which is an index into the
+    /// program's local variable table [`Program::locals`].
     Var(usize),
-    Assign {
-        lhs: Box<Node>,
-        rhs: Box<Node>,
-    },
+    /// An assignment.
+    Assign { lhs: Box<Node>, rhs: Box<Node> },
+    /// A binary operation.
     Binary {
         op: BinaryOp,
         lhs: Box<Node>,
@@ -101,29 +108,39 @@ impl Node {
     }
 }
 
-/// Statements supported by the current language.
+/// An AST node representing a statement.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Stmt {
-    pub offset: usize,
     pub kind: StmtKind,
+    /// The offset from the start of the source code in bytes.
+    pub offset: usize,
 }
 
-/// The specific statement form carried by a statement node.
+/// The specific statement form carried by [`Stmt`].
 #[derive(Debug, Eq, PartialEq)]
 pub enum StmtKind {
+    /// An expression statement.
     Expr(Node),
+    /// A return statement.
     Return(Node),
+    /// A for-loop or while-loop statement.
     Loop {
+        /// Initialization statement, only used optionally for for-loops.
         init: Option<Box<Stmt>>,
+        /// Loop condition, optional for for-loops.
         cond: Option<Node>,
+        /// Loop increment, only used optionally for for-loops.
         inc: Option<Node>,
+        /// Loop body.
         body: Box<Stmt>,
     },
+    /// An if-else statement.
     If {
         cond: Node,
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,
     },
+    /// A block statement.
     Block(Vec<Stmt>),
 }
 

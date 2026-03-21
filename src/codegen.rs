@@ -1,9 +1,9 @@
-//! Assembly generation from the AST.
+//! Generate x86-64 assembly from an AST.
 
 use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Stmt, StmtKind};
 use crate::tokenize::format_error_at;
 
-/// Stateful code generator for a single function body.
+/// Code generator for a single function body.
 pub struct Codegen<'a> {
     input: &'a str,
     assembly: String,
@@ -92,7 +92,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Check that the temporary expression stack is balanced.
+    /// Assert that the temporary expression stack is balanced.
     pub fn assert_balanced(&self) {
         assert_eq!(self.depth, 0);
     }

@@ -1,4 +1,4 @@
-//! The Cha C compiler (chacc) library.
+//! The Cha C compiler (chacc).
 
 mod ast;
 mod codegen;
@@ -32,7 +32,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::compile_expression_program;
-    use crate::tokenize::{Token, TokenKind, tokenize};
+    use crate::tokenize::{Keyword, Token, tokenize};
 
     #[test]
     fn emits_expected_assembly() {
@@ -237,19 +237,19 @@ mod tests {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
             vec![
-                Token::new(TokenKind::Ident, "foo123", 0, 1),
-                Token::new(TokenKind::Punct, "=", 0, 7),
-                Token::new(TokenKind::Num, "3", 3, 8),
-                Token::new(TokenKind::Punct, ";", 0, 9),
-                Token::new(TokenKind::Ident, "bar", 0, 11),
-                Token::new(TokenKind::Punct, "=", 0, 14),
-                Token::new(TokenKind::Num, "5", 5, 15),
-                Token::new(TokenKind::Punct, ";", 0, 16),
-                Token::new(TokenKind::Ident, "foo123", 0, 18),
-                Token::new(TokenKind::Punct, "+", 0, 24),
-                Token::new(TokenKind::Ident, "bar", 0, 25),
-                Token::new(TokenKind::Punct, ";", 0, 28),
-                Token::new(TokenKind::Eof, "", 0, 29),
+                Token::ident(1, "foo123"),
+                Token::punct(7, "="),
+                Token::num(8, 3),
+                Token::punct(9, ";"),
+                Token::ident(11, "bar"),
+                Token::punct(14, "="),
+                Token::num(15, 5),
+                Token::punct(16, ";"),
+                Token::ident(18, "foo123"),
+                Token::punct(24, "+"),
+                Token::ident(25, "bar"),
+                Token::punct(28, ";"),
+                Token::eof(29),
             ]
         );
     }
@@ -259,14 +259,14 @@ mod tests {
         assert_eq!(
             tokenize("if else for while return foo;").unwrap(),
             vec![
-                Token::new(TokenKind::Keyword, "if", 0, 0),
-                Token::new(TokenKind::Keyword, "else", 0, 3),
-                Token::new(TokenKind::Keyword, "for", 0, 8),
-                Token::new(TokenKind::Keyword, "while", 0, 12),
-                Token::new(TokenKind::Keyword, "return", 0, 18),
-                Token::new(TokenKind::Ident, "foo", 0, 25),
-                Token::new(TokenKind::Punct, ";", 0, 28),
-                Token::new(TokenKind::Eof, "", 0, 29),
+                Token::keyword(0, Keyword::If),
+                Token::keyword(3, Keyword::Else),
+                Token::keyword(8, Keyword::For),
+                Token::keyword(12, Keyword::While),
+                Token::keyword(18, Keyword::Return),
+                Token::ident(25, "foo"),
+                Token::punct(28, ";"),
+                Token::eof(29),
             ]
         );
     }

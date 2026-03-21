@@ -1,25 +1,63 @@
 //! Tokenizer and diagnostic helpers.
 
-/// Token categories used by the parser.
+/// Reserved keywords recognized by the tokenizer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TokenKind {
-    Ident,
-    Keyword,
-    Punct,
-    Num,
+pub enum Keyword {
+    Return,
+    If,
+    Else,
+    For,
+    While,
+}
+
+impl std::fmt::Display for Keyword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Return => "return",
+            Self::If => "if",
+            Self::Else => "else",
+            Self::For => "for",
+            Self::While => "while",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl std::convert::TryFrom<&str> for Keyword {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "return" => Ok(Self::Return),
+            "if" => Ok(Self::If),
+            "else" => Ok(Self::Else),
+            "for" => Ok(Self::For),
+            "while" => Ok(Self::While),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Token kinds recognized by the tokenizer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TokenKind<'a> {
+    Ident(&'a str),
+    Keyword(Keyword),
+    Punct(&'a str),
+    Num(i64),
+    /// A sentinel token representing the end of the input.
     Eof,
 }
 
-/// A token with its source slice and byte offset.
+/// A token.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Token<'a> {
-    pub kind: TokenKind,
-    pub lexeme: &'a str,
-    pub value: i64,
+    pub kind: TokenKind<'a>,
+    /// The byte offset of the token in the input string.
     pub offset: usize,
 }
 
-/// Convert the input string into tokens.
+/// Convert the input string into a sequence of tokens.
 pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     let mut tokens = Vec::new();
     let mut rest = input;
@@ -39,12 +77,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         if ch.is_ascii_digit() {
             let len = rest.bytes().take_while(u8::is_ascii_digit).count();
             let lexeme = &rest[..len];
-            tokens.push(Token::new(
-                TokenKind::Num,
-                lexeme,
-                lexeme.parse().unwrap(),
-                offset,
-            ));
+            tokens.push(Token::num(offset, lexeme.parse().unwrap()));
             rest = &rest[len..];
             offset += len;
             continue;
@@ -54,12 +87,12 @@ pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         if is_ident1(ch) {
             let len = rest.bytes().take_while(|byte| is_ident2(*byte)).count();
             let lexeme = &rest[..len];
-            let kind = if is_keyword(lexeme) {
-                TokenKind::Keyword
+            let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
+                Token::keyword(offset, keyword)
             } else {
-                TokenKind::Ident
+                Token::ident(offset, lexeme)
             };
-            tokens.push(Token::new(kind, lexeme, 0, offset));
+            tokens.push(token);
             rest = &rest[len..];
             offset += len;
             continue;
@@ -68,7 +101,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         // Punctuator
         let punct_len = read_punct(rest);
         if punct_len != 0 {
-            tokens.push(Token::new(TokenKind::Punct, &rest[..punct_len], 0, offset));
+            tokens.push(Token::punct(offset, &rest[..punct_len]));
             rest = &rest[punct_len..];
             offset += punct_len;
             continue;
@@ -77,26 +110,50 @@ pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         return Err(format_error_at(input, offset, "invalid token"));
     }
 
-    // EOF sentinel
-    tokens.push(Token::new(TokenKind::Eof, "", 0, offset));
+    tokens.push(Token::eof(offset));
     Ok(tokens)
 }
 
 impl<'a> Token<'a> {
-    /// Construct a token.
-    pub fn new(kind: TokenKind, lexeme: &'a str, value: i64, offset: usize) -> Self {
+    /// Construct an identifier token.
+    pub fn ident(offset: usize, lexeme: &'a str) -> Self {
         Self {
-            kind,
-            lexeme,
-            value,
             offset,
+            kind: TokenKind::Ident(lexeme),
         }
     }
-}
 
-/// Return whether the identifier is a reserved keyword.
-fn is_keyword(lexeme: &str) -> bool {
-    matches!(lexeme, "return" | "if" | "else" | "for" | "while")
+    /// Construct a keyword token.
+    pub fn keyword(offset: usize, keyword: Keyword) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Keyword(keyword),
+        }
+    }
+
+    /// Construct a punctuation token.
+    pub fn punct(offset: usize, lexeme: &'a str) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Punct(lexeme),
+        }
+    }
+
+    /// Construct a numeric token.
+    pub fn num(offset: usize, value: i64) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Num(value),
+        }
+    }
+
+    /// Construct the EOF sentinel.
+    pub fn eof(offset: usize) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Eof,
+        }
+    }
 }
 
 /// Return whether the byte is valid at the start of an identifier.
