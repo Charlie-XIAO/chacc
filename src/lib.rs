@@ -53,6 +53,7 @@ mod tests {
                 "  mov $5, %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
+                ".L.return:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -76,6 +77,7 @@ mod tests {
                 "  neg %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
+                ".L.return:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -100,6 +102,7 @@ mod tests {
                 "  cmp %rdi, %rax\n",
                 "  sete %al\n",
                 "  movzb %al, %rax\n",
+                ".L.return:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -124,6 +127,27 @@ mod tests {
                 "  mov %rax, (%rdi)\n",
                 "  lea -8(%rbp), %rax\n",
                 "  mov (%rax), %rax\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
+    fn emits_expected_assembly_for_return() {
+        assert_eq!(
+            compile_expression_program("return 42;").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $0, %rsp\n",
+                "  mov $42, %rax\n",
+                "  jmp .L.return\n",
+                ".L.return:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -219,6 +243,39 @@ mod tests {
     }
 
     #[test]
+    fn tokenizes_return_as_a_keyword() {
+        assert_eq!(
+            tokenize("return foo;").unwrap(),
+            vec![
+                Token {
+                    kind: TokenKind::Keyword,
+                    lexeme: "return",
+                    value: 0,
+                    offset: 0,
+                },
+                Token {
+                    kind: TokenKind::Ident,
+                    lexeme: "foo",
+                    value: 0,
+                    offset: 7,
+                },
+                Token {
+                    kind: TokenKind::Punct,
+                    lexeme: ";",
+                    value: 0,
+                    offset: 10,
+                },
+                Token {
+                    kind: TokenKind::Eof,
+                    lexeme: "",
+                    value: 0,
+                    offset: 11,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_invalid_tokens() {
         let error = compile_expression_program("1+@;").unwrap_err();
         assert_eq!(error, "1+@;\n  ^ expected an expression");
@@ -249,6 +306,7 @@ mod tests {
                 "  mov $10, %rax\n",
                 "  neg %rax\n",
                 "  neg %rax\n",
+                ".L.return:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -296,6 +354,22 @@ mod tests {
             ("a=b=3; a+b;", 6),
             ("foo=3; foo;", 3),
             ("foo123=3; bar=5; foo123+bar;", 8),
+        ] {
+            let asm = compile_expression_program(input).unwrap();
+            assert_eq!(eval_with_cc(&asm), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn evaluates_returns() {
+        for (input, expected) in [
+            ("return 0;", 0),
+            ("return 42;", 42),
+            ("a=3; return a;", 3),
+            ("a=3; z=5; return a+z;", 8),
+            ("return 1; 2; 3;", 1),
+            ("1; return 2; 3;", 2),
+            ("1; 2; return 3;", 3),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");

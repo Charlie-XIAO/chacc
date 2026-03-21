@@ -31,6 +31,11 @@ impl Codegen {
     pub(crate) fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match stmt {
             Stmt::Expr(expr) => self.gen_expr(expr),
+            Stmt::Return(expr) => {
+                self.gen_expr(expr)?;
+                self.assembly.push_str("  jmp .L.return\n");
+                Ok(())
+            },
         }
     }
 
@@ -41,6 +46,7 @@ impl Codegen {
 
     /// Finish code generation and return the final assembly.
     pub(crate) fn finish(mut self) -> String {
+        self.assembly.push_str(".L.return:\n");
         self.assembly.push_str("  mov %rbp, %rsp\n");
         self.assembly.push_str("  pop %rbp\n");
         self.assembly.push_str("  ret\n");
@@ -139,6 +145,7 @@ impl Codegen {
 fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i32 {
     let mut offset = 0;
 
+    // The first parsed local stays closest to `%rbp`
     for local in locals.iter_mut().rev() {
         offset += 8;
         local.offset = -offset;

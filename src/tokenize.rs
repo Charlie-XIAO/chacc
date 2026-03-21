@@ -4,6 +4,7 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TokenKind {
     Ident,
+    Keyword,
     Punct,
     Num,
     Eof,
@@ -27,25 +28,14 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
     while !rest.is_empty() {
         let ch = rest.as_bytes()[0];
 
+        // Skip whitespace characters
         if ch.is_ascii_whitespace() {
             rest = &rest[1..];
             offset += 1;
             continue;
         }
 
-        let punct_len = read_punct(rest);
-        if punct_len != 0 {
-            tokens.push(Token {
-                kind: TokenKind::Punct,
-                lexeme: &rest[..punct_len],
-                value: 0,
-                offset,
-            });
-            rest = &rest[punct_len..];
-            offset += punct_len;
-            continue;
-        }
-
+        // Numeric literal
         if ch.is_ascii_digit() {
             let len = rest.bytes().take_while(u8::is_ascii_digit).count();
             let lexeme = &rest[..len];
@@ -60,16 +50,37 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
             continue;
         }
 
+        // Identifier or keyword
         if is_ident1(ch) {
             let len = rest.bytes().take_while(|byte| is_ident2(*byte)).count();
+            let lexeme = &rest[..len];
+            let kind = if lexeme == "return" {
+                TokenKind::Keyword
+            } else {
+                TokenKind::Ident
+            };
             tokens.push(Token {
-                kind: TokenKind::Ident,
-                lexeme: &rest[..len],
+                kind,
+                lexeme,
                 value: 0,
                 offset,
             });
             rest = &rest[len..];
             offset += len;
+            continue;
+        }
+
+        // Punctuator
+        let punct_len = read_punct(rest);
+        if punct_len != 0 {
+            tokens.push(Token {
+                kind: TokenKind::Punct,
+                lexeme: &rest[..punct_len],
+                value: 0,
+                offset,
+            });
+            rest = &rest[punct_len..];
+            offset += punct_len;
             continue;
         }
 

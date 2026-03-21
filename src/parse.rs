@@ -51,8 +51,15 @@ impl<'a> TokenCursor<'a> {
         format_error_at(self.input, self.current().offset, message)
     }
 
-    /// Parse `stmt = expr-stmt`.
+    /// Parse `stmt = "return" expr ";" | expr-stmt`.
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        if self.at_keyword("return") {
+            self.advance();
+            let expr = self.parse_expr()?;
+            self.skip(";")?;
+            return Ok(Stmt::Return(expr));
+        }
+
         self.parse_expr_stmt()
     }
 
@@ -67,7 +74,7 @@ impl<'a> TokenCursor<'a> {
     fn parse_assign(&mut self) -> Result<Node, String> {
         let node = self.parse_equality()?;
 
-        if self.equal("=") {
+        if self.at_punct("=") {
             self.advance();
             return Ok(Node::assign(node, self.parse_assign()?));
         }
@@ -80,13 +87,13 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_relational()?;
 
         loop {
-            if self.equal("==") {
+            if self.at_punct("==") {
                 self.advance();
                 node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?);
                 continue;
             }
 
-            if self.equal("!=") {
+            if self.at_punct("!=") {
                 self.advance();
                 node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?);
                 continue;
@@ -101,26 +108,28 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_add()?;
 
         loop {
-            if self.equal("<") {
+            if self.at_punct("<") {
                 self.advance();
                 node = Node::binary(BinaryOp::Lt, node, self.parse_add()?);
                 continue;
             }
 
-            if self.equal("<=") {
+            if self.at_punct("<=") {
                 self.advance();
                 node = Node::binary(BinaryOp::Le, node, self.parse_add()?);
                 continue;
             }
 
-            if self.equal(">") {
+            if self.at_punct(">") {
                 self.advance();
+                // Reuse < with flipped operands
                 node = Node::binary(BinaryOp::Lt, self.parse_add()?, node);
                 continue;
             }
 
-            if self.equal(">=") {
+            if self.at_punct(">=") {
                 self.advance();
+                // Reuse <= with flipped operands
                 node = Node::binary(BinaryOp::Le, self.parse_add()?, node);
                 continue;
             }
@@ -134,13 +143,13 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_mul()?;
 
         loop {
-            if self.equal("+") {
+            if self.at_punct("+") {
                 self.advance();
                 node = Node::binary(BinaryOp::Add, node, self.parse_mul()?);
                 continue;
             }
 
-            if self.equal("-") {
+            if self.at_punct("-") {
                 self.advance();
                 node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?);
                 continue;
@@ -155,13 +164,13 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_unary()?;
 
         loop {
-            if self.equal("*") {
+            if self.at_punct("*") {
                 self.advance();
                 node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?);
                 continue;
             }
 
-            if self.equal("/") {
+            if self.at_punct("/") {
                 self.advance();
                 node = Node::binary(BinaryOp::Div, node, self.parse_unary()?);
                 continue;
@@ -173,12 +182,12 @@ impl<'a> TokenCursor<'a> {
 
     /// Parse `unary = ("+" | "-") unary | primary`.
     fn parse_unary(&mut self) -> Result<Node, String> {
-        if self.equal("+") {
+        if self.at_punct("+") {
             self.advance();
             return self.parse_unary();
         }
 
-        if self.equal("-") {
+        if self.at_punct("-") {
             self.advance();
             return Ok(Node::neg(self.parse_unary()?));
         }
@@ -188,7 +197,7 @@ impl<'a> TokenCursor<'a> {
 
     /// Parse `primary = "(" expr ")" | ident | num`.
     fn parse_primary(&mut self) -> Result<Node, String> {
-        if self.equal("(") {
+        if self.at_punct("(") {
             self.advance();
             let node = self.parse_expr()?;
             self.skip(")")?;
@@ -220,14 +229,20 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// Check whether the current token matches a punctuator.
-    fn equal(&self, expected: &str) -> bool {
+    fn at_punct(&self, expected: &str) -> bool {
         let tok = self.current();
         tok.kind == TokenKind::Punct && tok.lexeme == expected
     }
 
+    /// Check whether the current token matches a keyword.
+    fn at_keyword(&self, expected: &str) -> bool {
+        let tok = self.current();
+        tok.kind == TokenKind::Keyword && tok.lexeme == expected
+    }
+
     /// Consume a specific punctuator.
     fn skip(&mut self, expected: &str) -> Result<(), String> {
-        if !self.equal(expected) {
+        if !self.at_punct(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
         self.advance();
@@ -240,6 +255,7 @@ impl<'a> TokenCursor<'a> {
             return index;
         }
 
+        // Stable local id - offset assigned later
         self.locals.push(LocalVar {
             name: name.to_owned(),
             offset: 0,

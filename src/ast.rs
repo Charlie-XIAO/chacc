@@ -73,4 +73,5 @@ impl Node {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum Stmt {
     Expr(Node),
+    Return(Node),
 }
