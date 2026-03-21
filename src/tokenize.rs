@@ -99,7 +99,7 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
 
 /// Return whether the identifier is a reserved keyword.
 fn is_keyword(lexeme: &str) -> bool {
-    matches!(lexeme, "return" | "if" | "else" | "for")
+    matches!(lexeme, "return" | "if" | "else" | "for" | "while")
 }
 
 /// Return whether the byte is valid at the start of an identifier.

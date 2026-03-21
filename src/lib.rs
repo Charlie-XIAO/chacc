@@ -207,6 +207,32 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_while() {
+        assert_eq!(
+            compile_expression_program("{ while (0) return 3; }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $0, %rsp\n",
+                ".L.begin.1:\n",
+                "  mov $0, %rax\n",
+                "  cmp $0, %rax\n",
+                "  je  .L.end.1\n",
+                "  mov $3, %rax\n",
+                "  jmp .L.return\n",
+                "  jmp .L.begin.1\n",
+                ".L.end.1:\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -296,7 +322,7 @@ mod tests {
     #[test]
     fn tokenizes_keywords() {
         assert_eq!(
-            tokenize("if else for return foo;").unwrap(),
+            tokenize("if else for while return foo;").unwrap(),
             vec![
                 Token {
                     kind: TokenKind::Keyword,
@@ -318,27 +344,33 @@ mod tests {
                 },
                 Token {
                     kind: TokenKind::Keyword,
-                    lexeme: "return",
+                    lexeme: "while",
                     value: 0,
                     offset: 12,
+                },
+                Token {
+                    kind: TokenKind::Keyword,
+                    lexeme: "return",
+                    value: 0,
+                    offset: 18,
                 },
                 Token {
                     kind: TokenKind::Ident,
                     lexeme: "foo",
                     value: 0,
-                    offset: 19,
+                    offset: 25,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: ";",
                     value: 0,
-                    offset: 22,
+                    offset: 28,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 23,
+                    offset: 29,
                 },
             ]
         );
@@ -452,6 +484,7 @@ mod tests {
             ("{ if (1) { 1; 2; return 3; } else { return 4; } }", 3),
             ("{ i=0; j=0; for (i=0; i<=10; i=i+1) j=i+j; return j; }", 55),
             ("{ for (;;) {return 3;} return 5; }", 3),
+            ("{ i=0; while(i<10) { i=i+1; } return i; }", 10),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");

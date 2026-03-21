@@ -45,7 +45,9 @@ impl Codegen {
                 body,
             } => {
                 let label = self.take_label();
-                self.gen_stmt(init)?;
+                if let Some(init) = init {
+                    self.gen_stmt(init)?;
+                }
                 self.assembly.push_str(&format!(".L.begin.{label}:\n"));
                 if let Some(cond) = cond {
                     self.gen_expr(cond)?;

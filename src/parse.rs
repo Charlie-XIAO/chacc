@@ -51,6 +51,7 @@ impl<'a> TokenCursor<'a> {
     /// <stmt> ::= "return" <expr> ";"
     ///          | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
     ///          | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
+    ///          | "while" "(" <expr> ")" <stmt>
     ///          | "{" <compound-stmt>
     ///          | <expr-stmt>
     /// ```
@@ -84,7 +85,7 @@ impl<'a> TokenCursor<'a> {
         if self.at_keyword("for") {
             self.advance();
             self.skip("(")?;
-            let init = Box::new(self.parse_expr_stmt()?);
+            let init = Some(Box::new(self.parse_expr_stmt()?));
             let cond = if self.at_punct(";") {
                 None
             } else {
@@ -102,6 +103,21 @@ impl<'a> TokenCursor<'a> {
                 init,
                 cond,
                 inc,
+                body,
+            });
+        }
+
+        if self.at_keyword("while") {
+            self.advance();
+            self.skip("(")?;
+            let cond = Some(self.parse_expr()?);
+            self.skip(")")?;
+            let body = Box::new(self.parse_stmt()?);
+            // "while" can be desugared into "for" without init and inc
+            return Ok(Stmt::For {
+                init: None,
+                cond,
+                inc: None,
                 body,
             });
         }

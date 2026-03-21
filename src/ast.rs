@@ -75,7 +75,7 @@ pub(crate) enum Stmt {
     Expr(Node),
     Return(Node),
     For {
-        init: Box<Stmt>,
+        init: Option<Box<Stmt>>,
         cond: Option<Node>,
         inc: Option<Node>,
         body: Box<Stmt>,
