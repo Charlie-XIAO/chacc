@@ -1,18 +1,20 @@
 //! Assembly generation from the AST.
 
-use crate::ast::{BinaryOp, LocalVar, Node, Stmt};
+use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Stmt, StmtKind};
+use crate::tokenize::format_error_at;
 
 /// Stateful code generator for a single function body.
-pub(crate) struct Codegen {
+pub(crate) struct Codegen<'a> {
+    input: &'a str,
     assembly: String,
     depth: i32,
     locals: Vec<LocalVar>,
     next_label: usize,
 }
 
-impl Codegen {
+impl<'a> Codegen<'a> {
     /// Create a code generator with the standard function prologue.
-    pub(crate) fn new(mut locals: Vec<LocalVar>) -> Self {
+    pub(crate) fn new(input: &'a str, mut locals: Vec<LocalVar>) -> Self {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
         assembly.push_str("  .globl main\n");
@@ -22,6 +24,7 @@ impl Codegen {
         assembly.push_str(&format!("  sub ${stack_size}, %rsp\n"));
 
         Self {
+            input,
             assembly,
             depth: 0,
             locals,
@@ -31,14 +34,14 @@ impl Codegen {
 
     /// Emit a statement.
     pub(crate) fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
-        match stmt {
-            Stmt::Expr(expr) => self.gen_expr(expr),
-            Stmt::Return(expr) => {
+        match &stmt.kind {
+            StmtKind::Expr(expr) => self.gen_expr(expr),
+            StmtKind::Return(expr) => {
                 self.gen_expr(expr)?;
                 self.assembly.push_str("  jmp .L.return\n");
                 Ok(())
             },
-            Stmt::For {
+            StmtKind::For {
                 init,
                 cond,
                 inc,
@@ -62,7 +65,7 @@ impl Codegen {
                 self.assembly.push_str(&format!(".L.end.{label}:\n"));
                 Ok(())
             },
-            Stmt::If {
+            StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -80,7 +83,7 @@ impl Codegen {
                 self.assembly.push_str(&format!(".L.end.{label}:\n"));
                 Ok(())
             },
-            Stmt::Block(stmts) => {
+            StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.gen_stmt(stmt)?;
                 }
@@ -105,39 +108,39 @@ impl Codegen {
 
     /// Emit the address of an lvalue expression into `%rax`.
     fn gen_addr(&mut self, node: &Node) -> Result<(), String> {
-        match node {
-            Node::Var(local_id) => {
+        match &node.kind {
+            NodeKind::Var(local_id) => {
                 let offset = self.locals[*local_id].offset;
                 self.assembly
                     .push_str(&format!("  lea {offset}(%rbp), %rax\n"));
                 Ok(())
             },
-            _ => Err("not an lvalue".to_owned()),
+            _ => Err(format_error_at(self.input, node.offset, "not an lvalue")),
         }
     }
 
     /// Emit assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<(), String> {
-        match node {
-            Node::Num(value) => {
+        match &node.kind {
+            NodeKind::Num(value) => {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
-            Node::Neg(expr) => {
+            NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
                 self.assembly.push_str("  neg %rax\n");
             },
-            Node::Var(_) => {
+            NodeKind::Var(_) => {
                 self.gen_addr(node)?;
                 self.assembly.push_str("  mov (%rax), %rax\n");
             },
-            Node::Assign { lhs, rhs } => {
+            NodeKind::Assign { lhs, rhs } => {
                 self.gen_addr(lhs)?;
                 self.push();
                 self.gen_expr(rhs)?;
                 self.pop("%rdi");
                 self.assembly.push_str("  mov %rax, (%rdi)\n");
             },
-            Node::Binary { op, lhs, rhs } => {
+            NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
                 self.push();
                 self.gen_expr(lhs)?;

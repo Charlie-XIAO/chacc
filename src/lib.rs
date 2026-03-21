@@ -15,7 +15,7 @@ pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
     let mut parser = TokenCursor::new(input, tokens);
     let Program { body, locals } = parser.parse_program()?;
-    let mut codegen = Codegen::new(locals);
+    let mut codegen = Codegen::new(input, locals);
 
     for stmt in &body {
         codegen.gen_stmt(stmt)?;
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn rejects_non_lvalues_on_assignment() {
         let error = compile_expression_program("{ 1=2; }").unwrap_err();
-        assert_eq!(error, "not an lvalue");
+        assert_eq!(error, "{ 1=2; }\n  ^ not an lvalue");
     }
 
     /// Assemble and run generated code, returning the exit status.

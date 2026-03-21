@@ -33,11 +33,12 @@ impl<'a> TokenCursor<'a> {
     /// <program> ::= "{" <compound-stmt>
     /// ```
     pub(crate) fn parse_program(&mut self) -> Result<Program, String> {
+        let offset = self.current().offset;
         self.skip("{")?;
         let body = self.parse_compound_stmt()?;
 
         Ok(Program {
-            body: vec![Stmt::Block(body)],
+            body: vec![Stmt::block(body, offset)],
             locals: std::mem::take(&mut self.locals),
         })
     }
@@ -57,13 +58,15 @@ impl<'a> TokenCursor<'a> {
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_keyword("return") {
+            let offset = self.current().offset;
             self.advance();
             let expr = self.parse_expr()?;
             self.skip(";")?;
-            return Ok(Stmt::Return(expr));
+            return Ok(Stmt::return_(expr, offset));
         }
 
         if self.at_keyword("if") {
+            let offset = self.current().offset;
             self.advance();
             self.skip("(")?;
             let cond = self.parse_expr()?;
@@ -75,14 +78,11 @@ impl<'a> TokenCursor<'a> {
             } else {
                 None
             };
-            return Ok(Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-            });
+            return Ok(Stmt::if_(cond, then_branch, else_branch, offset));
         }
 
         if self.at_keyword("for") {
+            let offset = self.current().offset;
             self.advance();
             self.skip("(")?;
             let init = Some(Box::new(self.parse_expr_stmt()?));
@@ -99,32 +99,24 @@ impl<'a> TokenCursor<'a> {
             };
             self.skip(")")?;
             let body = Box::new(self.parse_stmt()?);
-            return Ok(Stmt::For {
-                init,
-                cond,
-                inc,
-                body,
-            });
+            return Ok(Stmt::for_(init, cond, inc, body, offset));
         }
 
         if self.at_keyword("while") {
+            let offset = self.current().offset;
             self.advance();
             self.skip("(")?;
             let cond = Some(self.parse_expr()?);
             self.skip(")")?;
             let body = Box::new(self.parse_stmt()?);
             // "while" can be desugared into "for" without init and inc
-            return Ok(Stmt::For {
-                init: None,
-                cond,
-                inc: None,
-                body,
-            });
+            return Ok(Stmt::for_(None, cond, None, body, offset));
         }
 
         if self.at_punct("{") {
+            let offset = self.current().offset;
             self.advance();
-            return Ok(Stmt::Block(self.parse_compound_stmt()?));
+            return Ok(Stmt::block(self.parse_compound_stmt()?, offset));
         }
 
         self.parse_expr_stmt()
@@ -149,13 +141,15 @@ impl<'a> TokenCursor<'a> {
     /// ```
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_punct(";") {
+            let offset = self.current().offset;
             self.advance();
-            return Ok(Stmt::Block(Vec::new()));
+            return Ok(Stmt::block(Vec::new(), offset));
         }
 
+        let offset = self.current().offset;
         let expr = self.parse_expr()?;
         self.skip(";")?;
-        Ok(Stmt::Expr(expr))
+        Ok(Stmt::expr(expr, offset))
     }
 
     /// ```bnf
@@ -165,8 +159,9 @@ impl<'a> TokenCursor<'a> {
         let node = self.parse_equality()?;
 
         if self.at_punct("=") {
+            let offset = self.current().offset;
             self.advance();
-            return Ok(Node::assign(node, self.parse_assign()?));
+            return Ok(Node::assign(node, self.parse_assign()?, offset));
         }
 
         Ok(node)
@@ -180,14 +175,16 @@ impl<'a> TokenCursor<'a> {
 
         loop {
             if self.at_punct("==") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?);
+                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?, offset);
                 continue;
             }
 
             if self.at_punct("!=") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?);
+                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?, offset);
                 continue;
             }
 
@@ -203,28 +200,32 @@ impl<'a> TokenCursor<'a> {
 
         loop {
             if self.at_punct("<") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Lt, node, self.parse_add()?);
+                node = Node::binary(BinaryOp::Lt, node, self.parse_add()?, offset);
                 continue;
             }
 
             if self.at_punct("<=") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Le, node, self.parse_add()?);
+                node = Node::binary(BinaryOp::Le, node, self.parse_add()?, offset);
                 continue;
             }
 
             if self.at_punct(">") {
+                let offset = self.current().offset;
                 self.advance();
                 // Reuse < with flipped operands
-                node = Node::binary(BinaryOp::Lt, self.parse_add()?, node);
+                node = Node::binary(BinaryOp::Lt, self.parse_add()?, node, offset);
                 continue;
             }
 
             if self.at_punct(">=") {
+                let offset = self.current().offset;
                 self.advance();
                 // Reuse <= with flipped operands
-                node = Node::binary(BinaryOp::Le, self.parse_add()?, node);
+                node = Node::binary(BinaryOp::Le, self.parse_add()?, node, offset);
                 continue;
             }
 
@@ -240,14 +241,16 @@ impl<'a> TokenCursor<'a> {
 
         loop {
             if self.at_punct("+") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Add, node, self.parse_mul()?);
+                node = Node::binary(BinaryOp::Add, node, self.parse_mul()?, offset);
                 continue;
             }
 
             if self.at_punct("-") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?);
+                node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?, offset);
                 continue;
             }
 
@@ -263,14 +266,16 @@ impl<'a> TokenCursor<'a> {
 
         loop {
             if self.at_punct("*") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?);
+                node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?, offset);
                 continue;
             }
 
             if self.at_punct("/") {
+                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Div, node, self.parse_unary()?);
+                node = Node::binary(BinaryOp::Div, node, self.parse_unary()?, offset);
                 continue;
             }
 
@@ -288,8 +293,9 @@ impl<'a> TokenCursor<'a> {
         }
 
         if self.at_punct("-") {
+            let offset = self.current().offset;
             self.advance();
-            return Ok(Node::neg(self.parse_unary()?));
+            return Ok(Node::neg(self.parse_unary()?, offset));
         }
 
         self.parse_primary()
@@ -309,12 +315,12 @@ impl<'a> TokenCursor<'a> {
         let tok = self.current();
         if tok.kind == TokenKind::Ident {
             self.advance();
-            return Ok(Node::Var(self.find_or_create_local(tok.lexeme)));
+            return Ok(Node::var(self.find_or_create_local(tok.lexeme), tok.offset));
         }
 
         if tok.kind == TokenKind::Num {
             self.advance();
-            return Ok(Node::Num(tok.value));
+            return Ok(Node::num(tok.value, tok.offset));
         }
 
         Err(self.error_current("expected an expression"))
