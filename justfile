@@ -10,6 +10,9 @@ fmt:
 lint:
     cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
 
+doc *flags:
+    cargo +nightly doc --no-deps --document-private-items -Z rustdoc-map {{ flags }}
+
 alias t := test
 alias tu := test-unit
 alias ti := test-integration

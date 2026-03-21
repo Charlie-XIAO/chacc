@@ -7,6 +7,7 @@ pub(crate) struct Codegen {
     assembly: String,
     depth: i32,
     locals: Vec<LocalVar>,
+    next_label: usize,
 }
 
 impl Codegen {
@@ -24,6 +25,7 @@ impl Codegen {
             assembly,
             depth: 0,
             locals,
+            next_label: 1,
         }
     }
 
@@ -34,6 +36,24 @@ impl Codegen {
             Stmt::Return(expr) => {
                 self.gen_expr(expr)?;
                 self.assembly.push_str("  jmp .L.return\n");
+                Ok(())
+            },
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let label = self.take_label();
+                self.gen_expr(cond)?;
+                self.assembly.push_str("  cmp $0, %rax\n");
+                self.assembly.push_str(&format!("  je  .L.else.{label}\n"));
+                self.gen_stmt(then_branch)?;
+                self.assembly.push_str(&format!("  jmp .L.end.{label}\n"));
+                self.assembly.push_str(&format!(".L.else.{label}:\n"));
+                if let Some(else_branch) = else_branch {
+                    self.gen_stmt(else_branch)?;
+                }
+                self.assembly.push_str(&format!(".L.end.{label}:\n"));
                 Ok(())
             },
             Stmt::Block(stmts) => {
@@ -144,6 +164,13 @@ impl Codegen {
     fn pop(&mut self, register: &str) {
         self.assembly.push_str(&format!("  pop {register}\n"));
         self.depth -= 1;
+    }
+
+    /// Allocate a fresh numeric suffix for local labels.
+    fn take_label(&mut self) -> usize {
+        let label = self.next_label;
+        self.next_label += 1;
+        label
     }
 }
 

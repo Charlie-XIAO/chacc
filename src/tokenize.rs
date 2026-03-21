@@ -54,7 +54,7 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         if is_ident1(ch) {
             let len = rest.bytes().take_while(|byte| is_ident2(*byte)).count();
             let lexeme = &rest[..len];
-            let kind = if lexeme == "return" {
+            let kind = if is_keyword(lexeme) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Ident
@@ -95,6 +95,11 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
         offset,
     });
     Ok(tokens)
+}
+
+/// Return whether the identifier is a reserved keyword.
+fn is_keyword(lexeme: &str) -> bool {
+    matches!(lexeme, "return" | "if" | "else")
 }
 
 /// Return whether the byte is valid at the start of an identifier.

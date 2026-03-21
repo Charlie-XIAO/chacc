@@ -156,6 +156,34 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_if() {
+        assert_eq!(
+            compile_expression_program("{ if (0) return 2; return 3; }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $0, %rsp\n",
+                "  mov $0, %rax\n",
+                "  cmp $0, %rax\n",
+                "  je  .L.else.1\n",
+                "  mov $2, %rax\n",
+                "  jmp .L.return\n",
+                "  jmp .L.end.1\n",
+                ".L.else.1:\n",
+                ".L.end.1:\n",
+                "  mov $3, %rax\n",
+                "  jmp .L.return\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -243,33 +271,45 @@ mod tests {
     }
 
     #[test]
-    fn tokenizes_return_as_a_keyword() {
+    fn tokenizes_keywords() {
         assert_eq!(
-            tokenize("return foo;").unwrap(),
+            tokenize("if else return foo;").unwrap(),
             vec![
+                Token {
+                    kind: TokenKind::Keyword,
+                    lexeme: "if",
+                    value: 0,
+                    offset: 0,
+                },
+                Token {
+                    kind: TokenKind::Keyword,
+                    lexeme: "else",
+                    value: 0,
+                    offset: 3,
+                },
                 Token {
                     kind: TokenKind::Keyword,
                     lexeme: "return",
                     value: 0,
-                    offset: 0,
+                    offset: 8,
                 },
                 Token {
                     kind: TokenKind::Ident,
                     lexeme: "foo",
                     value: 0,
-                    offset: 7,
+                    offset: 15,
                 },
                 Token {
                     kind: TokenKind::Punct,
                     lexeme: ";",
                     value: 0,
-                    offset: 10,
+                    offset: 18,
                 },
                 Token {
                     kind: TokenKind::Eof,
                     lexeme: "",
                     value: 0,
-                    offset: 11,
+                    offset: 19,
                 },
             ]
         );
@@ -375,6 +415,12 @@ mod tests {
             ("{ 1; 2; return 3; }", 3),
             ("{ {1; {2;} return 3;} }", 3),
             ("{ ;;; return 5; }", 5),
+            ("{ if (0) return 2; return 3; }", 3),
+            ("{ if (1-1) return 2; return 3; }", 3),
+            ("{ if (1) return 2; return 3; }", 2),
+            ("{ if (2-1) return 2; return 3; }", 2),
+            ("{ if (0) { 1; 2; return 3; } else { return 4; } }", 4),
+            ("{ if (1) { 1; 2; return 3; } else { return 4; } }", 3),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");

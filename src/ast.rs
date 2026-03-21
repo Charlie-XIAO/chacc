@@ -74,5 +74,10 @@ impl Node {
 pub(crate) enum Stmt {
     Expr(Node),
     Return(Node),
+    If {
+        cond: Node,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
+    },
     Block(Vec<Stmt>),
 }

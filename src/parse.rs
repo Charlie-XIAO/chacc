@@ -22,12 +22,16 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `expr = assign`.
+    /// ```bnf
+    /// <expr> ::= <assign>
+    /// ```
     pub(crate) fn parse_expr(&mut self) -> Result<Node, String> {
         self.parse_assign()
     }
 
-    /// Parse `program = "{" compound-stmt`.
+    /// ```bnf
+    /// <program> ::= "{" <compound-stmt>
+    /// ```
     pub(crate) fn parse_program(&mut self) -> Result<Program, String> {
         self.skip("{")?;
         let body = self.parse_compound_stmt()?;
@@ -43,13 +47,37 @@ impl<'a> TokenCursor<'a> {
         format_error_at(self.input, self.current().offset, message)
     }
 
-    /// Parse `stmt = "return" expr ";" | "{" compound-stmt | expr-stmt`.
+    /// ```bnf
+    /// <stmt> ::= "return" <expr> ";"
+    ///          | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
+    ///          | "{" <compound-stmt>
+    ///          | <expr-stmt>
+    /// ```
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_keyword("return") {
             self.advance();
             let expr = self.parse_expr()?;
             self.skip(";")?;
             return Ok(Stmt::Return(expr));
+        }
+
+        if self.at_keyword("if") {
+            self.advance();
+            self.skip("(")?;
+            let cond = self.parse_expr()?;
+            self.skip(")")?;
+            let then_branch = Box::new(self.parse_stmt()?);
+            let else_branch = if self.at_keyword("else") {
+                self.advance();
+                Some(Box::new(self.parse_stmt()?))
+            } else {
+                None
+            };
+            return Ok(Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            });
         }
 
         if self.at_punct("{") {
@@ -60,7 +88,9 @@ impl<'a> TokenCursor<'a> {
         self.parse_expr_stmt()
     }
 
-    /// Parse `compound-stmt = stmt* "}"`.
+    /// ```bnf
+    /// <compound-stmt> ::= <stmt>* "}"
+    /// ```
     fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
 
@@ -72,7 +102,9 @@ impl<'a> TokenCursor<'a> {
         Ok(stmts)
     }
 
-    /// Parse `expr-stmt = expr? ";"`.
+    /// ```bnf
+    /// <expr-stmt> ::= <expr>? ";"
+    /// ```
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_punct(";") {
             self.advance();
@@ -84,7 +116,9 @@ impl<'a> TokenCursor<'a> {
         Ok(Stmt::Expr(expr))
     }
 
-    /// Parse `assign = equality ("=" assign)?`.
+    /// ```bnf
+    /// <assign> ::= <equality> ("=" <assign>)?
+    /// ```
     fn parse_assign(&mut self) -> Result<Node, String> {
         let node = self.parse_equality()?;
 
@@ -96,7 +130,9 @@ impl<'a> TokenCursor<'a> {
         Ok(node)
     }
 
-    /// Parse `equality = relational ("==" relational | "!=" relational)*`.
+    /// ```bnf
+    /// <equality> ::= <relational> ("==" <relational> | "!=" <relational>)*
+    /// ```
     fn parse_equality(&mut self) -> Result<Node, String> {
         let mut node = self.parse_relational()?;
 
@@ -117,7 +153,9 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `relational = add ("<" add | "<=" add | ">" add | ">=" add)*`.
+    /// ```bnf
+    /// <relational> ::= <add> ("<" <add> | "<=" <add> | ">" <add> | ">=" <add>)*
+    /// ```
     fn parse_relational(&mut self) -> Result<Node, String> {
         let mut node = self.parse_add()?;
 
@@ -152,7 +190,9 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `add = mul ("+" mul | "-" mul)*`.
+    /// ```bnf
+    /// <add> ::= <mul> ("+" <mul> | "-" <mul>)*
+    /// ```
     fn parse_add(&mut self) -> Result<Node, String> {
         let mut node = self.parse_mul()?;
 
@@ -173,7 +213,9 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `mul = unary ("*" unary | "/" unary)*`.
+    /// ```bnf
+    /// <mul> ::= <unary> ("*" <unary> | "/" <unary>)*
+    /// ```
     fn parse_mul(&mut self) -> Result<Node, String> {
         let mut node = self.parse_unary()?;
 
@@ -194,7 +236,9 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
-    /// Parse `unary = ("+" | "-") unary | primary`.
+    /// ```bnf
+    /// <unary> ::= ("+" | "-") <unary> | <primary>
+    /// ```
     fn parse_unary(&mut self) -> Result<Node, String> {
         if self.at_punct("+") {
             self.advance();
@@ -209,7 +253,9 @@ impl<'a> TokenCursor<'a> {
         self.parse_primary()
     }
 
-    /// Parse `primary = "(" expr ")" | ident | num`.
+    /// ```bnf
+    /// <primary> ::= "(" <expr> ")" | ident | num
+    /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.at_punct("(") {
             self.advance();
