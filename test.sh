@@ -8,6 +8,11 @@ cargo build --release --quiet
 cat <<'EOF' | cc -xc -c -o tmp2.o -
 int ret3() { return 3; }
 int ret5() { return 5; }
+int add(int x, int y) { return x+y; }
+int sub(int x, int y) { return x-y; }
+int add6(int a, int b, int c, int d, int e, int f) {
+  return a+b+c+d+e+f;
+}
 EOF
 
 assert() {
@@ -62,6 +67,9 @@ assert 0 '{ return 1>=2; }'
 assert 3 '{ int a; a=3; return a; }'
 assert 3 '{ int a=3; return a; }'
 assert 8 '{ int a=3; int z=5; return a+z; }'
+
+assert 3 '{ int a=3; return a; }'
+assert 8 '{ int a=3; int z=5; return a+z; }'
 assert 6 '{ int a; int b; a=b=3; return a+b; }'
 assert 3 '{ int foo=3; return foo; }'
 assert 8 '{ int foo123=3; int bar=5; return foo123+bar; }'
@@ -84,6 +92,10 @@ assert 55 '{ int i=0; int j=0; for (i=0; i<=10; i=i+1) j=i+j; return j; }'
 assert 3 '{ for (;;) return 3; return 5; }'
 
 assert 10 '{ int i=0; while(i<10) i=i+1; return i; }'
+
+assert 3 '{ {1; {2;} return 3;} }'
+
+assert 10 '{ int i=0; while(i<10) i=i+1; return i; }'
 assert 55 '{ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} return j; }'
 
 assert 3 '{ int x=3; return *&x; }'
@@ -97,7 +109,13 @@ assert 7 '{ int x=3; int y=5; *(&y-2+1)=7; return x; }'
 assert 5 '{ int x=3; return (&x+2)-&x+3; }'
 assert 8 '{ int x, y; x=3; y=5; return x+y; }'
 assert 8 '{ int x=3, y=5; return x+y; }'
+
 assert 3 '{ return ret3(); }'
 assert 5 '{ return ret5(); }'
+assert 8 '{ return add(3, 5); }'
+assert 2 '{ return sub(5, 3); }'
+assert 21 '{ return add6(1,2,3,4,5,6); }'
+assert 66 '{ return add6(1,2,add6(3,4,5,6,7,8),9,10,11); }'
+assert 136 '{ return add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16); }'
 
 echo -e "\x1b[32;1mOK\x1b[0m"

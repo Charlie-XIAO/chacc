@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn emits_expected_assembly_for_funcall() {
+    fn emits_expected_assembly_for_func_call() {
         assert_eq!(
             compile_expression_program("{ return ret3(); }").unwrap(),
             concat!(
@@ -271,6 +271,33 @@ mod tests {
                 "  sub $0, %rsp\n",
                 "  mov $0, %rax\n",
                 "  call ret3\n",
+                "  jmp .L.return\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
+    fn emits_expected_assembly_for_func_call_with_args() {
+        assert_eq!(
+            compile_expression_program("{ return add(3, 5); }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $0, %rsp\n",
+                "  mov $3, %rax\n",
+                "  push %rax\n",
+                "  mov $5, %rax\n",
+                "  push %rax\n",
+                "  pop %rsi\n",
+                "  pop %rdi\n",
+                "  mov $0, %rax\n",
+                "  call add\n",
                 "  jmp .L.return\n",
                 ".L.return:\n",
                 "  mov %rbp, %rsp\n",
@@ -456,6 +483,14 @@ mod tests {
             ),
             ("{ return ret3(); }", 3),
             ("{ return ret5(); }", 5),
+            ("{ return add(3, 5); }", 8),
+            ("{ return sub(5, 3); }", 2),
+            ("{ return add6(1,2,3,4,5,6); }", 21),
+            ("{ return add6(1,2,add6(3,4,5,6,7,8),9,10,11); }", 66),
+            (
+                "{ return add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16); }",
+                136,
+            ),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -486,7 +521,15 @@ mod tests {
         fs::write(&asm_path, assembly).unwrap();
         fs::write(
             &helper_c_path,
-            "int ret3() { return 3; }\nint ret5() { return 5; }\n",
+            concat!(
+                "int ret3() { return 3; }\n",
+                "int ret5() { return 5; }\n",
+                "int add(int x, int y) { return x+y; }\n",
+                "int sub(int x, int y) { return x-y; }\n",
+                "int add6(int a, int b, int c, int d, int e, int f) {\n",
+                "  return a+b+c+d+e+f;\n",
+                "}\n",
+            ),
         )
         .unwrap();
 

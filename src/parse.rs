@@ -389,8 +389,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <primary> ::= "(" <expr> ")" | ident <args>? | num
-    /// <args> ::= "(" ")"
+    /// <primary> ::= "(" <expr> ")" | <func-call> | num
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.current().is_punct("(") {
@@ -403,10 +402,7 @@ impl<'a> TokenCursor<'a> {
         let tok = self.current();
         if let Some(name) = tok.as_ident() {
             if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
-                self.advance();
-                self.skip_punct("(")?;
-                self.skip_punct(")")?;
-                return Ok(Node::funcall(name.to_owned(), tok.offset));
+                return self.parse_func_call(name, tok.offset);
             }
 
             self.advance();
@@ -426,6 +422,25 @@ impl<'a> TokenCursor<'a> {
         }
 
         Err(self.error_current("expected an expression"))
+    }
+
+    /// ```bnf
+    /// <func-call> ::= ident "(" (<assign> ("," <assign>)*)? ")"
+    /// ```
+    fn parse_func_call(&mut self, name: &str, offset: usize) -> Result<Node, String> {
+        self.advance();
+        self.skip_punct("(")?;
+
+        let mut args = Vec::new();
+        while !self.current().is_punct(")") {
+            if !args.is_empty() {
+                self.skip_punct(",")?;
+            }
+            args.push(self.parse_assign()?);
+        }
+
+        self.skip_punct(")")?;
+        Ok(Node::func_call(name.to_owned(), args, offset))
     }
 
     /// Advance to the next token.
@@ -597,7 +612,10 @@ impl<'a> TokenCursor<'a> {
             NodeKind::Num(_) => {
                 node.ty = Some(Type::Int);
             },
-            NodeKind::FuncCall(_) => {
+            NodeKind::FuncCall { args, .. } => {
+                for arg in args {
+                    self.infer_type(arg)?;
+                }
                 node.ty = Some(Type::Int);
             },
             NodeKind::Neg(expr) => {

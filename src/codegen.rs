@@ -3,6 +3,8 @@
 use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Stmt, StmtKind};
 use crate::tokenize::format_error_at;
 
+const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
 /// Code generator for a single function body.
 pub struct Codegen<'a> {
     input: &'a str,
@@ -126,7 +128,23 @@ impl<'a> Codegen<'a> {
             NodeKind::Num(value) => {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
-            NodeKind::FuncCall(name) => {
+            NodeKind::FuncCall { name, args } => {
+                if args.len() > ARG_REGS.len() {
+                    return Err(format_error_at(
+                        self.input,
+                        node.offset,
+                        "too many arguments",
+                    ));
+                }
+
+                for arg in args {
+                    self.gen_expr(arg)?;
+                    self.push();
+                }
+                for register in ARG_REGS.iter().take(args.len()).rev() {
+                    self.pop(register);
+                }
+
                 self.assembly.push_str("  mov $0, %rax\n");
                 self.assembly.push_str(&format!("  call {name}\n"));
             },
