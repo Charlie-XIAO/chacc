@@ -4,6 +4,26 @@ use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, St
 use crate::tokenize::{Keyword, Token, format_error_at};
 use crate::types::Type;
 
+/// Declaration of a function parameter.
+struct Parameter {
+    name: String,
+    ty: Type,
+}
+
+/// A variable or function declarator.
+struct Declarator {
+    name: String,
+    ty: Type,
+    /// The byte offset of the declarator in the source code.
+    offset: usize,
+    /// The parameter declarations for a function declarator.
+    ///
+    /// This keeps parameter names alongside the semantic function type in `ty`.
+    /// Non-function declarators leave it empty and it is necessary to check
+    /// that `ty` is a function type before using this field.
+    params: Vec<Parameter>,
+}
+
 /// Cursor over the token stream during parsing.
 pub struct TokenCursor<'a> {
     input: &'a str,
@@ -53,18 +73,20 @@ impl<'a> TokenCursor<'a> {
     /// ```
     fn parse_function_definition(&mut self) -> Result<Function, String> {
         let return_ty = self.parse_declspec()?;
-        let (name, ty, _) = self.parse_declarator(return_ty)?;
-        if !ty.is_func() {
+        let declarator = self.parse_declarator(return_ty)?;
+        if !declarator.ty.is_func() {
             return Err(self.error_current("expected a function"));
         }
 
         let body_offset = self.current().offset;
-        self.skip_punct("{")?;
         self.locals.clear();
+        let params = self.create_param_locals(declarator.params);
+        self.skip_punct("{")?;
         let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
 
         Ok(Function {
-            name,
+            name: declarator.name,
+            params,
             body,
             locals: std::mem::take(&mut self.locals),
         })
@@ -183,10 +205,8 @@ impl<'a> TokenCursor<'a> {
 
     /// ```bnf
     /// <declaration> ::=
-    ///   <declspec>
-    ///   (<declarator> ("=" <assign>)?
-    ///     ("," <declarator> ("=" <assign>)?)*)?
-    ///   ";"
+    ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
+    /// <declarator-init> ::= <declarator> ("=" <assign>)?
     /// ```
     fn parse_declaration(&mut self) -> Result<Stmt, String> {
         let offset = self.current().offset;
@@ -200,8 +220,8 @@ impl<'a> TokenCursor<'a> {
             }
             first = false;
 
-            let (name, ty, name_offset) = self.parse_declarator(base_ty.clone())?;
-            let local_id = self.create_local(name, ty);
+            let declarator = self.parse_declarator(base_ty.clone())?;
+            let local_id = self.create_local(declarator.name, declarator.ty);
 
             if !self.current().is_punct("=") {
                 continue;
@@ -210,10 +230,10 @@ impl<'a> TokenCursor<'a> {
             // If there is an initializer, treat it as an assignment to the
             // just-created variable
             self.advance();
-            let lhs = Node::var(local_id, name_offset);
+            let lhs = Node::var(local_id, declarator.offset);
             let rhs = self.parse_assign()?;
-            let expr = Node::assign(lhs, rhs, name_offset);
-            stmts.push(Stmt::expr(expr, name_offset));
+            let expr = Node::assign(lhs, rhs, declarator.offset);
+            stmts.push(Stmt::expr(expr, declarator.offset));
         }
 
         self.skip_punct(";")?;
@@ -231,7 +251,7 @@ impl<'a> TokenCursor<'a> {
     /// ```bnf
     /// <declarator> ::= "*"* <ident> <type-suffix>
     /// ```
-    fn parse_declarator(&mut self, mut ty: Type) -> Result<(String, Type, usize), String> {
+    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator, String> {
         while self.current().is_punct("*") {
             self.advance();
             ty = Type::ptr(ty);
@@ -243,20 +263,63 @@ impl<'a> TokenCursor<'a> {
         };
 
         self.advance();
-        let ty = self.parse_type_suffix(ty)?;
-        Ok((name.to_owned(), ty, tok.offset))
+        let (ty, params) = self.parse_type_suffix(ty)?;
+        Ok(Declarator {
+            name: name.to_owned(),
+            ty,
+            offset: tok.offset,
+            params,
+        })
     }
 
     /// ```bnf
-    /// <type-suffix> ::= ("(" ")")?
+    /// <type-suffix> ::= "(" <func-params>? ")" | ε
     /// ```
-    fn parse_type_suffix(&mut self, return_ty: Type) -> Result<Type, String> {
-        if self.current().is_punct("(") {
-            self.advance();
-            self.skip_punct(")")?;
-            return Ok(Type::func(return_ty));
+    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
+        if !self.current().is_punct("(") {
+            return Ok((ty, Vec::new()));
         }
-        Ok(return_ty)
+
+        self.advance();
+        let params = if self.current().is_punct(")") {
+            Vec::new()
+        } else {
+            self.parse_func_params()?
+        };
+        self.skip_punct(")")?;
+
+        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
+        Ok((Type::func(ty, param_tys), params))
+    }
+
+    /// ```bnf
+    /// <func-params> ::= <param> ("," <param>)*
+    /// <param> ::= <declspec> <declarator>
+    /// ```
+    fn parse_func_params(&mut self) -> Result<Vec<Parameter>, String> {
+        let mut params = Vec::new();
+
+        loop {
+            let base_ty = self.parse_declspec()?;
+            let declarator = self.parse_declarator(base_ty)?;
+            params.push(Parameter {
+                name: declarator.name,
+                ty: declarator.ty,
+            });
+
+            if params.len() > 6 {
+                return Err(format_error_at(
+                    self.input,
+                    declarator.offset,
+                    "too many parameters",
+                ));
+            }
+
+            if !self.current().is_punct(",") {
+                return Ok(params);
+            }
+            self.advance();
+        }
     }
 
     /// ```bnf
@@ -523,6 +586,21 @@ impl<'a> TokenCursor<'a> {
             offset: 0, // Assigned during codegen
         });
         self.locals.len() - 1
+    }
+
+    /// Create local variables for function parameters.
+    ///
+    /// Parameters are pushed in reverse order to ensure the first parameter
+    /// gets the lowest local ID.
+    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Vec<usize> {
+        let mut param_ids = Vec::with_capacity(params.len());
+
+        for param in params.into_iter().rev() {
+            param_ids.push(self.create_local(param.name, param.ty));
+        }
+
+        param_ids.reverse();
+        param_ids
     }
 
     /// Build an addition node with pointer scaling.

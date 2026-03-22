@@ -5,7 +5,10 @@
 pub enum Type {
     Int,
     Ptr(Box<Type>),
-    Func(Box<Type>),
+    Func {
+        return_ty: Box<Type>,
+        params: Vec<Type>,
+    },
 }
 
 impl Type {
@@ -15,8 +18,11 @@ impl Type {
     }
 
     /// Return a function type with the given return type.
-    pub fn func(return_ty: Type) -> Self {
-        Self::Func(Box::new(return_ty))
+    pub fn func(return_ty: Type, params: Vec<Type>) -> Self {
+        Self::Func {
+            return_ty: Box::new(return_ty),
+            params,
+        }
     }
 
     /// Return whether the type is an integer.
@@ -30,13 +36,13 @@ impl Type {
     pub fn base(&self) -> Option<&Type> {
         match self {
             Self::Ptr(base) => Some(base),
-            Self::Int | Self::Func(_) => None,
+            Self::Int | Self::Func { .. } => None,
         }
     }
 
     /// Return whether the type is a function.
     pub fn is_func(&self) -> bool {
-        matches!(self, Self::Func(_))
+        matches!(self, Self::Func { .. })
     }
 
     /// Return the size of the type in bytes.
@@ -44,7 +50,7 @@ impl Type {
         match self {
             Self::Int => 8,
             Self::Ptr(_) => 8,
-            Self::Func(_) => unreachable!("function types do not have a size"),
+            Self::Func { .. } => unreachable!("function types do not have a size"),
         }
     }
 }

@@ -3,6 +3,9 @@
 use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
 use crate::tokenize::format_error_at;
 
+/// Registers used for passing integer arguments, in order.
+const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
 /// Code generator for a single function body.
 struct Codegen<'a> {
     input: &'a str,
@@ -15,7 +18,12 @@ struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator with the standard function prologue.
-    fn new(input: &'a str, function_name: String, mut locals: Vec<LocalVar>) -> Self {
+    fn new(
+        input: &'a str,
+        function_name: String,
+        params: &[usize],
+        mut locals: Vec<LocalVar>,
+    ) -> Self {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
         assembly.push_str(&format!("  .globl {function_name}\n"));
@@ -23,6 +31,11 @@ impl<'a> Codegen<'a> {
         assembly.push_str("  push %rbp\n");
         assembly.push_str("  mov %rsp, %rbp\n");
         assembly.push_str(&format!("  sub ${stack_size}, %rsp\n"));
+
+        for (i, param_id) in params.iter().enumerate() {
+            let offset = locals[*param_id].offset;
+            assembly.push_str(&format!("  mov {}, {offset}(%rbp)\n", ARG_REGS[i]));
+        }
 
         Self {
             input,
@@ -131,14 +144,13 @@ impl<'a> Codegen<'a> {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
             NodeKind::FuncCall { name, args } => {
-                const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
-
                 if args.len() > ARG_REGS.len() {
-                    return Err(format_error_at(
-                        self.input,
-                        node.offset,
-                        "too many arguments",
-                    ));
+                    let msg = format!(
+                        "too many arguments: expected at most {}, got {}",
+                        ARG_REGS.len(),
+                        args.len()
+                    );
+                    return Err(format_error_at(self.input, node.offset, &msg));
                 }
 
                 for arg in args {
@@ -239,8 +251,14 @@ impl<'a> Codegen<'a> {
 pub fn codegen_program(input: &str, program: Program) -> Result<String, String> {
     let mut assembly = String::new();
 
-    for Function { name, body, locals } in program.functions {
-        let mut codegen = Codegen::new(input, name, locals);
+    for Function {
+        name,
+        params,
+        body,
+        locals,
+    } in program.functions
+    {
+        let mut codegen = Codegen::new(input, name, &params, locals);
         codegen.gen_stmt(&body)?;
         codegen.assert_balanced();
         assembly.push_str(&codegen.finish());

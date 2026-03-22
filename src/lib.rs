@@ -304,6 +304,34 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_function_definition_with_args() {
+        assert_eq!(
+            compile_expression_program("int main(int x, int y) { return x+y; }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $16, %rsp\n",
+                "  mov %rdi, -8(%rbp)\n",
+                "  mov %rsi, -16(%rbp)\n",
+                "  lea -16(%rbp), %rax\n",
+                "  mov (%rax), %rax\n",
+                "  push %rax\n",
+                "  lea -8(%rbp), %rax\n",
+                "  mov (%rax), %rax\n",
+                "  pop %rdi\n",
+                "  add %rdi, %rax\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -498,6 +526,25 @@ mod tests {
             ),
         ] {
             let asm = compile_main(input).unwrap();
+            assert_eq!(eval_with_cc(&asm), expected, "{input}");
+        }
+
+        for (input, expected) in [
+            (
+                "int main() { return add2(3,4); } int add2(int x, int y) { return x+y; }",
+                7,
+            ),
+            (
+                "int main() { return sub2(4,3); } int sub2(int x, int y) { return x-y; }",
+                1,
+            ),
+            (
+                "int main() { return fib(9); } int fib(int x) { if (x<=1) return 1; return \
+                 fib(x-1) + fib(x-2); }",
+                55,
+            ),
+        ] {
+            let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }
     }

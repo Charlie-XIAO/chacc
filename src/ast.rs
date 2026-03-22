@@ -22,6 +22,8 @@ pub struct Program {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Function {
     pub name: String,
+    /// Parameter local IDs in declaration order.
+    pub params: Vec<usize>,
     pub body: Stmt,
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
