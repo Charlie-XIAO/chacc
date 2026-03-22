@@ -183,6 +183,11 @@ impl<'a> Token<'a> {
             _ => None,
         }
     }
+
+    /// Return whether this token is the EOF sentinel.
+    pub fn is_eof(self) -> bool {
+        self.kind == TokenKind::Eof
+    }
 }
 
 /// Return whether the byte is valid at the start of an identifier.

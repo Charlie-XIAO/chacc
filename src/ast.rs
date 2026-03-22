@@ -15,8 +15,15 @@ pub struct LocalVar {
 /// The parsed program.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Program {
-    pub body: Vec<Stmt>,
-    /// The local variable table used by the program.
+    pub functions: Vec<Function>,
+}
+
+/// A function defined in [`Program`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct Function {
+    pub name: String,
+    pub body: Stmt,
+    /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
 }
 
@@ -59,7 +66,7 @@ pub enum NodeKind {
     /// A local variable.
     ///
     /// The `usize` is the local variable's ID, which is an index into the
-    /// program's local variable table [`Program::locals`].
+    /// current function's local variable table [`Function::locals`].
     Var(usize),
     /// An assignment.
     Assign { lhs: Box<Node>, rhs: Box<Node> },

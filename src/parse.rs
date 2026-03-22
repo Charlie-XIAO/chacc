@@ -1,6 +1,6 @@
 //! A recursive-descent parser.
 
-use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
+use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
 use crate::tokenize::{Keyword, Token, format_error_at};
 use crate::types::Type;
 
@@ -31,22 +31,43 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <program> ::= "{" <compound-stmt>
+    /// <program> ::= <function-definition>* <eof>
     /// ```
     pub fn parse_program(&mut self) -> Result<Program, String> {
-        let offset = self.current().offset;
-        self.skip_punct("{")?;
-        let body = self.parse_compound_stmt()?;
+        let mut functions = Vec::new();
 
-        Ok(Program {
-            body: vec![Stmt::block(body, offset)],
-            locals: std::mem::take(&mut self.locals),
-        })
+        while !self.current().is_eof() {
+            functions.push(self.parse_function_definition()?);
+        }
+
+        Ok(Program { functions })
     }
 
     /// Format an error at the current token.
     pub fn error_current(&self, message: &str) -> String {
         format_error_at(self.input, self.current().offset, message)
+    }
+
+    /// ```bnf
+    /// <function-definition> ::= <declspec> <declarator> "{" <compound-stmt>
+    /// ```
+    fn parse_function_definition(&mut self) -> Result<Function, String> {
+        let return_ty = self.parse_declspec()?;
+        let (name, ty, _) = self.parse_declarator(return_ty)?;
+        if !ty.is_func() {
+            return Err(self.error_current("expected a function"));
+        }
+
+        let body_offset = self.current().offset;
+        self.skip_punct("{")?;
+        self.locals.clear();
+        let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
+
+        Ok(Function {
+            name,
+            body,
+            locals: std::mem::take(&mut self.locals),
+        })
     }
 
     /// ```bnf
@@ -208,7 +229,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <declarator> ::= "*"* ident
+    /// <declarator> ::= "*"* <ident> <type-suffix>
     /// ```
     fn parse_declarator(&mut self, mut ty: Type) -> Result<(String, Type, usize), String> {
         while self.current().is_punct("*") {
@@ -222,7 +243,20 @@ impl<'a> TokenCursor<'a> {
         };
 
         self.advance();
+        let ty = self.parse_type_suffix(ty)?;
         Ok((name.to_owned(), ty, tok.offset))
+    }
+
+    /// ```bnf
+    /// <type-suffix> ::= ("(" ")")?
+    /// ```
+    fn parse_type_suffix(&mut self, return_ty: Type) -> Result<Type, String> {
+        if self.current().is_punct("(") {
+            self.advance();
+            self.skip_punct(")")?;
+            return Ok(Type::func(return_ty));
+        }
+        Ok(return_ty)
     }
 
     /// ```bnf
@@ -389,7 +423,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <primary> ::= "(" <expr> ")" | <func-call> | num
+    /// <primary> ::= "(" <expr> ")" | <func-call> | <ident> | num
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.current().is_punct("(") {
@@ -425,7 +459,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <func-call> ::= ident "(" (<assign> ("," <assign>)*)? ")"
+    /// <func-call> ::= <ident> "(" (<assign> ("," <assign>)*)? ")"
     /// ```
     fn parse_func_call(&mut self, name: &str, offset: usize) -> Result<Node, String> {
         self.advance();

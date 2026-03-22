@@ -1,13 +1,12 @@
 //! Generate x86-64 assembly from an AST.
 
-use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Stmt, StmtKind};
+use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
 use crate::tokenize::format_error_at;
 
-const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
-
 /// Code generator for a single function body.
-pub struct Codegen<'a> {
+struct Codegen<'a> {
     input: &'a str,
+    function_name: String,
     assembly: String,
     depth: i32,
     locals: Vec<LocalVar>,
@@ -16,17 +15,18 @@ pub struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator with the standard function prologue.
-    pub fn new(input: &'a str, mut locals: Vec<LocalVar>) -> Self {
+    fn new(input: &'a str, function_name: String, mut locals: Vec<LocalVar>) -> Self {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
-        assembly.push_str("  .globl main\n");
-        assembly.push_str("main:\n");
+        assembly.push_str(&format!("  .globl {function_name}\n"));
+        assembly.push_str(&format!("{function_name}:\n"));
         assembly.push_str("  push %rbp\n");
         assembly.push_str("  mov %rsp, %rbp\n");
         assembly.push_str(&format!("  sub ${stack_size}, %rsp\n"));
 
         Self {
             input,
+            function_name,
             assembly,
             depth: 0,
             locals,
@@ -35,12 +35,13 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a statement.
-    pub fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+    fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr),
             StmtKind::Return(expr) => {
                 self.gen_expr(expr)?;
-                self.assembly.push_str("  jmp .L.return\n");
+                self.assembly
+                    .push_str(&format!("  jmp .L.return.{}\n", self.function_name));
                 Ok(())
             },
             StmtKind::Loop {
@@ -95,13 +96,14 @@ impl<'a> Codegen<'a> {
     }
 
     /// Assert that the temporary expression stack is balanced.
-    pub fn assert_balanced(&self) {
+    fn assert_balanced(&self) {
         assert_eq!(self.depth, 0);
     }
 
     /// Finish code generation and return the final assembly.
-    pub fn finish(mut self) -> String {
-        self.assembly.push_str(".L.return:\n");
+    fn finish(mut self) -> String {
+        self.assembly
+            .push_str(&format!(".L.return.{}:\n", self.function_name));
         self.assembly.push_str("  mov %rbp, %rsp\n");
         self.assembly.push_str("  pop %rbp\n");
         self.assembly.push_str("  ret\n");
@@ -129,6 +131,8 @@ impl<'a> Codegen<'a> {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
             NodeKind::FuncCall { name, args } => {
+                const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
                 if args.len() > ARG_REGS.len() {
                     return Err(format_error_at(
                         self.input,
@@ -229,6 +233,20 @@ impl<'a> Codegen<'a> {
         self.next_label += 1;
         label
     }
+}
+
+/// Generate assembly for a full program.
+pub fn codegen_program(input: &str, program: Program) -> Result<String, String> {
+    let mut assembly = String::new();
+
+    for Function { name, body, locals } in program.functions {
+        let mut codegen = Codegen::new(input, name, locals);
+        codegen.gen_stmt(&body)?;
+        codegen.assert_balanced();
+        assembly.push_str(&codegen.finish());
+    }
+
+    Ok(assembly)
 }
 
 /// Assign stack offsets to locals and return the aligned stack size.

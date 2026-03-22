@@ -6,24 +6,16 @@ mod parse;
 mod tokenize;
 mod types;
 
-use ast::Program;
-use codegen::Codegen;
+use codegen::codegen_program;
 use parse::TokenCursor;
 use tokenize::tokenize;
 
-/// Compile the input program into a tiny `main` function.
+/// Compile the input program into x86-64 assembly.
 pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
     let mut parser = TokenCursor::new(input, tokens);
-    let Program { body, locals } = parser.parse_program()?;
-    let mut codegen = Codegen::new(input, locals);
-
-    for stmt in &body {
-        codegen.gen_stmt(stmt)?;
-        codegen.assert_balanced();
-    }
-
-    Ok(codegen.finish())
+    let program = parser.parse_program()?;
+    codegen_program(input, program)
 }
 
 #[cfg(test)]
@@ -35,10 +27,14 @@ mod tests {
     use crate::compile_expression_program;
     use crate::tokenize::{Keyword, Token, tokenize};
 
+    fn compile_main(body: &str) -> Result<String, String> {
+        compile_expression_program(&format!("int main() {body}"))
+    }
+
     #[test]
     fn emits_expected_assembly() {
         assert_eq!(
-            compile_expression_program("{ 5+6*7; }").unwrap(),
+            compile_main("{ 5+6*7; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -54,7 +50,7 @@ mod tests {
                 "  mov $5, %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -65,7 +61,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_unary_minus() {
         assert_eq!(
-            compile_expression_program("{ -10+20; }").unwrap(),
+            compile_main("{ -10+20; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -78,7 +74,7 @@ mod tests {
                 "  neg %rax\n",
                 "  pop %rdi\n",
                 "  add %rdi, %rax\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -89,7 +85,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_equality() {
         assert_eq!(
-            compile_expression_program("{ 0==1; }").unwrap(),
+            compile_main("{ 0==1; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -103,7 +99,7 @@ mod tests {
                 "  cmp %rdi, %rax\n",
                 "  sete %al\n",
                 "  movzb %al, %rax\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -114,7 +110,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_assignment() {
         assert_eq!(
-            compile_expression_program("{ int foo=3; foo; }").unwrap(),
+            compile_main("{ int foo=3; foo; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -128,7 +124,7 @@ mod tests {
                 "  mov %rax, (%rdi)\n",
                 "  lea -8(%rbp), %rax\n",
                 "  mov (%rax), %rax\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -139,7 +135,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_return() {
         assert_eq!(
-            compile_expression_program("{ return 42; }").unwrap(),
+            compile_main("{ return 42; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -147,8 +143,8 @@ mod tests {
                 "  mov %rsp, %rbp\n",
                 "  sub $0, %rsp\n",
                 "  mov $42, %rax\n",
-                "  jmp .L.return\n",
-                ".L.return:\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -159,7 +155,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_if() {
         assert_eq!(
-            compile_expression_program("{ if (0) return 2; return 3; }").unwrap(),
+            compile_main("{ if (0) return 2; return 3; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -170,13 +166,13 @@ mod tests {
                 "  cmp $0, %rax\n",
                 "  je  .L.else.1\n",
                 "  mov $2, %rax\n",
-                "  jmp .L.return\n",
+                "  jmp .L.return.main\n",
                 "  jmp .L.end.1\n",
                 ".L.else.1:\n",
                 ".L.end.1:\n",
                 "  mov $3, %rax\n",
-                "  jmp .L.return\n",
-                ".L.return:\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -187,7 +183,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_for() {
         assert_eq!(
-            compile_expression_program("{ for (;;) return 3; }").unwrap(),
+            compile_main("{ for (;;) return 3; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -196,10 +192,10 @@ mod tests {
                 "  sub $0, %rsp\n",
                 ".L.begin.1:\n",
                 "  mov $3, %rax\n",
-                "  jmp .L.return\n",
+                "  jmp .L.return.main\n",
                 "  jmp .L.begin.1\n",
                 ".L.end.1:\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -210,7 +206,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_while() {
         assert_eq!(
-            compile_expression_program("{ while (0) return 3; }").unwrap(),
+            compile_main("{ while (0) return 3; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -222,10 +218,10 @@ mod tests {
                 "  cmp $0, %rax\n",
                 "  je  .L.end.1\n",
                 "  mov $3, %rax\n",
-                "  jmp .L.return\n",
+                "  jmp .L.return.main\n",
                 "  jmp .L.begin.1\n",
                 ".L.end.1:\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -236,7 +232,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_address_and_deref() {
         assert_eq!(
-            compile_expression_program("{ int x=3; return *&x; }").unwrap(),
+            compile_main("{ int x=3; return *&x; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -250,8 +246,8 @@ mod tests {
                 "  mov %rax, (%rdi)\n",
                 "  lea -8(%rbp), %rax\n",
                 "  mov (%rax), %rax\n",
-                "  jmp .L.return\n",
-                ".L.return:\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -262,7 +258,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_func_call() {
         assert_eq!(
-            compile_expression_program("{ return ret3(); }").unwrap(),
+            compile_main("{ return ret3(); }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -271,8 +267,8 @@ mod tests {
                 "  sub $0, %rsp\n",
                 "  mov $0, %rax\n",
                 "  call ret3\n",
-                "  jmp .L.return\n",
-                ".L.return:\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -283,7 +279,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_func_call_with_args() {
         assert_eq!(
-            compile_expression_program("{ return add(3, 5); }").unwrap(),
+            compile_main("{ return add(3, 5); }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -298,8 +294,8 @@ mod tests {
                 "  pop %rdi\n",
                 "  mov $0, %rax\n",
                 "  call add\n",
-                "  jmp .L.return\n",
-                ".L.return:\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -349,32 +345,41 @@ mod tests {
 
     #[test]
     fn rejects_invalid_tokens() {
-        let error = compile_expression_program("{ 1+@; }").unwrap_err();
-        assert_eq!(error, "{ 1+@; }\n    ^ expected an expression");
+        let error = compile_expression_program("int main() { 1+@; }").unwrap_err();
+        assert_eq!(
+            error,
+            "int main() { 1+@; }\n               ^ expected an expression"
+        );
     }
 
     #[test]
     fn reports_missing_expressions() {
-        let error = compile_expression_program("{ 1+; }").unwrap_err();
-        assert_eq!(error, "{ 1+; }\n    ^ expected an expression");
+        let error = compile_expression_program("int main() { 1+; }").unwrap_err();
+        assert_eq!(
+            error,
+            "int main() { 1+; }\n               ^ expected an expression"
+        );
     }
 
     #[test]
     fn reports_missing_semicolons() {
-        let error = compile_expression_program("{ 1 2; }").unwrap_err();
-        assert_eq!(error, "{ 1 2; }\n    ^ expected ';'");
+        let error = compile_expression_program("int main() { 1 2; }").unwrap_err();
+        assert_eq!(error, "int main() { 1 2; }\n               ^ expected ';'");
     }
 
     #[test]
     fn rejects_undefined_variables() {
-        let error = compile_expression_program("{ return a; }").unwrap_err();
-        assert_eq!(error, "{ return a; }\n         ^ undefined variable");
+        let error = compile_expression_program("int main() { return a; }").unwrap_err();
+        assert_eq!(
+            error,
+            "int main() { return a; }\n                    ^ undefined variable"
+        );
     }
 
     #[test]
     fn parses_nested_unary_operators() {
         assert_eq!(
-            compile_expression_program("{ - - +10; }").unwrap(),
+            compile_main("{ - - +10; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -384,7 +389,7 @@ mod tests {
                 "  mov $10, %rax\n",
                 "  neg %rax\n",
                 "  neg %rax\n",
-                ".L.return:\n",
+                ".L.return.main:\n",
                 "  mov %rbp, %rsp\n",
                 "  pop %rbp\n",
                 "  ret\n",
@@ -412,7 +417,7 @@ mod tests {
             ("{ 1>=1; }", 1),
             ("{ 1>=2; }", 0),
         ] {
-            let asm = compile_expression_program(input).unwrap();
+            let asm = compile_main(input).unwrap();
             assert!(asm.contains("movzb %al, %rax"), "{input}: {asm}");
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }
@@ -420,10 +425,10 @@ mod tests {
 
     #[test]
     fn evaluates_multiple_statements() {
-        let asm = compile_expression_program("{ 1; 2; 3; }").unwrap();
+        let asm = compile_main("{ 1; 2; 3; }").unwrap();
         assert_eq!(eval_with_cc(&asm), 3);
 
-        let asm = compile_expression_program("{ ;;; return 5; }").unwrap();
+        let asm = compile_main("{ ;;; return 5; }").unwrap();
         assert_eq!(eval_with_cc(&asm), 5);
     }
 
@@ -439,7 +444,7 @@ mod tests {
             ("{ int x, y; x=3; y=5; x+y; }", 8),
             ("{ int x=3, y=5; x+y; }", 8),
         ] {
-            let asm = compile_expression_program(input).unwrap();
+            let asm = compile_main(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }
     }
@@ -492,15 +497,15 @@ mod tests {
                 136,
             ),
         ] {
-            let asm = compile_expression_program(input).unwrap();
+            let asm = compile_main(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
         }
     }
 
     #[test]
     fn rejects_non_lvalues_on_assignment() {
-        let error = compile_expression_program("{ 1=2; }").unwrap_err();
-        assert_eq!(error, "{ 1=2; }\n  ^ not an lvalue");
+        let error = compile_expression_program("int main() { 1=2; }").unwrap_err();
+        assert_eq!(error, "int main() { 1=2; }\n             ^ not an lvalue");
     }
 
     /// Assemble and run generated code, returning the exit status.
