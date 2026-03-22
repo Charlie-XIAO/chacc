@@ -126,6 +126,10 @@ impl<'a> Codegen<'a> {
             NodeKind::Num(value) => {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
+            NodeKind::FuncCall(name) => {
+                self.assembly.push_str("  mov $0, %rax\n");
+                self.assembly.push_str(&format!("  call {name}\n"));
+            },
             NodeKind::Addr(expr) => {
                 self.gen_addr(expr)?;
             },

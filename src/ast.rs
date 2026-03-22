@@ -48,6 +48,8 @@ pub struct Node {
 pub enum NodeKind {
     /// A numeric literal.
     Num(i64),
+    /// A zero-argument function call.
+    FuncCall(String),
     /// An address-of expression.
     Addr(Box<Node>),
     /// A pointer dereference.
@@ -128,6 +130,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Num(value),
+        }
+    }
+
+    /// Construct a zero-argument function call node.
+    pub fn funcall(name: String, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::FuncCall(name),
         }
     }
 

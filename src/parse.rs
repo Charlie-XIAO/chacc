@@ -389,7 +389,8 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <primary> ::= "(" <expr> ")" | ident | num
+    /// <primary> ::= "(" <expr> ")" | ident <args>? | num
+    /// <args> ::= "(" ")"
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.at_punct("(") {
@@ -401,6 +402,13 @@ impl<'a> TokenCursor<'a> {
 
         let tok = self.current();
         if let TokenKind::Ident(name) = tok.kind {
+            if self.next_is_punct("(") {
+                self.advance();
+                self.skip_punct("(")?;
+                self.skip_punct(")")?;
+                return Ok(Node::funcall(name.to_owned(), tok.offset));
+            }
+
             self.advance();
             let Some(local_id) = self.find_local(name) else {
                 return Err(format_error_at(
@@ -452,6 +460,13 @@ impl<'a> TokenCursor<'a> {
     fn at_keyword(&self, expected: Keyword) -> bool {
         let tok = self.current();
         tok.kind == TokenKind::Keyword(expected)
+    }
+
+    /// Check whether the next token matches a punctuator.
+    fn next_is_punct(&self, expected: &str) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .is_some_and(|tok| tok.kind == TokenKind::Punct(expected))
     }
 
     /// Consume a specific keyword.
@@ -600,6 +615,9 @@ impl<'a> TokenCursor<'a> {
 
         match &mut node.kind {
             NodeKind::Num(_) => {
+                node.ty = Some(Type::Int);
+            },
+            NodeKind::FuncCall(_) => {
                 node.ty = Some(Type::Int);
             },
             NodeKind::Neg(expr) => {

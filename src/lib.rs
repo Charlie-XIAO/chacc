@@ -260,6 +260,27 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_funcall() {
+        assert_eq!(
+            compile_expression_program("{ return ret3(); }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $0, %rsp\n",
+                "  mov $0, %rax\n",
+                "  call ret3\n",
+                "  jmp .L.return\n",
+                ".L.return:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -433,6 +454,8 @@ mod tests {
                 "{ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} return j; }",
                 55,
             ),
+            ("{ return ret3(); }", 3),
+            ("{ return ret5(); }", 5),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -458,12 +481,29 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         let asm_path = dir.join("tmp.s");
         let exe_path = dir.join("tmp");
+        let helper_c_path = dir.join("helpers.c");
+        let helper_o_path = dir.join("helpers.o");
         fs::write(&asm_path, assembly).unwrap();
+        fs::write(
+            &helper_c_path,
+            "int ret3() { return 3; }\nint ret5() { return 5; }\n",
+        )
+        .unwrap();
+
+        let status = Command::new("cc")
+            .arg("-c")
+            .arg("-o")
+            .arg(&helper_o_path)
+            .arg(&helper_c_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
 
         let status = Command::new("cc")
             .arg("-o")
             .arg(&exe_path)
             .arg(&asm_path)
+            .arg(&helper_o_path)
             .status()
             .unwrap();
         assert!(status.success());
