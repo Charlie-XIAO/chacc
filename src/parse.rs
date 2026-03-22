@@ -10,7 +10,7 @@ struct Parameter {
     ty: Type,
 }
 
-/// A variable or function declarator.
+/// An object declarator.
 struct Declarator {
     name: String,
     ty: Type,
@@ -273,33 +273,39 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <type-suffix> ::= "(" <func-params>? ")" | ε
+    /// <type-suffix> ::= "(" <func-params> | "[" <num> "]" | ε
     /// ```
     fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
-        if !self.current().is_punct("(") {
-            return Ok((ty, Vec::new()));
+        if self.current().is_punct("(") {
+            self.advance();
+            return self.parse_func_params(ty);
         }
 
-        self.advance();
-        let params = if self.current().is_punct(")") {
-            Vec::new()
-        } else {
-            self.parse_func_params()?
-        };
-        self.skip_punct(")")?;
+        if self.current().is_punct("[") {
+            self.advance();
+            let Some(len) = self.current().as_num() else {
+                return Err(self.error_current("expected a number"));
+            };
+            self.advance();
+            self.skip_punct("]")?;
+            return Ok((Type::array(ty, len as usize), Vec::new()));
+        }
 
-        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
-        Ok((Type::func(ty, param_tys), params))
+        Ok((ty, Vec::new()))
     }
 
     /// ```bnf
-    /// <func-params> ::= <param> ("," <param>)*
+    /// <func-params> ::= (<param> ("," <param>)*)? ")"
     /// <param> ::= <declspec> <declarator>
     /// ```
-    fn parse_func_params(&mut self) -> Result<Vec<Parameter>, String> {
+    fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>), String> {
         let mut params = Vec::new();
 
-        loop {
+        while !self.current().is_punct(")") {
+            if !params.is_empty() {
+                self.skip_punct(",")?;
+            }
+
             let base_ty = self.parse_declspec()?;
             let declarator = self.parse_declarator(base_ty)?;
             params.push(Parameter {
@@ -314,12 +320,11 @@ impl<'a> TokenCursor<'a> {
                     "too many parameters",
                 ));
             }
-
-            if !self.current().is_punct(",") {
-                return Ok(params);
-            }
-            self.advance();
         }
+
+        self.skip_punct(")")?;
+        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
+        Ok((Type::func(return_ty, param_tys), params))
     }
 
     /// ```bnf
@@ -486,7 +491,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <primary> ::= "(" <expr> ")" | <func-call> | <ident> | num
+    /// <primary> ::= "(" <expr> ")" | <func-call> | <ident> | <num>
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
         if self.current().is_punct("(") {
@@ -739,7 +744,15 @@ impl<'a> TokenCursor<'a> {
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
-                node.ty = Some(Type::ptr(expr.ty.clone().unwrap()));
+                let pointee = expr.ty.as_ref().unwrap();
+                let base = if pointee.is_array() {
+                    // In C, array decays into a pointer to its first element
+                    // when taking its address, so we need to take its base type
+                    pointee.base().cloned().unwrap()
+                } else {
+                    pointee.clone()
+                };
+                node.ty = Some(Type::ptr(base));
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
@@ -755,6 +768,9 @@ impl<'a> TokenCursor<'a> {
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
+                if lhs.ty.as_ref().is_some_and(Type::is_array) {
+                    return Err(format_error_at(self.input, lhs.offset, "not an lvalue"));
+                }
                 node.ty = lhs.ty.clone();
             },
             NodeKind::Binary { lhs, rhs, .. } => {

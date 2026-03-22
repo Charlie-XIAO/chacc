@@ -169,7 +169,7 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Deref(expr) => {
                 self.gen_expr(expr)?;
-                self.assembly.push_str("  mov (%rax), %rax\n");
+                self.load(node);
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
@@ -177,14 +177,13 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Var(_) => {
                 self.gen_addr(node)?;
-                self.assembly.push_str("  mov (%rax), %rax\n");
+                self.load(node);
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.gen_addr(lhs)?;
                 self.push();
                 self.gen_expr(rhs)?;
-                self.pop("%rdi");
-                self.assembly.push_str("  mov %rax, (%rdi)\n");
+                self.store();
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
@@ -233,6 +232,26 @@ impl<'a> Codegen<'a> {
         self.depth += 1;
     }
 
+    /// Load a value from where `%rax` is pointing to.
+    ///
+    /// In particular, if the node is an array, we do not attempt to load the
+    /// value to the register because in general we cannot load an entire array
+    /// into a register. Consequently, the result of an evaluation of an array
+    /// becomes not the array itself but the address of the array, which is why
+    /// "array is a pointer to its first element" in C.
+    fn load(&mut self, node: &Node) {
+        if node.ty.as_ref().is_some_and(|ty| ty.is_array()) {
+            return;
+        }
+        self.assembly.push_str("  mov (%rax), %rax\n");
+    }
+
+    /// Store `%rax` into the address on top of the temporary stack.
+    fn store(&mut self) {
+        self.pop("%rdi");
+        self.assembly.push_str("  mov %rax, (%rdi)\n");
+    }
+
     /// Pop the top of the temporary stack into a register.
     fn pop(&mut self, register: &str) {
         self.assembly.push_str(&format!("  pop {register}\n"));
@@ -268,12 +287,12 @@ pub fn codegen_program(input: &str, program: Program) -> Result<String, String> 
 }
 
 /// Assign stack offsets to locals and return the aligned stack size.
-fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i32 {
+fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i64 {
     let mut offset = 0;
 
     // The first parsed local stays closest to `%rbp`
     for local in locals.iter_mut().rev() {
-        offset += 8;
+        offset += local.ty.size();
         local.offset = -offset;
     }
 
@@ -281,6 +300,6 @@ fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i32 {
 }
 
 /// Round `n` up to the nearest multiple of `align`.
-fn align_to(n: i32, align: i32) -> i32 {
+fn align_to(n: i64, align: i64) -> i64 {
     (n + align - 1) / align * align
 }

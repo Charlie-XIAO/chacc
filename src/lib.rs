@@ -332,6 +332,26 @@ mod tests {
     }
 
     #[test]
+    fn emits_expected_assembly_for_array_variable() {
+        assert_eq!(
+            compile_main("{ int x[2]; return &x; }").unwrap(),
+            concat!(
+                "  .globl main\n",
+                "main:\n",
+                "  push %rbp\n",
+                "  mov %rsp, %rbp\n",
+                "  sub $16, %rsp\n",
+                "  lea -16(%rbp), %rax\n",
+                "  jmp .L.return.main\n",
+                ".L.return.main:\n",
+                "  mov %rbp, %rsp\n",
+                "  pop %rbp\n",
+                "  ret\n",
+            )
+        );
+    }
+
+    #[test]
     fn tokenizes_identifiers_punctuation_and_whitespace() {
         assert_eq!(
             tokenize(" foo123=3; bar=5; foo123+bar;").unwrap(),
@@ -543,6 +563,19 @@ mod tests {
                  fib(x-1) + fib(x-2); }",
                 55,
             ),
+            ("int main() { int x[2]; int *y=&x; *y=3; return *x; }", 3),
+            (
+                "int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *x; }",
+                3,
+            ),
+            (
+                "int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *(x+1); }",
+                4,
+            ),
+            (
+                "int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *(x+2); }",
+                5,
+            ),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -553,6 +586,15 @@ mod tests {
     fn rejects_non_lvalues_on_assignment() {
         let error = compile_expression_program("int main() { 1=2; }").unwrap_err();
         assert_eq!(error, "int main() { 1=2; }\n             ^ not an lvalue");
+    }
+
+    #[test]
+    fn rejects_array_assignment() {
+        let error = compile_expression_program("int main() { int x[2]; x=0; }").unwrap_err();
+        assert_eq!(
+            error,
+            "int main() { int x[2]; x=0; }\n                       ^ not an lvalue"
+        );
     }
 
     /// Assemble and run generated code, returning the exit status.

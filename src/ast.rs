@@ -9,7 +9,7 @@ pub struct LocalVar {
     /// The declared type of the variable.
     pub ty: Type,
     /// The offset of the variable from the base pointer (RBP) in bytes.
-    pub offset: i32,
+    pub offset: i64,
 }
 
 /// The parsed program.
