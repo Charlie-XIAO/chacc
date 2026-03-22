@@ -50,12 +50,13 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <stmt> ::= "return" <expr> ";"
-    ///          | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
-    ///          | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
-    ///          | "while" "(" <expr> ")" <stmt>
-    ///          | "{" <compound-stmt>
-    ///          | <expr-stmt>
+    /// <stmt> ::=
+    ///   "return" <expr> ";"
+    ///   | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
+    ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
+    ///   | "while" "(" <expr> ")" <stmt>
+    ///   | "{" <compound-stmt>
+    ///   | <expr-stmt>
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.at_keyword(Keyword::Return) {
@@ -124,13 +125,17 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <compound-stmt> ::= <stmt>* "}"
+    /// <compound-stmt> ::= (<declaration> | <stmt>)* "}"
     /// ```
     fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
 
         while !self.at_punct("}") {
-            let mut stmt = self.parse_stmt()?;
+            let mut stmt = if self.at_keyword(Keyword::Int) {
+                self.parse_declaration()?
+            } else {
+                self.parse_stmt()?
+            };
             self.infer_type_stmt(&mut stmt)?;
             stmts.push(stmt);
         }
@@ -153,6 +158,71 @@ impl<'a> TokenCursor<'a> {
         let expr = self.parse_expr()?;
         self.skip_punct(";")?;
         Ok(Stmt::expr(expr, offset))
+    }
+
+    /// ```bnf
+    /// <declaration> ::=
+    ///   <declspec>
+    ///   (<declarator> ("=" <assign>)?
+    ///     ("," <declarator> ("=" <assign>)?)*)?
+    ///   ";"
+    /// ```
+    fn parse_declaration(&mut self) -> Result<Stmt, String> {
+        let offset = self.current().offset;
+        let base_ty = self.parse_declspec()?;
+        let mut stmts = Vec::new();
+        let mut first = true;
+
+        while !self.at_punct(";") {
+            if !first {
+                self.skip_punct(",")?;
+            }
+            first = false;
+
+            let (name, ty, name_offset) = self.parse_declarator(base_ty.clone())?;
+            let local_id = self.create_local(name, ty);
+
+            if !self.at_punct("=") {
+                continue;
+            }
+
+            // If there is an initializer, treat it as an assignment to the
+            // just-created variable
+            self.advance();
+            let lhs = Node::var(local_id, name_offset);
+            let rhs = self.parse_assign()?;
+            let expr = Node::assign(lhs, rhs, name_offset);
+            stmts.push(Stmt::expr(expr, name_offset));
+        }
+
+        self.skip_punct(";")?;
+        Ok(Stmt::block(stmts, offset))
+    }
+
+    /// ```bnf
+    /// <declspec> ::= "int"
+    /// ```
+    fn parse_declspec(&mut self) -> Result<Type, String> {
+        self.skip_keyword(Keyword::Int)?;
+        Ok(Type::Int)
+    }
+
+    /// ```bnf
+    /// <declarator> ::= "*"* ident
+    /// ```
+    fn parse_declarator(&mut self, mut ty: Type) -> Result<(String, Type, usize), String> {
+        while self.at_punct("*") {
+            self.advance();
+            ty = Type::ptr(ty);
+        }
+
+        let tok = self.current();
+        let TokenKind::Ident(name) = tok.kind else {
+            return Err(self.error_current("expected a variable name"));
+        };
+
+        self.advance();
+        Ok((name.to_owned(), ty, tok.offset))
     }
 
     /// ```bnf
@@ -332,7 +402,14 @@ impl<'a> TokenCursor<'a> {
         let tok = self.current();
         if let TokenKind::Ident(name) = tok.kind {
             self.advance();
-            return Ok(Node::var(self.find_or_create_local(name), tok.offset));
+            let Some(local_id) = self.find_local(name) else {
+                return Err(format_error_at(
+                    self.input,
+                    tok.offset,
+                    "undefined variable",
+                ));
+            };
+            return Ok(Node::var(local_id, tok.offset));
         }
 
         if let TokenKind::Num(value) = tok.kind {
@@ -359,12 +436,6 @@ impl<'a> TokenCursor<'a> {
         tok.kind == TokenKind::Punct(expected)
     }
 
-    /// Check whether the current token matches a keyword.
-    fn at_keyword(&self, expected: Keyword) -> bool {
-        let tok = self.current();
-        tok.kind == TokenKind::Keyword(expected)
-    }
-
     /// Consume a specific punctuator.
     ///
     /// This returns an error if the current token does not match the expected
@@ -377,17 +448,34 @@ impl<'a> TokenCursor<'a> {
         Ok(())
     }
 
-    /// Find an existing local or create a new one.
-    ///
-    /// An index of the local variable is returned, which will be used to assign
-    /// offset during code generation.
-    fn find_or_create_local(&mut self, name: &str) -> usize {
-        if let Some(index) = self.locals.iter().position(|local| local.name == name) {
-            return index;
-        }
+    /// Check whether the current token matches a keyword.
+    fn at_keyword(&self, expected: Keyword) -> bool {
+        let tok = self.current();
+        tok.kind == TokenKind::Keyword(expected)
+    }
 
+    /// Consume a specific keyword.
+    ///
+    /// This returns an error if the current token does not match the expected
+    /// keyword.
+    fn skip_keyword(&mut self, expected: Keyword) -> Result<(), String> {
+        if !self.at_keyword(expected) {
+            return Err(self.error_current(&format!("expected '{expected}'")));
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// Find an existing local by name; newest binding wins.
+    fn find_local(&self, name: &str) -> Option<usize> {
+        self.locals.iter().rposition(|local| local.name == name)
+    }
+
+    /// Create a new local variable.
+    fn create_local(&mut self, name: String, ty: Type) -> usize {
         self.locals.push(LocalVar {
-            name: name.to_owned(),
+            name,
+            ty,
             offset: 0, // Assigned during codegen
         });
         self.locals.len() - 1
@@ -518,8 +606,8 @@ impl<'a> TokenCursor<'a> {
                 self.infer_type(expr)?;
                 node.ty = Some(Type::Int);
             },
-            NodeKind::Var(_) => {
-                node.ty = Some(Type::Int);
+            NodeKind::Var(local_id) => {
+                node.ty = Some(self.locals[*local_id].ty.clone());
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
@@ -527,12 +615,14 @@ impl<'a> TokenCursor<'a> {
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
-                node.ty = expr
-                    .ty
-                    .as_ref()
-                    .and_then(Type::base)
-                    .cloned()
-                    .or(Some(Type::Int));
+                let Some(base) = expr.ty.as_ref().and_then(Type::base) else {
+                    return Err(format_error_at(
+                        self.input,
+                        node.offset,
+                        "invalid pointer dereference",
+                    ));
+                };
+                node.ty = Some(base.clone());
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;

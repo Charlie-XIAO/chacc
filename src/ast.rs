@@ -6,6 +6,8 @@ use crate::types::Type;
 #[derive(Debug, Eq, PartialEq)]
 pub struct LocalVar {
     pub name: String,
+    /// The declared type of the variable.
+    pub ty: Type,
     /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i32,
 }

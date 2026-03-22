@@ -8,6 +8,7 @@ pub enum Keyword {
     Else,
     For,
     While,
+    Int,
 }
 
 impl std::fmt::Display for Keyword {
@@ -18,6 +19,7 @@ impl std::fmt::Display for Keyword {
             Self::Else => "else",
             Self::For => "for",
             Self::While => "while",
+            Self::Int => "int",
         };
         write!(f, "{s}")
     }
@@ -33,6 +35,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "else" => Ok(Self::Else),
             "for" => Ok(Self::For),
             "while" => Ok(Self::While),
+            "int" => Ok(Self::Int),
             _ => Err(()),
         }
     }

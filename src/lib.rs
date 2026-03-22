@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_assignment() {
         assert_eq!(
-            compile_expression_program("{ foo=3; foo; }").unwrap(),
+            compile_expression_program("{ int foo=3; foo; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn emits_expected_assembly_for_address_and_deref() {
         assert_eq!(
-            compile_expression_program("{ x=3; return *&x; }").unwrap(),
+            compile_expression_program("{ int x=3; return *&x; }").unwrap(),
             concat!(
                 "  .globl main\n",
                 "main:\n",
@@ -284,16 +284,17 @@ mod tests {
     #[test]
     fn tokenizes_keywords() {
         assert_eq!(
-            tokenize("if else for while return foo;").unwrap(),
+            tokenize("if else for while return int foo;").unwrap(),
             vec![
                 Token::keyword(0, Keyword::If),
                 Token::keyword(3, Keyword::Else),
                 Token::keyword(8, Keyword::For),
                 Token::keyword(12, Keyword::While),
                 Token::keyword(18, Keyword::Return),
-                Token::ident(25, "foo"),
-                Token::punct(28, ";"),
-                Token::eof(29),
+                Token::keyword(25, Keyword::Int),
+                Token::ident(29, "foo"),
+                Token::punct(32, ";"),
+                Token::eof(33),
             ]
         );
     }
@@ -314,6 +315,12 @@ mod tests {
     fn reports_missing_semicolons() {
         let error = compile_expression_program("{ 1 2; }").unwrap_err();
         assert_eq!(error, "{ 1 2; }\n    ^ expected ';'");
+    }
+
+    #[test]
+    fn rejects_undefined_variables() {
+        let error = compile_expression_program("{ return a; }").unwrap_err();
+        assert_eq!(error, "{ return a; }\n         ^ undefined variable");
     }
 
     #[test]
@@ -375,11 +382,14 @@ mod tests {
     #[test]
     fn evaluates_assignments() {
         for (input, expected) in [
-            ("{ a=3; a; }", 3),
-            ("{ a=3; z=5; a+z; }", 8),
-            ("{ a=b=3; a+b; }", 6),
-            ("{ foo=3; foo; }", 3),
-            ("{ foo123=3; bar=5; foo123+bar; }", 8),
+            ("{ int a; a=3; a; }", 3),
+            ("{ int a=3; a; }", 3),
+            ("{ int a=3; int z=5; a+z; }", 8),
+            ("{ int a; int b; a=b=3; a+b; }", 6),
+            ("{ int foo=3; foo; }", 3),
+            ("{ int foo123=3; int bar=5; foo123+bar; }", 8),
+            ("{ int x, y; x=3; y=5; x+y; }", 8),
+            ("{ int x=3, y=5; x+y; }", 8),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
@@ -391,8 +401,8 @@ mod tests {
         for (input, expected) in [
             ("{ return 0; }", 0),
             ("{ return 42; }", 42),
-            ("{ a=3; return a; }", 3),
-            ("{ a=3; z=5; return a+z; }", 8),
+            ("{ int a=3; return a; }", 3),
+            ("{ int a=3; int z=5; return a+z; }", 8),
             ("{ return 1; 2; 3; }", 1),
             ("{ 1; return 2; 3; }", 2),
             ("{ 1; 2; return 3; }", 3),
@@ -404,18 +414,25 @@ mod tests {
             ("{ if (2-1) return 2; return 3; }", 2),
             ("{ if (0) { 1; 2; return 3; } else { return 4; } }", 4),
             ("{ if (1) { 1; 2; return 3; } else { return 4; } }", 3),
-            ("{ i=0; j=0; for (i=0; i<=10; i=i+1) j=i+j; return j; }", 55),
-            ("{ for (;;) {return 3;} return 5; }", 3),
-            ("{ i=0; while(i<10) { i=i+1; } return i; }", 10),
-            ("{ x=3; return *&x; }", 3),
-            ("{ x=3; y=&x; z=&y; return **z; }", 3),
-            ("{ x=3; y=5; return *(&x+1); }", 5),
-            ("{ x=3; y=5; return *(&y-1); }", 3),
-            ("{ x=3; y=5; return *(&x-(-1)); }", 5),
-            ("{ x=3; y=&x; *y=5; return x; }", 5),
-            ("{ x=3; y=5; *(&x+1)=7; return y; }", 7),
-            ("{ x=3; y=5; *(&y-2+1)=7; return x; }", 7),
-            ("{ x=3; return (&x+2)-&x+3; }", 5),
+            (
+                "{ int i=0; int j=0; for (i=0; i<=10; i=i+1) j=i+j; return j; }",
+                55,
+            ),
+            ("{ for (;;) return 3; return 5; }", 3),
+            ("{ int i=0; while(i<10) i=i+1; return i; }", 10),
+            ("{ int x=3; return *&x; }", 3),
+            ("{ int x=3; int *y=&x; int **z=&y; return **z; }", 3),
+            ("{ int x=3; int y=5; return *(&x+1); }", 5),
+            ("{ int x=3; int y=5; return *(&y-1); }", 3),
+            ("{ int x=3; int y=5; return *(&x-(-1)); }", 5),
+            ("{ int x=3; int *y=&x; *y=5; return x; }", 5),
+            ("{ int x=3; int y=5; *(&x+1)=7; return y; }", 7),
+            ("{ int x=3; int y=5; *(&y-2+1)=7; return x; }", 7),
+            ("{ int x=3; return (&x+2)-&x+3; }", 5),
+            (
+                "{ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} return j; }",
+                55,
+            ),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
