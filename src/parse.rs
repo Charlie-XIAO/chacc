@@ -1,7 +1,7 @@
 //! A recursive-descent parser.
 
 use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
-use crate::tokenize::{Keyword, Token, TokenKind, format_error_at};
+use crate::tokenize::{Keyword, Token, format_error_at};
 use crate::types::Type;
 
 /// Cursor over the token stream during parsing.
@@ -59,7 +59,7 @@ impl<'a> TokenCursor<'a> {
     ///   | <expr-stmt>
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
-        if self.at_keyword(Keyword::Return) {
+        if self.current().is_keyword(Keyword::Return) {
             let offset = self.current().offset;
             self.advance();
             let expr = self.parse_expr()?;
@@ -67,14 +67,14 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::return_(expr, offset));
         }
 
-        if self.at_keyword(Keyword::If) {
+        if self.current().is_keyword(Keyword::If) {
             let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
             let cond = self.parse_expr()?;
             self.skip_punct(")")?;
             let then_branch = Box::new(self.parse_stmt()?);
-            let else_branch = if self.at_keyword(Keyword::Else) {
+            let else_branch = if self.current().is_keyword(Keyword::Else) {
                 self.advance();
                 Some(Box::new(self.parse_stmt()?))
             } else {
@@ -83,18 +83,18 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::if_(cond, then_branch, else_branch, offset));
         }
 
-        if self.at_keyword(Keyword::For) {
+        if self.current().is_keyword(Keyword::For) {
             let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
             let init = Box::new(self.parse_expr_stmt()?);
-            let cond = if self.at_punct(";") {
+            let cond = if self.current().is_punct(";") {
                 None
             } else {
                 Some(self.parse_expr()?)
             };
             self.skip_punct(";")?;
-            let inc = if self.at_punct(")") {
+            let inc = if self.current().is_punct(")") {
                 None
             } else {
                 Some(self.parse_expr()?)
@@ -104,7 +104,7 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::for_(init, cond, inc, body, offset));
         }
 
-        if self.at_keyword(Keyword::While) {
+        if self.current().is_keyword(Keyword::While) {
             let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
@@ -115,7 +115,7 @@ impl<'a> TokenCursor<'a> {
             return Ok(Stmt::while_(cond, body, offset));
         }
 
-        if self.at_punct("{") {
+        if self.current().is_punct("{") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Stmt::block(self.parse_compound_stmt()?, offset));
@@ -130,8 +130,8 @@ impl<'a> TokenCursor<'a> {
     fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
 
-        while !self.at_punct("}") {
-            let mut stmt = if self.at_keyword(Keyword::Int) {
+        while !self.current().is_punct("}") {
+            let mut stmt = if self.current().is_keyword(Keyword::Int) {
                 self.parse_declaration()?
             } else {
                 self.parse_stmt()?
@@ -148,7 +148,7 @@ impl<'a> TokenCursor<'a> {
     /// <expr-stmt> ::= <expr>? ";"
     /// ```
     fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
-        if self.at_punct(";") {
+        if self.current().is_punct(";") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Stmt::block(Vec::new(), offset));
@@ -173,7 +173,7 @@ impl<'a> TokenCursor<'a> {
         let mut stmts = Vec::new();
         let mut first = true;
 
-        while !self.at_punct(";") {
+        while !self.current().is_punct(";") {
             if !first {
                 self.skip_punct(",")?;
             }
@@ -182,7 +182,7 @@ impl<'a> TokenCursor<'a> {
             let (name, ty, name_offset) = self.parse_declarator(base_ty.clone())?;
             let local_id = self.create_local(name, ty);
 
-            if !self.at_punct("=") {
+            if !self.current().is_punct("=") {
                 continue;
             }
 
@@ -211,13 +211,13 @@ impl<'a> TokenCursor<'a> {
     /// <declarator> ::= "*"* ident
     /// ```
     fn parse_declarator(&mut self, mut ty: Type) -> Result<(String, Type, usize), String> {
-        while self.at_punct("*") {
+        while self.current().is_punct("*") {
             self.advance();
             ty = Type::ptr(ty);
         }
 
         let tok = self.current();
-        let TokenKind::Ident(name) = tok.kind else {
+        let Some(name) = tok.as_ident() else {
             return Err(self.error_current("expected a variable name"));
         };
 
@@ -231,7 +231,7 @@ impl<'a> TokenCursor<'a> {
     fn parse_assign(&mut self) -> Result<Node, String> {
         let node = self.parse_equality()?;
 
-        if self.at_punct("=") {
+        if self.current().is_punct("=") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Node::assign(node, self.parse_assign()?, offset));
@@ -247,14 +247,14 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_relational()?;
 
         loop {
-            if self.at_punct("==") {
+            if self.current().is_punct("==") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?, offset);
                 continue;
             }
 
-            if self.at_punct("!=") {
+            if self.current().is_punct("!=") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?, offset);
@@ -272,21 +272,21 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_add()?;
 
         loop {
-            if self.at_punct("<") {
+            if self.current().is_punct("<") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Lt, node, self.parse_add()?, offset);
                 continue;
             }
 
-            if self.at_punct("<=") {
+            if self.current().is_punct("<=") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Le, node, self.parse_add()?, offset);
                 continue;
             }
 
-            if self.at_punct(">") {
+            if self.current().is_punct(">") {
                 let offset = self.current().offset;
                 self.advance();
                 // Reuse < with flipped operands
@@ -294,7 +294,7 @@ impl<'a> TokenCursor<'a> {
                 continue;
             }
 
-            if self.at_punct(">=") {
+            if self.current().is_punct(">=") {
                 let offset = self.current().offset;
                 self.advance();
                 // Reuse <= with flipped operands
@@ -313,7 +313,7 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_mul()?;
 
         loop {
-            if self.at_punct("+") {
+            if self.current().is_punct("+") {
                 let offset = self.current().offset;
                 self.advance();
                 let rhs = self.parse_mul()?;
@@ -321,7 +321,7 @@ impl<'a> TokenCursor<'a> {
                 continue;
             }
 
-            if self.at_punct("-") {
+            if self.current().is_punct("-") {
                 let offset = self.current().offset;
                 self.advance();
                 let rhs = self.parse_mul()?;
@@ -340,14 +340,14 @@ impl<'a> TokenCursor<'a> {
         let mut node = self.parse_unary()?;
 
         loop {
-            if self.at_punct("*") {
+            if self.current().is_punct("*") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?, offset);
                 continue;
             }
 
-            if self.at_punct("/") {
+            if self.current().is_punct("/") {
                 let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Div, node, self.parse_unary()?, offset);
@@ -362,24 +362,24 @@ impl<'a> TokenCursor<'a> {
     /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <primary>
     /// ```
     fn parse_unary(&mut self) -> Result<Node, String> {
-        if self.at_punct("+") {
+        if self.current().is_punct("+") {
             self.advance();
             return self.parse_unary();
         }
 
-        if self.at_punct("-") {
+        if self.current().is_punct("-") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Node::neg(self.parse_unary()?, offset));
         }
 
-        if self.at_punct("&") {
+        if self.current().is_punct("&") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Node::addr(self.parse_unary()?, offset));
         }
 
-        if self.at_punct("*") {
+        if self.current().is_punct("*") {
             let offset = self.current().offset;
             self.advance();
             return Ok(Node::deref(self.parse_unary()?, offset));
@@ -393,7 +393,7 @@ impl<'a> TokenCursor<'a> {
     /// <args> ::= "(" ")"
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
-        if self.at_punct("(") {
+        if self.current().is_punct("(") {
             self.advance();
             let node = self.parse_expr()?;
             self.skip_punct(")")?;
@@ -401,8 +401,8 @@ impl<'a> TokenCursor<'a> {
         }
 
         let tok = self.current();
-        if let TokenKind::Ident(name) = tok.kind {
-            if self.next_is_punct("(") {
+        if let Some(name) = tok.as_ident() {
+            if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
                 self.advance();
                 self.skip_punct("(")?;
                 self.skip_punct(")")?;
@@ -420,7 +420,7 @@ impl<'a> TokenCursor<'a> {
             return Ok(Node::var(local_id, tok.offset));
         }
 
-        if let TokenKind::Num(value) = tok.kind {
+        if let Some(value) = tok.as_num() {
             self.advance();
             return Ok(Node::num(value, tok.offset));
         }
@@ -438,43 +438,23 @@ impl<'a> TokenCursor<'a> {
         self.tokens[self.pos]
     }
 
-    /// Check whether the current token matches a punctuator.
-    fn at_punct(&self, expected: &str) -> bool {
-        let tok = self.current();
-        tok.kind == TokenKind::Punct(expected)
+    /// Return a token at a fixed lookahead distance.
+    fn peek(&self, offset: usize) -> Option<Token<'a>> {
+        self.tokens.get(self.pos + offset).copied()
     }
 
     /// Consume a specific punctuator.
-    ///
-    /// This returns an error if the current token does not match the expected
-    /// punctuator.
     fn skip_punct(&mut self, expected: &str) -> Result<(), String> {
-        if !self.at_punct(expected) {
+        if !self.current().is_punct(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
         self.advance();
         Ok(())
     }
 
-    /// Check whether the current token matches a keyword.
-    fn at_keyword(&self, expected: Keyword) -> bool {
-        let tok = self.current();
-        tok.kind == TokenKind::Keyword(expected)
-    }
-
-    /// Check whether the next token matches a punctuator.
-    fn next_is_punct(&self, expected: &str) -> bool {
-        self.tokens
-            .get(self.pos + 1)
-            .is_some_and(|tok| tok.kind == TokenKind::Punct(expected))
-    }
-
     /// Consume a specific keyword.
-    ///
-    /// This returns an error if the current token does not match the expected
-    /// keyword.
     fn skip_keyword(&mut self, expected: Keyword) -> Result<(), String> {
-        if !self.at_keyword(expected) {
+        if !self.current().is_keyword(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
         self.advance();

@@ -157,6 +157,32 @@ impl<'a> Token<'a> {
             kind: TokenKind::Eof,
         }
     }
+
+    /// Return whether this token is a punctuator.
+    pub fn is_punct(self, expected: &str) -> bool {
+        self.kind == TokenKind::Punct(expected)
+    }
+
+    /// Return whether this token is a keyword.
+    pub fn is_keyword(self, expected: Keyword) -> bool {
+        self.kind == TokenKind::Keyword(expected)
+    }
+
+    /// Return the lexeme if this is an identifier token.
+    pub fn as_ident(self) -> Option<&'a str> {
+        match self.kind {
+            TokenKind::Ident(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Return the value if this is a numeric token.
+    pub fn as_num(self) -> Option<i64> {
+        match self.kind {
+            TokenKind::Num(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 /// Return whether the byte is valid at the start of an identifier.
