@@ -4,6 +4,7 @@ mod ast;
 mod codegen;
 mod parse;
 mod tokenize;
+mod types;
 
 use ast::Program;
 use codegen::Codegen;
@@ -408,11 +409,13 @@ mod tests {
             ("{ i=0; while(i<10) { i=i+1; } return i; }", 10),
             ("{ x=3; return *&x; }", 3),
             ("{ x=3; y=&x; z=&y; return **z; }", 3),
-            ("{ x=3; y=5; return *(&x+8); }", 5),
-            ("{ x=3; y=5; return *(&y-8); }", 3),
+            ("{ x=3; y=5; return *(&x+1); }", 5),
+            ("{ x=3; y=5; return *(&y-1); }", 3),
+            ("{ x=3; y=5; return *(&x-(-1)); }", 5),
             ("{ x=3; y=&x; *y=5; return x; }", 5),
-            ("{ x=3; y=5; *(&x+8)=7; return y; }", 7),
-            ("{ x=3; y=5; *(&y-8)=7; return x; }", 7),
+            ("{ x=3; y=5; *(&x+1)=7; return y; }", 7),
+            ("{ x=3; y=5; *(&y-2+1)=7; return x; }", 7),
+            ("{ x=3; return (&x+2)-&x+3; }", 5),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");

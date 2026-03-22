@@ -1,5 +1,7 @@
 //! AST node definitions.
 
+use crate::types::Type;
+
 /// A local variable stored in the current function's stack frame.
 #[derive(Debug, Eq, PartialEq)]
 pub struct LocalVar {
@@ -35,6 +37,8 @@ pub struct Node {
     pub kind: NodeKind,
     /// The offset from the start of the source code in bytes.
     pub offset: usize,
+    /// The type computed for this expression.
+    pub ty: Option<Type>,
 }
 
 /// The specific expression form carried by [`Node`].
@@ -68,6 +72,7 @@ impl Node {
     pub fn addr(node: Node, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Addr(Box::new(node)),
         }
     }
@@ -76,6 +81,7 @@ impl Node {
     pub fn deref(node: Node, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Deref(Box::new(node)),
         }
     }
@@ -84,6 +90,7 @@ impl Node {
     pub fn binary(op: BinaryOp, lhs: Node, rhs: Node, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Binary {
                 op,
                 lhs: Box::new(lhs),
@@ -96,6 +103,7 @@ impl Node {
     pub fn neg(node: Node, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Neg(Box::new(node)),
         }
     }
@@ -104,6 +112,7 @@ impl Node {
     pub fn assign(lhs: Node, rhs: Node, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Assign {
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
@@ -115,6 +124,7 @@ impl Node {
     pub fn num(value: i64, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Num(value),
         }
     }
@@ -123,6 +133,7 @@ impl Node {
     pub fn var(local_id: usize, offset: usize) -> Self {
         Self {
             offset,
+            ty: None,
             kind: NodeKind::Var(local_id),
         }
     }

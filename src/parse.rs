@@ -1,7 +1,8 @@
 //! A recursive-descent parser.
 
-use crate::ast::{BinaryOp, LocalVar, Node, Program, Stmt};
+use crate::ast::{BinaryOp, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
 use crate::tokenize::{Keyword, Token, TokenKind, format_error_at};
+use crate::types::Type;
 
 /// Cursor over the token stream during parsing.
 pub struct TokenCursor<'a> {
@@ -129,7 +130,9 @@ impl<'a> TokenCursor<'a> {
         let mut stmts = Vec::new();
 
         while !self.at_punct("}") {
-            stmts.push(self.parse_stmt()?);
+            let mut stmt = self.parse_stmt()?;
+            self.infer_type_stmt(&mut stmt)?;
+            stmts.push(stmt);
         }
 
         self.advance();
@@ -243,14 +246,16 @@ impl<'a> TokenCursor<'a> {
             if self.at_punct("+") {
                 let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Add, node, self.parse_mul()?, offset);
+                let rhs = self.parse_mul()?;
+                node = self.new_add(node, rhs, offset)?;
                 continue;
             }
 
             if self.at_punct("-") {
                 let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Sub, node, self.parse_mul()?, offset);
+                let rhs = self.parse_mul()?;
+                node = self.new_sub(node, rhs, offset)?;
                 continue;
             }
 
@@ -383,8 +388,164 @@ impl<'a> TokenCursor<'a> {
 
         self.locals.push(LocalVar {
             name: name.to_owned(),
-            offset: 0, // To be assigned later during codegen
+            offset: 0, // Assigned during codegen
         });
         self.locals.len() - 1
+    }
+
+    /// Build an addition node with pointer scaling.
+    fn new_add(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node, String> {
+        self.infer_type(&mut lhs)?;
+        self.infer_type(&mut rhs)?;
+
+        let lhs_ty = lhs.ty.clone().unwrap();
+        let rhs_ty = rhs.ty.clone().unwrap();
+
+        // num + num
+        if lhs_ty.is_int() && rhs_ty.is_int() {
+            let mut node = Node::binary(BinaryOp::Add, lhs, rhs, offset);
+            node.ty = Some(Type::Int);
+            return Ok(node);
+        }
+
+        if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
+            return Err(format_error_at(self.input, offset, "invalid operands"));
+        }
+
+        // Canonicalize num + ptr to ptr + num
+        if lhs_ty.base().is_none() && rhs_ty.base().is_some() {
+            std::mem::swap(&mut lhs, &mut rhs);
+        }
+
+        // ptr + num
+        let ptr_ty = lhs.ty.clone();
+        let base_size = lhs.ty.as_ref().unwrap().base().unwrap().size();
+        let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
+        let mut node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
+        node.ty = ptr_ty;
+        Ok(node)
+    }
+
+    /// Build a subtraction node with pointer scaling.
+    fn new_sub(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node, String> {
+        self.infer_type(&mut lhs)?;
+        self.infer_type(&mut rhs)?;
+
+        let lhs_ty = lhs.ty.clone().unwrap();
+        let rhs_ty = rhs.ty.clone().unwrap();
+
+        // num - num
+        if lhs_ty.is_int() && rhs_ty.is_int() {
+            let mut node = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
+            node.ty = Some(Type::Int);
+            return Ok(node);
+        }
+
+        // ptr - num
+        if lhs_ty.base().is_some() && rhs_ty.is_int() {
+            let base_size = lhs_ty.base().unwrap().size();
+            let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
+            let mut node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
+            node.ty = Some(lhs_ty);
+            return Ok(node);
+        }
+
+        // ptr - ptr
+        if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
+            let base_size = lhs_ty.base().unwrap().size();
+            let diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
+            let mut node = Node::binary(BinaryOp::Div, diff, Node::num(base_size, offset), offset);
+            node.ty = Some(Type::Int);
+            return Ok(node);
+        }
+
+        Err(format_error_at(self.input, offset, "invalid operands"))
+    }
+
+    /// Infer types for a statement subtree.
+    fn infer_type_stmt(&self, stmt: &mut Stmt) -> Result<(), String> {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr),
+            StmtKind::Loop {
+                init,
+                cond,
+                inc,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.infer_type_stmt(init)?;
+                }
+                if let Some(cond) = cond {
+                    self.infer_type(cond)?;
+                }
+                if let Some(inc) = inc {
+                    self.infer_type(inc)?;
+                }
+                self.infer_type_stmt(body)
+            },
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.infer_type(cond)?;
+                self.infer_type_stmt(then_branch)?;
+                if let Some(else_branch) = else_branch {
+                    self.infer_type_stmt(else_branch)?;
+                }
+                Ok(())
+            },
+            StmtKind::Block(stmts) => {
+                for stmt in stmts {
+                    self.infer_type_stmt(stmt)?;
+                }
+                Ok(())
+            },
+        }
+    }
+
+    /// Infer the type for an expression subtree.
+    fn infer_type(&self, node: &mut Node) -> Result<(), String> {
+        if node.ty.is_some() {
+            return Ok(());
+        }
+
+        match &mut node.kind {
+            NodeKind::Num(_) => {
+                node.ty = Some(Type::Int);
+            },
+            NodeKind::Neg(expr) => {
+                self.infer_type(expr)?;
+                node.ty = Some(Type::Int);
+            },
+            NodeKind::Var(_) => {
+                node.ty = Some(Type::Int);
+            },
+            NodeKind::Addr(expr) => {
+                self.infer_type(expr)?;
+                node.ty = Some(Type::ptr(expr.ty.clone().unwrap()));
+            },
+            NodeKind::Deref(expr) => {
+                self.infer_type(expr)?;
+                node.ty = expr
+                    .ty
+                    .as_ref()
+                    .and_then(Type::base)
+                    .cloned()
+                    .or(Some(Type::Int));
+            },
+            NodeKind::Assign { lhs, rhs } => {
+                self.infer_type(lhs)?;
+                self.infer_type(rhs)?;
+                node.ty = lhs.ty.clone();
+            },
+            NodeKind::Binary { lhs, rhs, .. } => {
+                self.infer_type(lhs)?;
+                self.infer_type(rhs)?;
+                node.ty = Some(Type::Int);
+            },
+        }
+
+        Ok(())
     }
 }
