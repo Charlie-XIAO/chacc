@@ -2,20 +2,11 @@
 
 use crate::types::Type;
 
-/// A local variable stored in the current function's stack frame.
-#[derive(Debug, Eq, PartialEq)]
-pub struct LocalVar {
-    pub name: String,
-    /// The declared type of the variable.
-    pub ty: Type,
-    /// The offset of the variable from the base pointer (RBP) in bytes.
-    pub offset: i64,
-}
-
 /// The parsed program.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub globals: Vec<GlobalVar>,
 }
 
 /// A function defined in [`Program`].
@@ -27,6 +18,33 @@ pub struct Function {
     pub body: Stmt,
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
+}
+
+/// A global variable defined in [`Program`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct GlobalVar {
+    pub name: String,
+    pub ty: Type,
+}
+
+/// A local variable stored in a function's stack frame.
+#[derive(Debug, Eq, PartialEq)]
+pub struct LocalVar {
+    pub name: String,
+    pub ty: Type,
+    /// The offset of the variable from the base pointer (RBP) in bytes.
+    pub offset: i64,
+}
+
+/// Reference to a variable expression.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VarRef {
+    /// A local variable, identified by its index in the function's local
+    /// variable table [`Function::locals`].
+    Local(usize),
+    /// A global variable, identified by its index in the program's global
+    /// variable table [`Program::globals`].
+    Global(usize),
 }
 
 /// Binary operators.
@@ -49,6 +67,9 @@ pub struct Node {
     /// The offset from the start of the source code in bytes.
     pub offset: usize,
     /// The type computed for this expression.
+    ///
+    /// This is `Option` because it is not set during parsing, but only during
+    /// type checking.
     pub ty: Option<Type>,
 }
 
@@ -65,11 +86,11 @@ pub enum NodeKind {
     Deref(Box<Node>),
     /// A unary negation.
     Neg(Box<Node>),
-    /// A local variable.
+    /// A reference to a local or global variable.
     ///
-    /// The `usize` is the local variable's ID, which is an index into the
-    /// current function's local variable table [`Function::locals`].
-    Var(usize),
+    /// They are represented separately in [`Program`], but expression
+    /// resolution can refer to either through this enum.
+    Var(VarRef),
     /// An assignment.
     Assign { lhs: Box<Node>, rhs: Box<Node> },
     /// A binary operation.
@@ -151,12 +172,12 @@ impl Node {
         }
     }
 
-    /// Construct a local-variable node.
-    pub fn var(local_id: usize, offset: usize) -> Self {
+    /// Construct a variable-reference node.
+    pub fn var(var: VarRef, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Var(local_id),
+            kind: NodeKind::Var(var),
         }
     }
 }

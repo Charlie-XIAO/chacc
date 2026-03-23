@@ -1,6 +1,8 @@
 //! Generate x86-64 assembly from an AST.
 
-use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
+use crate::ast::{
+    BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
+};
 use crate::tokenize::format_error_at;
 
 /// Registers used for passing integer arguments, in order.
@@ -13,6 +15,7 @@ struct Codegen<'a> {
     assembly: String,
     depth: i32,
     locals: Vec<LocalVar>,
+    globals: &'a [GlobalVar],
     next_label: usize,
 }
 
@@ -23,6 +26,7 @@ impl<'a> Codegen<'a> {
         function_name: String,
         params: &[usize],
         mut locals: Vec<LocalVar>,
+        globals: &'a [GlobalVar],
     ) -> Self {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
@@ -44,6 +48,7 @@ impl<'a> Codegen<'a> {
             assembly,
             depth: 0,
             locals,
+            globals,
             next_label: 1,
         }
     }
@@ -127,11 +132,19 @@ impl<'a> Codegen<'a> {
     /// Emit the address of an lvalue expression into `%rax`.
     fn gen_addr(&mut self, node: &Node) -> Result<(), String> {
         match &node.kind {
-            NodeKind::Var(local_id) => {
-                let offset = self.locals[*local_id].offset;
-                self.assembly
-                    .push_str(&format!("  lea {offset}(%rbp), %rax\n"));
-                Ok(())
+            NodeKind::Var(var) => match var {
+                VarRef::Local(local_id) => {
+                    let offset = self.locals[*local_id].offset;
+                    self.assembly
+                        .push_str(&format!("  lea {offset}(%rbp), %rax\n"));
+                    Ok(())
+                },
+                VarRef::Global(global_id) => {
+                    let name = &self.globals[*global_id].name;
+                    self.assembly
+                        .push_str(&format!("  lea {name}(%rip), %rax\n"));
+                    Ok(())
+                },
             },
             NodeKind::Deref(expr) => self.gen_expr(expr),
             _ => Err(format_error_at(self.input, node.offset, "not an lvalue")),
@@ -269,22 +282,35 @@ impl<'a> Codegen<'a> {
 
 /// Generate assembly for a full program.
 pub fn codegen_program(input: &str, program: Program) -> Result<String, String> {
+    let Program { functions, globals } = program;
     let mut assembly = String::new();
+
+    emit_data(&mut assembly, &globals);
 
     for Function {
         name,
         params,
         body,
         locals,
-    } in program.functions
+    } in functions
     {
-        let mut codegen = Codegen::new(input, name, &params, locals);
+        let mut codegen = Codegen::new(input, name, &params, locals, &globals);
         codegen.gen_stmt(&body)?;
         codegen.assert_balanced();
         assembly.push_str(&codegen.finish());
     }
 
     Ok(assembly)
+}
+
+/// Emit assembly for global variables.
+fn emit_data(assembly: &mut String, globals: &[GlobalVar]) {
+    for global in globals {
+        assembly.push_str("  .data\n");
+        assembly.push_str(&format!("  .globl {}\n", global.name));
+        assembly.push_str(&format!("{}:\n", global.name));
+        assembly.push_str(&format!("  .zero {}\n", global.ty.size()));
+    }
 }
 
 /// Assign stack offsets to locals and return the aligned stack size.
@@ -300,7 +326,11 @@ fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i64 {
     align_to(offset, 16)
 }
 
-/// Round `n` up to the nearest multiple of `align`.
+/// Round `n` up to the nearest multiple of `align`, which must be a power of 2.
 fn align_to(n: i64, align: i64) -> i64 {
-    (n + align - 1) / align * align
+    debug_assert!(
+        align > 0 && (align & (align - 1)) == 0,
+        "align must be a power of 2"
+    );
+    (n + align - 1) & !(align - 1)
 }

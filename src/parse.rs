@@ -1,6 +1,8 @@
 //! A recursive-descent parser.
 
-use crate::ast::{BinaryOp, Function, LocalVar, Node, NodeKind, Program, Stmt, StmtKind};
+use crate::ast::{
+    BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
+};
 use crate::tokenize::{Keyword, Token, format_error_at};
 use crate::types::Type;
 
@@ -24,15 +26,184 @@ struct Declarator {
     params: Vec<Parameter>,
 }
 
+/// A trait for parsing tokens into an AST.
+///
+/// This is implemented by both [`Cursor`] and [`LookaheadCursor`] to reduce
+/// code duplication when both normal parsing and lookahead are needed.
+trait Parser<'a> {
+    /// Return a reference to the original input string.
+    fn input(&self) -> &'a str;
+
+    /// Return the current token.
+    fn current(&self) -> Token<'a>;
+
+    /// Advance to the next token.
+    fn advance(&mut self);
+
+    /// Format an error message at the current token.
+    fn error_current(&self, message: &str) -> String {
+        format_error_at(self.input(), self.current().offset, message)
+    }
+
+    /// Assume and skip a specific punctuator.
+    fn skip_punct(&mut self, expected: &str) -> Result<(), String> {
+        if !self.current().is_punct(expected) {
+            return Err(self.error_current(&format!("expected '{expected}'")));
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// Assume and skip a specific keyword.
+    fn skip_keyword(&mut self, expected: Keyword) -> Result<(), String> {
+        if !self.current().is_keyword(expected) {
+            return Err(self.error_current(&format!("expected '{expected}'")));
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// ```bnf
+    /// <declspec> ::= "int"
+    /// ```
+    fn parse_declspec(&mut self) -> Result<Type, String> {
+        self.skip_keyword(Keyword::Int)?;
+        Ok(Type::Int)
+    }
+
+    /// ```bnf
+    /// <declarator> ::= "*"* <ident> <type-suffix>
+    /// ```
+    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator, String> {
+        while self.current().is_punct("*") {
+            self.advance();
+            ty = Type::ptr(ty);
+        }
+
+        let tok = self.current();
+        let Some(name) = tok.as_ident() else {
+            return Err(self.error_current("expected a variable name"));
+        };
+
+        self.advance();
+        let (ty, params) = self.parse_type_suffix(ty)?;
+        Ok(Declarator {
+            name: name.to_owned(),
+            ty,
+            offset: tok.offset,
+            params,
+        })
+    }
+
+    /// ```bnf
+    /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
+    /// ```
+    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
+        if self.current().is_punct("(") {
+            self.advance();
+            return self.parse_func_params(ty);
+        }
+
+        let ty = self.parse_array_dimensions(ty)?;
+        Ok((ty, Vec::new()))
+    }
+
+    /// ```bnf
+    /// <func-params> ::= (<param> ("," <param>)*)? ")"
+    /// <param> ::= <declspec> <declarator>
+    /// ```
+    fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>), String> {
+        let mut params = Vec::new();
+
+        while !self.current().is_punct(")") {
+            if !params.is_empty() {
+                self.skip_punct(",")?;
+            }
+
+            let base_ty = self.parse_declspec()?;
+            let declarator = self.parse_declarator(base_ty)?;
+            params.push(Parameter {
+                name: declarator.name,
+                ty: declarator.ty,
+            });
+
+            if params.len() > 6 {
+                return Err(format_error_at(
+                    self.input(),
+                    declarator.offset,
+                    "too many parameters",
+                ));
+            }
+        }
+
+        self.skip_punct(")")?;
+        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
+        Ok((Type::func(return_ty, param_tys), params))
+    }
+
+    /// ```bnf
+    /// <array-dimensions> ::= ("[" <num> "]")*
+    /// ```
+    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type, String> {
+        if self.current().is_punct("[") {
+            self.advance();
+            let Some(len) = self.current().as_num() else {
+                return Err(self.error_current("expected a number"));
+            };
+            self.advance();
+            self.skip_punct("]")?;
+            ty = self.parse_array_dimensions(ty)?;
+            return Ok(Type::array(ty, len as _));
+        }
+        Ok(ty)
+    }
+}
+
+/// Cursor for looking ahead in the token stream without advancing.
+struct LookaheadCursor<'cur, 'a> {
+    input: &'a str,
+    tokens: &'cur [Token<'a>],
+    pos: usize,
+}
+
+impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
+    fn input(&self) -> &'a str {
+        self.input
+    }
+
+    fn current(&self) -> Token<'a> {
+        self.tokens[self.pos]
+    }
+
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
+}
+
 /// Cursor over the token stream during parsing.
-pub struct TokenCursor<'a> {
+pub struct Cursor<'a> {
     input: &'a str,
     tokens: Vec<Token<'a>>,
     pos: usize,
     locals: Vec<LocalVar>,
+    globals: Vec<GlobalVar>,
 }
 
-impl<'a> TokenCursor<'a> {
+impl<'a> Parser<'a> for Cursor<'a> {
+    fn input(&self) -> &'a str {
+        self.input
+    }
+
+    fn current(&self) -> Token<'a> {
+        self.tokens[self.pos]
+    }
+
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
+}
+
+impl<'a> Cursor<'a> {
     /// Create a parser over a token stream.
     pub fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
         Self {
@@ -40,7 +211,22 @@ impl<'a> TokenCursor<'a> {
             tokens,
             pos: 0,
             locals: Vec::new(),
+            globals: Vec::new(),
         }
+    }
+
+    /// Create a [`LookaheadCursor`] at the current position.
+    fn lookahead(&self) -> LookaheadCursor<'_, 'a> {
+        LookaheadCursor {
+            input: self.input,
+            tokens: &self.tokens,
+            pos: self.pos,
+        }
+    }
+
+    /// Return a token at a fixed lookahead distance.
+    fn peek(&self, offset: usize) -> Option<Token<'a>> {
+        self.tokens.get(self.pos + offset).copied()
     }
 
     /// ```bnf
@@ -51,28 +237,45 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <program> ::= <function-definition>* <eof>
+    /// <program> ::= (<function> | <global-variable>)* <eof>
     /// ```
     pub fn parse_program(&mut self) -> Result<Program, String> {
         let mut functions = Vec::new();
 
         while !self.current().is_eof() {
-            functions.push(self.parse_function_definition()?);
+            let base_ty = self.parse_declspec()?;
+
+            if self.is_function()? {
+                functions.push(self.parse_function(base_ty)?);
+                continue;
+            }
+
+            self.parse_global_variable(base_ty)?;
         }
 
-        Ok(Program { functions })
+        Ok(Program {
+            functions,
+            globals: std::mem::take(&mut self.globals),
+        })
     }
 
-    /// Format an error at the current token.
-    pub fn error_current(&self, message: &str) -> String {
-        format_error_at(self.input, self.current().offset, message)
+    /// Lookahead to determine whether we are at a [`<function>`].
+    ///
+    /// [`<function>`]: Self::parse_function
+    fn is_function(&self) -> Result<bool, String> {
+        if self.current().is_punct(";") {
+            return Ok(false);
+        }
+
+        let mut lookahead = self.lookahead();
+        let declarator = lookahead.parse_declarator(Type::default())?;
+        Ok(declarator.ty.is_func())
     }
 
     /// ```bnf
-    /// <function-definition> ::= <declspec> <declarator> "{" <compound-stmt>
+    /// <function> ::= <declspec> <declarator> "{" <compound-stmt>
     /// ```
-    fn parse_function_definition(&mut self) -> Result<Function, String> {
-        let return_ty = self.parse_declspec()?;
+    fn parse_function(&mut self, return_ty: Type) -> Result<Function, String> {
         let declarator = self.parse_declarator(return_ty)?;
         if !declarator.ty.is_func() {
             return Err(self.error_current("expected a function"));
@@ -90,6 +293,37 @@ impl<'a> TokenCursor<'a> {
             body,
             locals: std::mem::take(&mut self.locals),
         })
+    }
+
+    /// ```bnf
+    /// <global-variable> ::= <declarator> ("," <declarator>)* ";"
+    /// ```
+    fn parse_global_variable(&mut self, base_ty: Type) -> Result<(), String> {
+        let mut first = true;
+
+        while !self.current().is_punct(";") {
+            if !first {
+                self.skip_punct(",")?;
+            }
+            first = false;
+
+            let declarator = self.parse_declarator(base_ty.clone())?;
+            if declarator.ty.is_func() {
+                return Err(format_error_at(
+                    self.input,
+                    declarator.offset,
+                    "expected a global variable",
+                ));
+            }
+
+            self.globals.push(GlobalVar {
+                name: declarator.name,
+                ty: declarator.ty,
+            });
+        }
+
+        self.skip_punct(";")?;
+        Ok(())
     }
 
     /// ```bnf
@@ -230,7 +464,7 @@ impl<'a> TokenCursor<'a> {
             // If there is an initializer, treat it as an assignment to the
             // just-created variable
             self.advance();
-            let lhs = Node::var(local_id, declarator.offset);
+            let lhs = Node::var(VarRef::Local(local_id), declarator.offset);
             let rhs = self.parse_assign()?;
             let expr = Node::assign(lhs, rhs, declarator.offset);
             stmts.push(Stmt::expr(expr, declarator.offset));
@@ -238,101 +472,6 @@ impl<'a> TokenCursor<'a> {
 
         self.skip_punct(";")?;
         Ok(Stmt::block(stmts, offset))
-    }
-
-    /// ```bnf
-    /// <declspec> ::= "int"
-    /// ```
-    fn parse_declspec(&mut self) -> Result<Type, String> {
-        self.skip_keyword(Keyword::Int)?;
-        Ok(Type::Int)
-    }
-
-    /// ```bnf
-    /// <declarator> ::= "*"* <ident> <type-suffix>
-    /// ```
-    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator, String> {
-        while self.current().is_punct("*") {
-            self.advance();
-            ty = Type::ptr(ty);
-        }
-
-        let tok = self.current();
-        let Some(name) = tok.as_ident() else {
-            return Err(self.error_current("expected a variable name"));
-        };
-
-        self.advance();
-        let (ty, params) = self.parse_type_suffix(ty)?;
-        Ok(Declarator {
-            name: name.to_owned(),
-            ty,
-            offset: tok.offset,
-            params,
-        })
-    }
-
-    /// ```bnf
-    /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
-    /// ```
-    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
-        if self.current().is_punct("(") {
-            self.advance();
-            return self.parse_func_params(ty);
-        }
-
-        let ty = self.parse_array_dimensions(ty)?;
-        Ok((ty, Vec::new()))
-    }
-
-    /// ```bnf
-    /// <func-params> ::= (<param> ("," <param>)*)? ")"
-    /// <param> ::= <declspec> <declarator>
-    /// ```
-    fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>), String> {
-        let mut params = Vec::new();
-
-        while !self.current().is_punct(")") {
-            if !params.is_empty() {
-                self.skip_punct(",")?;
-            }
-
-            let base_ty = self.parse_declspec()?;
-            let declarator = self.parse_declarator(base_ty)?;
-            params.push(Parameter {
-                name: declarator.name,
-                ty: declarator.ty,
-            });
-
-            if params.len() > 6 {
-                return Err(format_error_at(
-                    self.input,
-                    declarator.offset,
-                    "too many parameters",
-                ));
-            }
-        }
-
-        self.skip_punct(")")?;
-        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
-        Ok((Type::func(return_ty, param_tys), params))
-    }
-
-    /// ```bnf
-    /// <array-dimensions> ::= ("[" <num> "]")*
-    /// ```
-    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type, String> {
-        if self.current().is_punct("[") {
-            self.advance();
-            let Some(len) = self.current().as_num() else {
-                return Err(self.error_current("expected a number"));
-            };
-            self.advance();
-            self.skip_punct("]")?;
-            ty = self.parse_array_dimensions(ty)?;
-            return Ok(Type::array(ty, len as _));
-        }
-        Ok(ty)
     }
 
     /// ```bnf
@@ -547,14 +686,14 @@ impl<'a> TokenCursor<'a> {
             }
 
             self.advance();
-            let Some(local_id) = self.find_local(name) else {
+            let Some(var) = self.find_var(name) else {
                 return Err(format_error_at(
                     self.input,
                     tok.offset,
                     "undefined variable",
                 ));
             };
-            return Ok(Node::var(local_id, tok.offset));
+            return Ok(Node::var(var, tok.offset));
         }
 
         if let Some(value) = tok.as_num() {
@@ -584,42 +723,21 @@ impl<'a> TokenCursor<'a> {
         Ok(Node::func_call(name.to_owned(), args, offset))
     }
 
-    /// Advance to the next token.
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
-
-    /// Return the current token.
-    fn current(&self) -> Token<'a> {
-        self.tokens[self.pos]
-    }
-
-    /// Return a token at a fixed lookahead distance.
-    fn peek(&self, offset: usize) -> Option<Token<'a>> {
-        self.tokens.get(self.pos + offset).copied()
-    }
-
-    /// Consume a specific punctuator.
-    fn skip_punct(&mut self, expected: &str) -> Result<(), String> {
-        if !self.current().is_punct(expected) {
-            return Err(self.error_current(&format!("expected '{expected}'")));
-        }
-        self.advance();
-        Ok(())
-    }
-
-    /// Consume a specific keyword.
-    fn skip_keyword(&mut self, expected: Keyword) -> Result<(), String> {
-        if !self.current().is_keyword(expected) {
-            return Err(self.error_current(&format!("expected '{expected}'")));
-        }
-        self.advance();
-        Ok(())
-    }
-
     /// Find an existing local by name; newest binding wins.
     fn find_local(&self, name: &str) -> Option<usize> {
         self.locals.iter().rposition(|local| local.name == name)
+    }
+
+    /// Find an existing global by name.
+    fn find_global(&self, name: &str) -> Option<usize> {
+        self.globals.iter().rposition(|global| global.name == name)
+    }
+
+    /// Find a variable by name; local bindings shadow globals.
+    fn find_var(&self, name: &str) -> Option<VarRef> {
+        self.find_local(name)
+            .map(VarRef::Local)
+            .or_else(|| self.find_global(name).map(VarRef::Global))
     }
 
     /// Create a new local variable.
@@ -778,8 +896,12 @@ impl<'a> TokenCursor<'a> {
                 self.infer_type(expr)?;
                 node.ty = Some(Type::Int);
             },
-            NodeKind::Var(local_id) => {
-                node.ty = Some(self.locals[*local_id].ty.clone());
+            NodeKind::Var(var) => {
+                let ty = match *var {
+                    VarRef::Local(local_id) => self.locals[local_id].ty.clone(),
+                    VarRef::Global(global_id) => self.globals[global_id].ty.clone(),
+                };
+                node.ty = Some(ty);
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;

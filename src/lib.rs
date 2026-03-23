@@ -7,13 +7,13 @@ mod tokenize;
 mod types;
 
 use codegen::codegen_program;
-use parse::TokenCursor;
+use parse::Cursor;
 use tokenize::tokenize;
 
 /// Compile the input program into x86-64 assembly.
 pub fn compile_expression_program(input: &str) -> Result<String, String> {
     let tokens = tokenize(input)?;
-    let mut parser = TokenCursor::new(input, tokens);
+    let mut parser = Cursor::new(input, tokens);
     let program = parser.parse_program()?;
     codegen_program(input, program)
 }

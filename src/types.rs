@@ -1,8 +1,9 @@
 //! The type system for expressions.
 
 /// Expression types used for semantic analysis.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum Type {
+    #[default] // Use Type::default() as a dummy type
     Int,
     Ptr(Box<Type>),
     Array {
