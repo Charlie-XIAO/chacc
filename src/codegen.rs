@@ -27,6 +27,7 @@ impl<'a> Codegen<'a> {
         let stack_size = assign_lvar_offsets(&mut locals);
         let mut assembly = String::new();
         assembly.push_str(&format!("  .globl {function_name}\n"));
+        assembly.push_str("  .text\n");
         assembly.push_str(&format!("{function_name}:\n"));
         assembly.push_str("  push %rbp\n");
         assembly.push_str("  mov %rsp, %rbp\n");
