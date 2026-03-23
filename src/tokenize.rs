@@ -8,6 +8,7 @@ pub enum Keyword {
     Else,
     For,
     While,
+    Char,
     Int,
     Sizeof,
 }
@@ -20,6 +21,7 @@ impl std::fmt::Display for Keyword {
             Self::Else => "else",
             Self::For => "for",
             Self::While => "while",
+            Self::Char => "char",
             Self::Int => "int",
             Self::Sizeof => "sizeof",
         };
@@ -37,6 +39,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "else" => Ok(Self::Else),
             "for" => Ok(Self::For),
             "while" => Ok(Self::While),
+            "char" => Ok(Self::Char),
             "int" => Ok(Self::Int),
             "sizeof" => Ok(Self::Sizeof),
             _ => Err(()),
@@ -169,6 +172,11 @@ impl<'a> Token<'a> {
     /// Return whether this token is a keyword.
     pub fn is_keyword(self, expected: Keyword) -> bool {
         self.kind == TokenKind::Keyword(expected)
+    }
+
+    /// Return whether this token is a type name keyword.
+    pub fn is_typename_keyword(self) -> bool {
+        matches!(self.kind, TokenKind::Keyword(Keyword::Char | Keyword::Int))
     }
 
     /// Return the lexeme if this is an identifier token.

@@ -64,9 +64,14 @@ trait Parser<'a> {
     }
 
     /// ```bnf
-    /// <declspec> ::= "int"
+    /// <declspec> ::= "char" | "int"
     /// ```
     fn parse_declspec(&mut self) -> Result<Type, String> {
+        if self.current().is_keyword(Keyword::Char) {
+            self.skip_keyword(Keyword::Char)?;
+            return Ok(Type::Char);
+        }
+
         self.skip_keyword(Keyword::Int)?;
         Ok(Type::Int)
     }
@@ -408,7 +413,7 @@ impl<'a> Cursor<'a> {
         let mut stmts = Vec::new();
 
         while !self.current().is_punct("}") {
-            let mut stmt = if self.current().is_keyword(Keyword::Int) {
+            let mut stmt = if self.current().is_typename_keyword() {
                 self.parse_declaration()?
             } else {
                 self.parse_stmt()?
@@ -676,7 +681,7 @@ impl<'a> Cursor<'a> {
             self.advance();
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
-            let size = operand.ty.as_ref().unwrap().size();
+            let size = operand.expect_ty().size();
             return Ok(Node::num(size, tok.offset));
         }
 
@@ -791,7 +796,7 @@ impl<'a> Cursor<'a> {
 
         // ptr + num
         let ptr_ty = lhs.ty.clone();
-        let base_size = lhs.ty.as_ref().unwrap().base().unwrap().size();
+        let base_size = lhs.expect_ty().base().unwrap().size();
         let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
         let mut node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
         node.ty = ptr_ty;
@@ -905,7 +910,7 @@ impl<'a> Cursor<'a> {
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
-                let pointee = expr.ty.as_ref().unwrap();
+                let pointee = expr.expect_ty();
                 let base = if pointee.is_array() {
                     // In C, array decays into a pointer to its first element
                     // when taking its address, so we need to take its base type
@@ -917,7 +922,7 @@ impl<'a> Cursor<'a> {
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
-                let Some(base) = expr.ty.as_ref().and_then(Type::base) else {
+                let Some(base) = expr.expect_ty().base() else {
                     return Err(format_error_at(
                         self.input,
                         node.offset,
@@ -929,7 +934,7 @@ impl<'a> Cursor<'a> {
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                if lhs.ty.as_ref().is_some_and(Type::is_array) {
+                if lhs.expect_ty().is_array() {
                     return Err(format_error_at(self.input, lhs.offset, "not an lvalue"));
                 }
                 node.ty = lhs.ty.clone();

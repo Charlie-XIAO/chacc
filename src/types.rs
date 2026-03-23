@@ -4,6 +4,7 @@
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum Type {
     #[default] // Use Type::default() as a dummy type
+    Char,
     Int,
     Ptr(Box<Type>),
     Array {
@@ -17,12 +18,12 @@ pub enum Type {
 }
 
 impl Type {
-    /// Return a pointer to the given base type.
+    /// Construct a pointer type to the given base type.
     pub fn ptr(base: Type) -> Self {
         Self::Ptr(Box::new(base))
     }
 
-    /// Return a function type with the given return type.
+    /// Construct a function type with the given return type and parameters.
     pub fn func(return_ty: Type, params: Vec<Type>) -> Self {
         Self::Func {
             return_ty: Box::new(return_ty),
@@ -30,7 +31,7 @@ impl Type {
         }
     }
 
-    /// Return an array type with the given element type and length.
+    /// Construct an array type with the given element type and length.
     pub fn array(base: Type, len: usize) -> Self {
         Self::Array {
             base: Box::new(base),
@@ -38,19 +39,17 @@ impl Type {
         }
     }
 
-    /// Return whether the type is an integer.
+    /// Return whether the type is an integer data type.
     pub fn is_int(&self) -> bool {
-        matches!(self, Self::Int)
+        matches!(self, Self::Char | Self::Int)
     }
 
-    /// Return the element type for pointers and arrays.
-    ///
-    /// This returns `None` if the type has no element type.
+    /// Return the base type for arrays and pointers.
     pub fn base(&self) -> Option<&Type> {
         match self {
             Self::Ptr(base) => Some(base),
             Self::Array { base, .. } => Some(base),
-            Self::Int | Self::Func { .. } => None,
+            _ => None,
         }
     }
 
@@ -67,6 +66,7 @@ impl Type {
     /// Return the size of the type in bytes.
     pub fn size(&self) -> i64 {
         match self {
+            Self::Char => 1,
             Self::Int => 8,
             Self::Ptr(_) => 8,
             Self::Array { base, len } => base.size() * (*len as i64),

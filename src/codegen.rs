@@ -4,9 +4,10 @@ use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
 use crate::tokenize::format_error_at;
+use crate::types::Type;
 
-/// Registers used for passing integer arguments, in order.
-const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
+const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
 /// Code generator for a single function body.
 struct Codegen<'a> {
@@ -38,8 +39,13 @@ impl<'a> Codegen<'a> {
         assembly.push_str(&format!("  sub ${stack_size}, %rsp\n"));
 
         for (i, param_id) in params.iter().enumerate() {
-            let offset = locals[*param_id].offset;
-            assembly.push_str(&format!("  mov {}, {offset}(%rbp)\n", ARG_REGS[i]));
+            let local = &locals[*param_id];
+            let reg = if local.ty.size() == 1 {
+                ARGREG8[i]
+            } else {
+                ARGREG64[i]
+            };
+            assembly.push_str(&format!("  mov {reg}, {}(%rbp)\n", local.offset));
         }
 
         Self {
@@ -158,12 +164,8 @@ impl<'a> Codegen<'a> {
                 self.assembly.push_str(&format!("  mov ${value}, %rax\n"));
             },
             NodeKind::FuncCall { name, args } => {
-                if args.len() > ARG_REGS.len() {
-                    let msg = format!(
-                        "too many arguments: expected at most {}, got {}",
-                        ARG_REGS.len(),
-                        args.len()
-                    );
+                if args.len() > 6 {
+                    let msg = format!("too many arguments: expected at most 6, got {}", args.len());
                     return Err(format_error_at(self.input, node.offset, &msg));
                 }
 
@@ -171,7 +173,7 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(arg)?;
                     self.push();
                 }
-                for register in ARG_REGS.iter().take(args.len()).rev() {
+                for register in ARGREG64.iter().take(args.len()).rev() {
                     self.pop(register);
                 }
 
@@ -183,7 +185,7 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Deref(expr) => {
                 self.gen_expr(expr)?;
-                self.load(node);
+                self.load(node.expect_ty());
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
@@ -191,13 +193,13 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Var(_) => {
                 self.gen_addr(node)?;
-                self.load(node);
+                self.load(node.expect_ty());
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.gen_addr(lhs)?;
                 self.push();
                 self.gen_expr(rhs)?;
-                self.store();
+                self.store(lhs.expect_ty());
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
@@ -253,17 +255,27 @@ impl<'a> Codegen<'a> {
     /// into a register. Consequently, the result of an evaluation of an array
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
-    fn load(&mut self, node: &Node) {
-        if node.ty.as_ref().is_some_and(|ty| ty.is_array()) {
+    fn load(&mut self, ty: &Type) {
+        if ty.is_array() {
             return;
         }
-        self.assembly.push_str("  mov (%rax), %rax\n");
+
+        if ty.size() == 1 {
+            self.assembly.push_str("  movsbq (%rax), %rax\n");
+        } else {
+            self.assembly.push_str("  mov (%rax), %rax\n");
+        }
     }
 
     /// Store `%rax` into the address on top of the temporary stack.
-    fn store(&mut self) {
+    fn store(&mut self, ty: &Type) {
         self.pop("%rdi");
-        self.assembly.push_str("  mov %rax, (%rdi)\n");
+
+        if ty.size() == 1 {
+            self.assembly.push_str("  mov %al, (%rdi)\n");
+        } else {
+            self.assembly.push_str("  mov %rax, (%rdi)\n");
+        }
     }
 
     /// Pop the top of the temporary stack into a register.

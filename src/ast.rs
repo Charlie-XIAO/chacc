@@ -180,6 +180,11 @@ impl Node {
             kind: NodeKind::Var(var),
         }
     }
+
+    /// Get the type of this node, expecting it to be set.
+    pub fn expect_ty(&self) -> &Type {
+        self.ty.as_ref().expect("node data type is not set")
+    }
 }
 
 /// An AST node representing a statement.
