@@ -9,6 +9,7 @@ pub enum Keyword {
     For,
     While,
     Int,
+    Sizeof,
 }
 
 impl std::fmt::Display for Keyword {
@@ -20,6 +21,7 @@ impl std::fmt::Display for Keyword {
             Self::For => "for",
             Self::While => "while",
             Self::Int => "int",
+            Self::Sizeof => "sizeof",
         };
         write!(f, "{s}")
     }
@@ -36,6 +38,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "for" => Ok(Self::For),
             "while" => Ok(Self::While),
             "int" => Ok(Self::Int),
+            "sizeof" => Ok(Self::Sizeof),
             _ => Err(()),
         }
     }

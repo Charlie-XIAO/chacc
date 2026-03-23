@@ -516,17 +516,31 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <primary> ::= "(" <expr> ")" | <func-call> | <ident> | <num>
+    /// <primary> ::=
+    ///   "(" <expr> ")"
+    ///   | "sizeof" <unary>
+    ///   | <func-call>
+    ///   | <ident>
+    ///   | <num>
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
-        if self.current().is_punct("(") {
+        let tok = self.current();
+
+        if tok.is_punct("(") {
             self.advance();
             let node = self.parse_expr()?;
             self.skip_punct(")")?;
             return Ok(node);
         }
 
-        let tok = self.current();
+        if tok.is_keyword(Keyword::Sizeof) {
+            self.advance();
+            let mut operand = self.parse_unary()?;
+            self.infer_type(&mut operand)?;
+            let size = operand.ty.as_ref().unwrap().size();
+            return Ok(Node::num(size, tok.offset));
+        }
+
         if let Some(name) = tok.as_ident() {
             if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
                 return self.parse_func_call(name, tok.offset);
