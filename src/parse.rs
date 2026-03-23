@@ -469,7 +469,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <primary>
+    /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <postfix>
     /// ```
     fn parse_unary(&mut self) -> Result<Node, String> {
         if self.current().is_punct("+") {
@@ -495,7 +495,24 @@ impl<'a> TokenCursor<'a> {
             return Ok(Node::deref(self.parse_unary()?, offset));
         }
 
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    /// ```bnf
+    /// <postfix> ::= <primary> ("[" <expr> "]")*
+    fn parse_postfix(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_primary()?;
+
+        while self.current().is_punct("[") {
+            let offset = self.current().offset;
+            self.advance();
+            let index = self.parse_expr()?;
+            self.skip_punct("]")?;
+            // Canonicalize a[b] to *(a + b)
+            node = Node::deref(self.new_add(node, index, offset)?, offset);
+        }
+
+        Ok(node)
     }
 
     /// ```bnf
