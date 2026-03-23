@@ -273,7 +273,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     /// ```bnf
-    /// <type-suffix> ::= "(" <func-params> | "[" <num> "]" | ε
+    /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
     /// ```
     fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
         if self.current().is_punct("(") {
@@ -281,16 +281,7 @@ impl<'a> TokenCursor<'a> {
             return self.parse_func_params(ty);
         }
 
-        if self.current().is_punct("[") {
-            self.advance();
-            let Some(len) = self.current().as_num() else {
-                return Err(self.error_current("expected a number"));
-            };
-            self.advance();
-            self.skip_punct("]")?;
-            return Ok((Type::array(ty, len as usize), Vec::new()));
-        }
-
+        let ty = self.parse_array_dimensions(ty)?;
         Ok((ty, Vec::new()))
     }
 
@@ -325,6 +316,23 @@ impl<'a> TokenCursor<'a> {
         self.skip_punct(")")?;
         let param_tys = params.iter().map(|param| param.ty.clone()).collect();
         Ok((Type::func(return_ty, param_tys), params))
+    }
+
+    /// ```bnf
+    /// <array-dimensions> ::= ("[" <num> "]")*
+    /// ```
+    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type, String> {
+        if self.current().is_punct("[") {
+            self.advance();
+            let Some(len) = self.current().as_num() else {
+                return Err(self.error_current("expected a number"));
+            };
+            self.advance();
+            self.skip_punct("]")?;
+            ty = self.parse_array_dimensions(ty)?;
+            return Ok(Type::array(ty, len as _));
+        }
+        Ok(ty)
     }
 
     /// ```bnf

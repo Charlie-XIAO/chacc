@@ -576,6 +576,27 @@ mod tests {
                 "int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *(x+2); }",
                 5,
             ),
+            ("int main() { int x[2][3]; int *y=x; *y=0; return **x; }", 0),
+            (
+                "int main() { int x[2][3]; int *y=x; *(y+1)=1; return *(*x+1); }",
+                1,
+            ),
+            (
+                "int main() { int x[2][3]; int *y=x; *(y+2)=2; return *(*x+2); }",
+                2,
+            ),
+            // (
+            //     "int main() { int x[2][3]; int *y=x; *(y+3)=3; return **(x+1); }",
+            //     3,
+            // ),
+            // (
+            //     "int main() { int x[2][3]; int *y=x; *(y+4)=4; return *(*(x+1)+1); }",
+            //     4,
+            // ),
+            (
+                "int main() { int x[2][3]; int *y=x; *(y+5)=5; return *(*(x+1)+2); }",
+                5,
+            ),
         ] {
             let asm = compile_expression_program(input).unwrap();
             assert_eq!(eval_with_cc(&asm), expected, "{input}");
