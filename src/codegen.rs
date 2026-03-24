@@ -237,6 +237,11 @@ impl<'a> Codegen<'a> {
                     },
                 }
             },
+            NodeKind::StmtExpr(body) => {
+                for stmt in body {
+                    self.gen_stmt(stmt)?;
+                }
+            },
         }
 
         Ok(())

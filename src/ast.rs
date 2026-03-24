@@ -103,6 +103,10 @@ pub enum NodeKind {
         lhs: Box<Node>,
         rhs: Box<Node>,
     },
+    /// A statement expression as in [GNU C Extension].
+    ///
+    /// [GNU C Extension]: https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html
+    StmtExpr(Vec<Stmt>),
 }
 
 impl Node {
@@ -182,6 +186,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Var(var),
+        }
+    }
+
+    /// Construct a statement expression node.
+    pub fn stmt_expr(stmts: Vec<Stmt>, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::StmtExpr(stmts),
         }
     }
 

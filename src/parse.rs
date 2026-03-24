@@ -641,7 +641,8 @@ impl<'a> Cursor<'a> {
 
     /// ```bnf
     /// <primary> ::=
-    ///   "(" <expr> ")"
+    ///   "(" "{" <compound-stmt> ")"
+    ///   | "(" <expr> ")"
     ///   | "sizeof" <unary>
     ///   | <func-call>
     ///   | <ident>
@@ -653,6 +654,14 @@ impl<'a> Cursor<'a> {
 
         if self.current().is_punct("(") {
             self.advance();
+
+            if self.current().is_punct("{") {
+                self.advance();
+                let body = self.parse_compound_stmt()?;
+                self.skip_punct(")")?;
+                return Ok(Node::stmt_expr(body, offset));
+            }
+
             let node = self.parse_expr()?;
             self.skip_punct(")")?;
             return Ok(node);
@@ -944,6 +953,20 @@ impl<'a> Cursor<'a> {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
                 node.ty = Some(Type::Int);
+            },
+            NodeKind::StmtExpr(body) => {
+                if let Some(stmt) = body.last_mut()
+                    && let StmtKind::Expr(expr) = &mut stmt.kind
+                {
+                    self.infer_type(expr)?;
+                    node.ty = expr.ty.clone();
+                } else {
+                    return Err(format_error_at(
+                        self.input,
+                        node.offset,
+                        "statement expression returning void is not supported",
+                    ));
+                }
             },
         }
 
