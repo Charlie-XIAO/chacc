@@ -213,7 +213,7 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if self.try_read_punct() {
+            if self.read_punct() {
                 continue;
             }
 
@@ -258,7 +258,7 @@ impl<'a> Tokenizer<'a> {
                     if i >= bytes.len() || matches!(bytes[i], b'\n' | b'\0') {
                         break;
                     }
-                    let (escaped, len) = read_escape_char(&bytes[i..]);
+                    let (escaped, len) = self.read_escape_char(i)?;
                     content.push(escaped);
                     i += len;
                 },
@@ -271,6 +271,84 @@ impl<'a> Tokenizer<'a> {
         }
 
         Err(self.error_current("unclosed string literal"))
+    }
+
+    /// Read an escape sequence starting at the first byte after the backslash.
+    ///
+    /// Returns the decoded byte and the number of bytes consumed.
+    fn read_escape_char(&self, start: usize) -> Result<(u8, usize), String> {
+        let bytes = self.input.as_bytes();
+        let first = bytes[start];
+
+        // Octal escape sequence (up to three octal digits)
+        if (first as char).is_digit(8) {
+            let mut octal_value = first - b'0';
+            let mut len = 1;
+            for &byte in bytes.iter().skip(start + 1).take(2) {
+                if (byte as char).is_digit(8) {
+                    octal_value = (octal_value << 3) + (byte - b'0');
+                    len += 1;
+                } else {
+                    break;
+                }
+            }
+            return Ok((octal_value, len));
+        }
+
+        // Hexadecimal escape sequence
+        if first == b'x' {
+            let mut pos = start + 1;
+            if pos >= bytes.len() || !bytes[pos].is_ascii_hexdigit() {
+                return Err(format_error_at(
+                    self.input,
+                    pos,
+                    "invalid hex escape sequence",
+                ));
+            }
+
+            let mut hex_value = 0u8;
+            let mut has_warned_overflow = false;
+
+            while pos < bytes.len() && bytes[pos].is_ascii_hexdigit() {
+                let digit = (bytes[pos] as char).to_digit(16).unwrap() as u8;
+                if !has_warned_overflow {
+                    if let Some(next) = hex_value.checked_mul(16).and_then(|v| v.checked_add(digit))
+                    {
+                        hex_value = next;
+                    } else {
+                        has_warned_overflow = true;
+                        emit_warning_at(self.input, pos, "hex escape sequence out of range");
+                        hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
+                    }
+                } else {
+                    hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
+                }
+                pos += 1;
+            }
+
+            return Ok((hex_value, pos - start));
+        }
+
+        // Standard single-character escapes.
+        let decoded = match first {
+            b'a' => b'\x07',
+            b'b' => b'\x08',
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => b'\x0b',
+            b'f' => b'\x0c',
+            b'r' => b'\r',
+            b'e' => 27, // GNU C extension for the ASCII escape character
+            _ => {
+                emit_warning_at(
+                    self.input,
+                    start,
+                    &format!("unknown escape sequence '\\{}'", first as char),
+                );
+                first
+            },
+        };
+        Ok((decoded, 1))
     }
 
     /// Read an identifier or keyword token.
@@ -289,8 +367,8 @@ impl<'a> Tokenizer<'a> {
         self.pos += len;
     }
 
-    /// Try to read a punctuator token, returning whether there is one.
-    fn try_read_punct(&mut self) -> bool {
+    /// Read a punctuator token, returning whether there is one.
+    fn read_punct(&mut self) -> bool {
         let offset = self.pos;
         let rest = &self.input[offset..];
 
@@ -313,8 +391,7 @@ impl<'a> Tokenizer<'a> {
             return false;
         }
 
-        let lexeme = &self.input[offset..offset + punct_len];
-        self.tokens.push(Token::punct(offset, lexeme));
+        self.tokens.push(Token::punct(offset, &rest[..punct_len]));
         self.pos += punct_len;
         true
     }
@@ -330,46 +407,12 @@ fn is_ident2(byte: &u8) -> bool {
     is_ident1(byte) || byte.is_ascii_digit()
 }
 
-/// Read an escape sequence.
-///
-/// This returns the decoded byte and the number of bytes consumed from the
-/// input. The input bytes must start with the first byte after the backslash
-/// and cannot be empty.
-fn read_escape_char(bytes: &[u8]) -> (u8, usize) {
-    let first = bytes[0];
-
-    // Octal escape sequence (up to three octal digits)
-    if (b'0'..=b'7').contains(&first) {
-        let mut octal_value = first - b'0';
-        let mut len = 1;
-        for byte in bytes.iter().skip(1).take(2) {
-            if (b'0'..=b'7').contains(byte) {
-                octal_value = (octal_value << 3) + (byte - b'0');
-                len += 1;
-            } else {
-                break;
-            }
-        }
-        return (octal_value, len);
-    }
-
-    // Standard escape sequences
-    let decoded = match first {
-        b'a' => b'\x07',
-        b'b' => b'\x08',
-        b't' => b'\t',
-        b'n' => b'\n',
-        b'v' => b'\x0b',
-        b'f' => b'\x0c',
-        b'r' => b'\r',
-        b'e' => 27, // GNU C extension for the ASCII escape character
-        // TODO: we should emit a warning about unknown escape sequence here
-        _ => first,
-    };
-    (decoded, 1)
-}
-
 /// Format an error with a caret pointing at the given byte offset.
 pub fn format_error_at(input: &str, offset: usize, message: &str) -> String {
-    format!("{input}\n{}^ {message}", " ".repeat(offset))
+    format!("{input}\n{}^ ERROR: {message}", " ".repeat(offset))
+}
+
+/// Emit a warning with a caret pointing at the given byte offset.
+pub fn emit_warning_at(input: &str, offset: usize, message: &str) {
+    eprintln!("{input}\n{}^ WARNING: {message}", " ".repeat(offset))
 }
