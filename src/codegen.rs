@@ -323,7 +323,7 @@ fn emit_data(assembly: &mut String, globals: &[GlobalVar]) {
         assembly.push_str(&format!("{}:\n", global.name));
 
         if let Some(init_data) = &global.init_data {
-            for byte in init_data {
+            for byte in init_data.iter() {
                 assembly.push_str(&format!("  .byte {byte}\n"));
             }
         } else {

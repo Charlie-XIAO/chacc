@@ -1,5 +1,7 @@
 //! Tokenizer and diagnostic helpers.
 
+use std::rc::Rc;
+
 /// Reserved keywords recognized by the tokenizer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Keyword {
@@ -59,7 +61,7 @@ pub enum TokenKind<'a> {
     /// A numeric literal with the given value.
     Num(i64),
     /// A string literal with the given content.
-    Str(Box<[u8]>),
+    Str(Rc<[u8]>),
     /// A sentinel token representing the end of the input.
     Eof,
 }
@@ -106,7 +108,7 @@ impl<'a> Token<'a> {
     }
 
     /// Construct a string literal token.
-    pub fn str(offset: usize, content: impl Into<Box<[u8]>>) -> Self {
+    pub fn str(offset: usize, content: impl Into<Rc<[u8]>>) -> Self {
         Self {
             offset,
             kind: TokenKind::Str(content.into()),
@@ -153,9 +155,9 @@ impl<'a> Token<'a> {
     }
 
     /// Return the content if this is a string literal token.
-    pub fn as_str(&self) -> Option<&[u8]> {
+    pub fn as_str(&self) -> Option<Rc<[u8]>> {
         match self.kind {
-            TokenKind::Str(ref content) => Some(content),
+            TokenKind::Str(ref content) => Some(content.clone()),
             _ => None,
         }
     }

@@ -1,5 +1,7 @@
 //! A recursive-descent parser.
 
+use std::rc::Rc;
+
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
@@ -678,7 +680,7 @@ impl<'a> Cursor<'a> {
 
         if let Some(content) = self.current().as_str() {
             let ty = Type::array(Type::Char, content.len());
-            let global_id = self.create_anon_global(ty, content.into());
+            let global_id = self.create_anon_global(ty, content);
             self.advance();
             return Ok(Node::var(VarRef::Global(global_id), offset));
         }
@@ -753,7 +755,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Create a new global variable.
-    fn create_global(&mut self, name: String, ty: Type, init_data: Option<Box<[u8]>>) -> usize {
+    fn create_global(&mut self, name: String, ty: Type, init_data: Option<Rc<[u8]>>) -> usize {
         self.globals.push(GlobalVar {
             name,
             ty,
@@ -763,7 +765,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Create a new anonymous global variable.
-    fn create_anon_global(&mut self, ty: Type, init_data: Box<[u8]>) -> usize {
+    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
         let name = format!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
         self.create_global(name, ty, Some(init_data))
