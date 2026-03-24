@@ -60,7 +60,7 @@ pub enum TokenKind<'a> {
     Punct(&'a str),
     /// A numeric literal with the given value.
     Num(i64),
-    /// A string literal with the given content.
+    /// A string literal with the given content, including the null terminator.
     Str(Rc<[u8]>),
     /// A sentinel token representing the end of the input.
     Eof,
@@ -208,7 +208,7 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if is_ident1(ch) {
+            if ch.is_ident1() {
                 self.read_ident_or_keyword();
                 continue;
             }
@@ -241,23 +241,29 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a string literal token.
     fn read_string_literal(&mut self) -> Result<(), String> {
-        let offset = self.pos + 1; // Skip opening quote
-        let rest = &self.input.as_bytes()[offset..];
+        let mut content = Vec::new();
+        let bytes = self.input.as_bytes();
+        let mut i = self.pos + 1; // Skip opening quote
 
-        for (i, &byte) in rest.iter().enumerate() {
-            match byte {
+        while i < bytes.len() {
+            match bytes[i] {
                 b'"' => {
-                    let mut content = Vec::with_capacity(i + 1);
-                    content.extend_from_slice(&rest[..i]);
                     content.push(b'\0');
-
-                    self.tokens.push(Token::str(offset, content));
-                    self.pos += i + 2; // Skip past closing quote
+                    self.tokens.push(Token::str(self.pos, content));
+                    self.pos = i + 1; // Skip past closing quote
                     return Ok(());
                 },
+                b'\\' => {
+                    i += 1;
+                    if i >= bytes.len() || matches!(bytes[i], b'\n' | b'\0') {
+                        break;
+                    }
+                    content.push(bytes[i].decode_escape());
+                },
                 b'\n' | b'\0' => break,
-                _ => {},
+                byte => content.push(byte),
             }
+            i += 1;
         }
 
         Err(self.error_current("unclosed string literal"))
@@ -268,7 +274,7 @@ impl<'a> Tokenizer<'a> {
         let offset = self.pos;
         let len = self.input[self.pos..]
             .bytes()
-            .take_while(|byte| is_ident2(*byte))
+            .take_while(|byte| byte.is_ident2())
             .count();
 
         let lexeme = &self.input[offset..offset + len];
@@ -313,14 +319,42 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-/// Return whether the byte is valid at the start of an identifier.
-fn is_ident1(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
+/// A small extension for [`u8`] byte to help with tokenization.
+trait U8Ext {
+    /// Return whether the byte is valid at the start of an identifier.
+    fn is_ident1(&self) -> bool;
+
+    /// Return whether the byte is valid after the first identifier byte.
+    fn is_ident2(&self) -> bool;
+
+    /// Decode a C-style escape sequence character.
+    ///
+    /// Non-escape characters are returned unchanged.
+    fn decode_escape(&self) -> u8;
 }
 
-/// Return whether the byte is valid after the first identifier byte.
-fn is_ident2(byte: u8) -> bool {
-    is_ident1(byte) || byte.is_ascii_digit()
+impl U8Ext for u8 {
+    fn is_ident1(&self) -> bool {
+        self.is_ascii_alphabetic() || *self == b'_'
+    }
+
+    fn is_ident2(&self) -> bool {
+        self.is_ident1() || self.is_ascii_digit()
+    }
+
+    fn decode_escape(&self) -> u8 {
+        match *self {
+            b'a' => b'\x07',
+            b'b' => b'\x08',
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => b'\x0b',
+            b'f' => b'\x0c',
+            b'r' => b'\r',
+            b'e' => 27, // GNU C extension for the ASCII escape character
+            _ => *self,
+        }
+    }
 }
 
 /// Format an error with a caret pointing at the given byte offset.
