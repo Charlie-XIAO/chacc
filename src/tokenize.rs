@@ -208,7 +208,7 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if ch.is_ident1() {
+            if is_ident1(&ch) {
                 self.read_ident_or_keyword();
                 continue;
             }
@@ -258,12 +258,16 @@ impl<'a> Tokenizer<'a> {
                     if i >= bytes.len() || matches!(bytes[i], b'\n' | b'\0') {
                         break;
                     }
-                    content.push(bytes[i].decode_escape());
+                    let (escaped, len) = read_escape_char(&bytes[i..]);
+                    content.push(escaped);
+                    i += len;
                 },
                 b'\n' | b'\0' => break,
-                byte => content.push(byte),
+                byte => {
+                    content.push(byte);
+                    i += 1;
+                },
             }
-            i += 1;
         }
 
         Err(self.error_current("unclosed string literal"))
@@ -272,10 +276,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an identifier or keyword token.
     fn read_ident_or_keyword(&mut self) {
         let offset = self.pos;
-        let len = self.input[self.pos..]
-            .bytes()
-            .take_while(|byte| byte.is_ident2())
-            .count();
+        let len = self.input[self.pos..].bytes().take_while(is_ident2).count();
 
         let lexeme = &self.input[offset..offset + len];
         let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
@@ -319,42 +320,53 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-/// A small extension for [`u8`] byte to help with tokenization.
-trait U8Ext {
-    /// Return whether the byte is valid at the start of an identifier.
-    fn is_ident1(&self) -> bool;
-
-    /// Return whether the byte is valid after the first identifier byte.
-    fn is_ident2(&self) -> bool;
-
-    /// Decode a C-style escape sequence character.
-    ///
-    /// Non-escape characters are returned unchanged.
-    fn decode_escape(&self) -> u8;
+/// Return whether the byte is valid at the start of an identifier.
+fn is_ident1(byte: &u8) -> bool {
+    byte.is_ascii_alphabetic() || *byte == b'_'
 }
 
-impl U8Ext for u8 {
-    fn is_ident1(&self) -> bool {
-        self.is_ascii_alphabetic() || *self == b'_'
-    }
+/// Return whether the byte is valid after the first identifier byte.
+fn is_ident2(byte: &u8) -> bool {
+    is_ident1(byte) || byte.is_ascii_digit()
+}
 
-    fn is_ident2(&self) -> bool {
-        self.is_ident1() || self.is_ascii_digit()
-    }
+/// Read an escape sequence.
+///
+/// This returns the decoded byte and the number of bytes consumed from the
+/// input. The input bytes must start with the first byte after the backslash
+/// and cannot be empty.
+fn read_escape_char(bytes: &[u8]) -> (u8, usize) {
+    let first = bytes[0];
 
-    fn decode_escape(&self) -> u8 {
-        match *self {
-            b'a' => b'\x07',
-            b'b' => b'\x08',
-            b't' => b'\t',
-            b'n' => b'\n',
-            b'v' => b'\x0b',
-            b'f' => b'\x0c',
-            b'r' => b'\r',
-            b'e' => 27, // GNU C extension for the ASCII escape character
-            _ => *self,
+    // Octal escape sequence (up to three octal digits)
+    if (b'0'..=b'7').contains(&first) {
+        let mut octal_value = first - b'0';
+        let mut len = 1;
+        for byte in bytes.iter().skip(1).take(2) {
+            if (b'0'..=b'7').contains(byte) {
+                octal_value = (octal_value << 3) + (byte - b'0');
+                len += 1;
+            } else {
+                break;
+            }
         }
+        return (octal_value, len);
     }
+
+    // Standard escape sequences
+    let decoded = match first {
+        b'a' => b'\x07',
+        b'b' => b'\x08',
+        b't' => b'\t',
+        b'n' => b'\n',
+        b'v' => b'\x0b',
+        b'f' => b'\x0c',
+        b'r' => b'\r',
+        b'e' => 27, // GNU C extension for the ASCII escape character
+        // TODO: we should emit a warning about unknown escape sequence here
+        _ => first,
+    };
+    (decoded, 1)
 }
 
 /// Format an error with a caret pointing at the given byte offset.
