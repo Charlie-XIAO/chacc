@@ -34,14 +34,16 @@ trait Parser<'a> {
     /// Return a reference to the original input string.
     fn input(&self) -> &'a str;
 
-    /// Return the current token.
-    fn current(&self) -> &Token<'a>;
-
     /// Return a token at a fixed lookahead distance.
     fn peek(&self, offset: usize) -> Option<&Token<'a>>;
 
     /// Advance to the next token.
     fn advance(&mut self);
+
+    /// Return the current token.
+    fn current(&self) -> &Token<'a> {
+        self.peek(0).expect("parser is in a broken state")
+    }
 
     /// Format an error message at the current token.
     fn error_current(&self, message: &str) -> String {
@@ -179,10 +181,6 @@ pub struct Cursor<'a> {
 impl<'a> Parser<'a> for Cursor<'a> {
     fn input(&self) -> &'a str {
         self.input
-    }
-
-    fn current(&self) -> &Token<'a> {
-        &self.tokens[self.pos]
     }
 
     fn advance(&mut self) {
@@ -937,10 +935,6 @@ struct LookaheadCursor<'cur, 'a> {
 impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
     fn input(&self) -> &'a str {
         self.input
-    }
-
-    fn current(&self) -> &Token<'a> {
-        &self.tokens[self.pos]
     }
 
     fn advance(&mut self) {

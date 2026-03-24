@@ -70,63 +70,6 @@ pub struct Token<'a> {
     pub offset: usize,
 }
 
-/// Convert the input string into a sequence of tokens.
-pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, String> {
-    let mut tokens = Vec::new();
-    let mut rest = input;
-    let mut offset = 0;
-
-    while !rest.is_empty() {
-        let ch = rest.as_bytes()[0];
-
-        // Skip whitespace characters
-        if ch.is_ascii_whitespace() {
-            rest = &rest[1..];
-            offset += 1;
-            continue;
-        }
-
-        // Numeric literal
-        if ch.is_ascii_digit() {
-            let len = rest.bytes().take_while(u8::is_ascii_digit).count();
-            let lexeme = &rest[..len];
-            tokens.push(Token::num(offset, lexeme.parse().unwrap()));
-            rest = &rest[len..];
-            offset += len;
-            continue;
-        }
-
-        // Identifier or keyword
-        if is_ident1(ch) {
-            let len = rest.bytes().take_while(|byte| is_ident2(*byte)).count();
-            let lexeme = &rest[..len];
-            let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
-                Token::keyword(offset, keyword)
-            } else {
-                Token::ident(offset, lexeme)
-            };
-            tokens.push(token);
-            rest = &rest[len..];
-            offset += len;
-            continue;
-        }
-
-        // Punctuator
-        let punct_len = read_punct(rest);
-        if punct_len != 0 {
-            tokens.push(Token::punct(offset, &rest[..punct_len]));
-            rest = &rest[punct_len..];
-            offset += punct_len;
-            continue;
-        }
-
-        return Err(format_error_at(input, offset, "invalid token"));
-    }
-
-    tokens.push(Token::eof(offset));
-    Ok(tokens)
-}
-
 impl<'a> Token<'a> {
     /// Construct an identifier token.
     pub fn ident(offset: usize, lexeme: &'a str) -> Self {
@@ -205,35 +148,130 @@ impl<'a> Token<'a> {
     }
 }
 
+pub struct Tokenizer<'a> {
+    input: &'a str,
+    pos: usize,
+    tokens: Vec<Token<'a>>,
+}
+
+impl<'a> Tokenizer<'a> {
+    /// Create a new tokenizer for the given input string.
+    pub fn new(input: &'a str) -> Self {
+        Self {
+            input,
+            pos: 0,
+            tokens: Vec::new(),
+        }
+    }
+
+    fn error_current(&self, message: &str) -> String {
+        format_error_at(self.input, self.pos, message)
+    }
+
+    /// Tokenize the entire input into a flat token list.
+    pub fn tokenize(mut self) -> Result<Vec<Token<'a>>, String> {
+        while self.pos < self.input.len() {
+            let ch = self.input.as_bytes()[self.pos];
+
+            if ch.is_ascii_whitespace() {
+                self.pos += 1;
+                continue;
+            }
+
+            if ch.is_ascii_digit() {
+                self.read_number();
+                continue;
+            }
+
+            if is_ident1(ch) {
+                self.read_ident_or_keyword();
+                continue;
+            }
+
+            if self.try_read_punct() {
+                continue;
+            }
+
+            return Err(self.error_current("invalid token"));
+        }
+
+        self.tokens.push(Token::eof(self.pos));
+        Ok(self.tokens)
+    }
+
+    /// Read a numeric literal token.
+    fn read_number(&mut self) {
+        let offset = self.pos;
+        let len = self.input[self.pos..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+
+        let lexeme = &self.input[offset..offset + len];
+        let num = lexeme.parse().expect("failed to parse number");
+
+        self.tokens.push(Token::num(offset, num));
+        self.pos += len;
+    }
+
+    /// Read an identifier or keyword token.
+    fn read_ident_or_keyword(&mut self) {
+        let offset = self.pos;
+        let len = self.input[self.pos..]
+            .bytes()
+            .take_while(|byte| is_ident2(*byte))
+            .count();
+
+        let lexeme = &self.input[offset..offset + len];
+        let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
+            Token::keyword(offset, keyword)
+        } else {
+            Token::ident(offset, lexeme)
+        };
+
+        self.tokens.push(token);
+        self.pos += len;
+    }
+
+    /// Try to read a punctuator token, returning whether there is one.
+    fn try_read_punct(&mut self) -> bool {
+        let offset = self.pos;
+        let rest = &self.input[offset..];
+
+        const PUNCTUATORS: &[&str] = &["==", "!=", "<=", ">="];
+
+        let punct_len =
+            if let Some(punct) = PUNCTUATORS.iter().find(|prefix| rest.starts_with(*prefix)) {
+                punct.len()
+            } else if rest
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_punctuation)
+            {
+                1
+            } else {
+                0
+            };
+
+        if punct_len == 0 {
+            return false;
+        }
+
+        let lexeme = &self.input[offset..offset + punct_len];
+        self.tokens.push(Token::punct(offset, lexeme));
+        self.pos += punct_len;
+        true
+    }
+}
+
 /// Return whether the byte is valid at the start of an identifier.
-///
-/// Identifiers must start with an ASCII letter or underscore.
 fn is_ident1(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 
 /// Return whether the byte is valid after the first identifier byte.
-///
-/// Identifiers can contain ASCII letters, digits, or underscores.
 fn is_ident2(byte: u8) -> bool {
     is_ident1(byte) || byte.is_ascii_digit()
-}
-
-/// Read a punctuator token and return its length.
-fn read_punct(input: &str) -> usize {
-    if ["==", "!=", "<=", ">="]
-        .into_iter()
-        .any(|prefix| input.starts_with(prefix))
-    {
-        return 2;
-    }
-
-    usize::from(
-        input
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_punctuation),
-    )
 }
 
 /// Format an error with a caret pointing at the given byte offset.

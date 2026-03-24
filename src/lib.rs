@@ -8,11 +8,11 @@ mod types;
 
 use codegen::codegen_program;
 use parse::Cursor;
-use tokenize::tokenize;
+use tokenize::Tokenizer;
 
 /// Compile the input program into x86-64 assembly.
 pub fn compile_expression_program(input: &str) -> Result<String, String> {
-    let tokens = tokenize(input)?;
+    let tokens = Tokenizer::new(input).tokenize()?;
     let mut parser = Cursor::new(input, tokens);
     let program = parser.parse_program()?;
     codegen_program(input, program)
