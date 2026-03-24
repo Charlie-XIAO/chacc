@@ -321,7 +321,14 @@ fn emit_data(assembly: &mut String, globals: &[GlobalVar]) {
         assembly.push_str("  .data\n");
         assembly.push_str(&format!("  .globl {}\n", global.name));
         assembly.push_str(&format!("{}:\n", global.name));
-        assembly.push_str(&format!("  .zero {}\n", global.ty.size()));
+
+        if let Some(init_data) = &global.init_data {
+            for byte in init_data {
+                assembly.push_str(&format!("  .byte {byte}\n"));
+            }
+        } else {
+            assembly.push_str(&format!("  .zero {}\n", global.ty.size()));
+        }
     }
 }
 

@@ -58,6 +58,8 @@ pub enum TokenKind<'a> {
     Punct(&'a str),
     /// A numeric literal with the given value.
     Num(i64),
+    /// A string literal with the given content.
+    Str(Box<[u8]>),
     /// A sentinel token representing the end of the input.
     Eof,
 }
@@ -103,6 +105,14 @@ impl<'a> Token<'a> {
         }
     }
 
+    /// Construct a string literal token.
+    pub fn str(offset: usize, content: impl Into<Box<[u8]>>) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Str(content.into()),
+        }
+    }
+
     /// Construct the EOF sentinel.
     pub fn eof(offset: usize) -> Self {
         Self {
@@ -138,6 +148,14 @@ impl<'a> Token<'a> {
     pub fn as_num(&self) -> Option<i64> {
         match self.kind {
             TokenKind::Num(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Return the content if this is a string literal token.
+    pub fn as_str(&self) -> Option<&[u8]> {
+        match self.kind {
+            TokenKind::Str(ref content) => Some(content),
             _ => None,
         }
     }
@@ -183,6 +201,11 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
+            if ch == b'"' {
+                self.read_string_literal()?;
+                continue;
+            }
+
             if is_ident1(ch) {
                 self.read_ident_or_keyword();
                 continue;
@@ -212,6 +235,30 @@ impl<'a> Tokenizer<'a> {
 
         self.tokens.push(Token::num(offset, num));
         self.pos += len;
+    }
+
+    /// Read a string literal token.
+    fn read_string_literal(&mut self) -> Result<(), String> {
+        let offset = self.pos + 1; // Skip opening quote
+        let rest = &self.input.as_bytes()[offset..];
+
+        for (i, &byte) in rest.iter().enumerate() {
+            match byte {
+                b'"' => {
+                    let mut content = Vec::with_capacity(i + 1);
+                    content.extend_from_slice(&rest[..i]);
+                    content.push(b'\0');
+
+                    self.tokens.push(Token::str(offset, content));
+                    self.pos += i + 2; // Skip past closing quote
+                    return Ok(());
+                },
+                b'\n' | b'\0' => break,
+                _ => {},
+            }
+        }
+
+        Err(self.error_current("unclosed string literal"))
     }
 
     /// Read an identifier or keyword token.

@@ -25,6 +25,8 @@ pub struct Function {
 pub struct GlobalVar {
     pub name: String,
     pub ty: Type,
+    /// Initial bytes for statically initialized data.
+    pub init_data: Option<Box<[u8]>>,
 }
 
 /// A local variable stored in a function's stack frame.

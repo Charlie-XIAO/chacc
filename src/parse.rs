@@ -176,6 +176,7 @@ pub struct Cursor<'a> {
     pos: usize,
     locals: Vec<LocalVar>,
     globals: Vec<GlobalVar>,
+    next_anon_global: usize,
 }
 
 impl<'a> Parser<'a> for Cursor<'a> {
@@ -201,6 +202,7 @@ impl<'a> Cursor<'a> {
             pos: 0,
             locals: Vec::new(),
             globals: Vec::new(),
+            next_anon_global: 0,
         }
     }
 
@@ -300,10 +302,7 @@ impl<'a> Cursor<'a> {
                 ));
             }
 
-            self.globals.push(GlobalVar {
-                name: declarator.name,
-                ty: declarator.ty,
-            });
+            self.create_global(declarator.name, declarator.ty, None);
         }
 
         self.skip_punct(";")?;
@@ -644,6 +643,7 @@ impl<'a> Cursor<'a> {
     ///   | "sizeof" <unary>
     ///   | <func-call>
     ///   | <ident>
+    ///   | <str>
     ///   | <num>
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
@@ -674,6 +674,13 @@ impl<'a> Cursor<'a> {
                 return Err(format_error_at(self.input, offset, "undefined variable"));
             };
             return Ok(Node::var(var, offset));
+        }
+
+        if let Some(content) = self.current().as_str() {
+            let ty = Type::array(Type::Char, content.len());
+            let global_id = self.create_anon_global(ty, content.into());
+            self.advance();
+            return Ok(Node::var(VarRef::Global(global_id), offset));
         }
 
         if let Some(value) = self.current().as_num() {
@@ -743,6 +750,23 @@ impl<'a> Cursor<'a> {
 
         param_ids.reverse();
         param_ids
+    }
+
+    /// Create a new global variable.
+    fn create_global(&mut self, name: String, ty: Type, init_data: Option<Box<[u8]>>) -> usize {
+        self.globals.push(GlobalVar {
+            name,
+            ty,
+            init_data,
+        });
+        self.globals.len() - 1
+    }
+
+    /// Create a new anonymous global variable.
+    fn create_anon_global(&mut self, ty: Type, init_data: Box<[u8]>) -> usize {
+        let name = format!(".L..{}", self.next_anon_global);
+        self.next_anon_global += 1;
+        self.create_global(name, ty, Some(init_data))
     }
 
     /// Build an addition node with pointer scaling.
