@@ -48,18 +48,22 @@ impl std::convert::TryFrom<&str> for Keyword {
 }
 
 /// Token kinds recognized by the tokenizer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TokenKind<'a> {
+    /// An identifier with the given lexeme.
     Ident(&'a str),
+    /// A reserved keyword.
     Keyword(Keyword),
+    /// A punctuator with the given lexeme.
     Punct(&'a str),
+    /// A numeric literal with the given value.
     Num(i64),
     /// A sentinel token representing the end of the input.
     Eof,
 }
 
 /// A token.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     /// The byte offset of the token in the input string.
@@ -148,7 +152,7 @@ impl<'a> Token<'a> {
         }
     }
 
-    /// Construct a numeric token.
+    /// Construct a numeric literal token.
     pub fn num(offset: usize, value: i64) -> Self {
         Self {
             offset,
@@ -165,22 +169,22 @@ impl<'a> Token<'a> {
     }
 
     /// Return whether this token is a punctuator.
-    pub fn is_punct(self, expected: &str) -> bool {
+    pub fn is_punct(&self, expected: &str) -> bool {
         self.kind == TokenKind::Punct(expected)
     }
 
     /// Return whether this token is a keyword.
-    pub fn is_keyword(self, expected: Keyword) -> bool {
+    pub fn is_keyword(&self, expected: Keyword) -> bool {
         self.kind == TokenKind::Keyword(expected)
     }
 
     /// Return whether this token is a type name keyword.
-    pub fn is_typename_keyword(self) -> bool {
+    pub fn is_typename_keyword(&self) -> bool {
         matches!(self.kind, TokenKind::Keyword(Keyword::Char | Keyword::Int))
     }
 
     /// Return the lexeme if this is an identifier token.
-    pub fn as_ident(self) -> Option<&'a str> {
+    pub fn as_ident(&self) -> Option<&'a str> {
         match self.kind {
             TokenKind::Ident(name) => Some(name),
             _ => None,
@@ -188,7 +192,7 @@ impl<'a> Token<'a> {
     }
 
     /// Return the value if this is a numeric token.
-    pub fn as_num(self) -> Option<i64> {
+    pub fn as_num(&self) -> Option<i64> {
         match self.kind {
             TokenKind::Num(value) => Some(value),
             _ => None,
@@ -196,7 +200,7 @@ impl<'a> Token<'a> {
     }
 
     /// Return whether this token is the EOF sentinel.
-    pub fn is_eof(self) -> bool {
+    pub fn is_eof(&self) -> bool {
         self.kind == TokenKind::Eof
     }
 }

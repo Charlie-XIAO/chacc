@@ -35,7 +35,10 @@ trait Parser<'a> {
     fn input(&self) -> &'a str;
 
     /// Return the current token.
-    fn current(&self) -> Token<'a>;
+    fn current(&self) -> &Token<'a>;
+
+    /// Return a token at a fixed lookahead distance.
+    fn peek(&self, offset: usize) -> Option<&Token<'a>>;
 
     /// Advance to the next token.
     fn advance(&mut self);
@@ -85,8 +88,8 @@ trait Parser<'a> {
             ty = Type::ptr(ty);
         }
 
-        let tok = self.current();
-        let Some(name) = tok.as_ident() else {
+        let offset = self.current().offset;
+        let Some(name) = self.current().as_ident() else {
             return Err(self.error_current("expected a variable name"));
         };
 
@@ -95,7 +98,7 @@ trait Parser<'a> {
         Ok(Declarator {
             name: name.to_owned(),
             ty,
-            offset: tok.offset,
+            offset,
             params,
         })
     }
@@ -164,27 +167,6 @@ trait Parser<'a> {
     }
 }
 
-/// Cursor for looking ahead in the token stream without advancing.
-struct LookaheadCursor<'cur, 'a> {
-    input: &'a str,
-    tokens: &'cur [Token<'a>],
-    pos: usize,
-}
-
-impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
-    fn input(&self) -> &'a str {
-        self.input
-    }
-
-    fn current(&self) -> Token<'a> {
-        self.tokens[self.pos]
-    }
-
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
-}
-
 /// Cursor over the token stream during parsing.
 pub struct Cursor<'a> {
     input: &'a str,
@@ -199,12 +181,16 @@ impl<'a> Parser<'a> for Cursor<'a> {
         self.input
     }
 
-    fn current(&self) -> Token<'a> {
-        self.tokens[self.pos]
+    fn current(&self) -> &Token<'a> {
+        &self.tokens[self.pos]
     }
 
     fn advance(&mut self) {
         self.pos += 1;
+    }
+
+    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
+        self.tokens.get(self.pos + offset)
     }
 }
 
@@ -227,11 +213,6 @@ impl<'a> Cursor<'a> {
             tokens: &self.tokens,
             pos: self.pos,
         }
-    }
-
-    /// Return a token at a fixed lookahead distance.
-    fn peek(&self, offset: usize) -> Option<Token<'a>> {
-        self.tokens.get(self.pos + offset).copied()
     }
 
     /// ```bnf
@@ -668,42 +649,38 @@ impl<'a> Cursor<'a> {
     ///   | <num>
     /// ```
     fn parse_primary(&mut self) -> Result<Node, String> {
-        let tok = self.current();
+        let offset = self.current().offset;
 
-        if tok.is_punct("(") {
+        if self.current().is_punct("(") {
             self.advance();
             let node = self.parse_expr()?;
             self.skip_punct(")")?;
             return Ok(node);
         }
 
-        if tok.is_keyword(Keyword::Sizeof) {
+        if self.current().is_keyword(Keyword::Sizeof) {
             self.advance();
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = operand.expect_ty().size();
-            return Ok(Node::num(size, tok.offset));
+            return Ok(Node::num(size, offset));
         }
 
-        if let Some(name) = tok.as_ident() {
+        if let Some(name) = self.current().as_ident() {
             if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
-                return self.parse_func_call(name, tok.offset);
+                return self.parse_func_call(name, offset);
             }
 
             self.advance();
             let Some(var) = self.find_var(name) else {
-                return Err(format_error_at(
-                    self.input,
-                    tok.offset,
-                    "undefined variable",
-                ));
+                return Err(format_error_at(self.input, offset, "undefined variable"));
             };
-            return Ok(Node::var(var, tok.offset));
+            return Ok(Node::var(var, offset));
         }
 
-        if let Some(value) = tok.as_num() {
+        if let Some(value) = self.current().as_num() {
             self.advance();
-            return Ok(Node::num(value, tok.offset));
+            return Ok(Node::num(value, offset));
         }
 
         Err(self.error_current("expected an expression"))
@@ -947,5 +924,30 @@ impl<'a> Cursor<'a> {
         }
 
         Ok(())
+    }
+}
+
+/// Cursor for looking ahead in the token stream without advancing.
+struct LookaheadCursor<'cur, 'a> {
+    input: &'a str,
+    tokens: &'cur [Token<'a>],
+    pos: usize,
+}
+
+impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
+    fn input(&self) -> &'a str {
+        self.input
+    }
+
+    fn current(&self) -> &Token<'a> {
+        &self.tokens[self.pos]
+    }
+
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
+
+    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
+        self.tokens.get(self.pos + offset)
     }
 }
