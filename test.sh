@@ -19,7 +19,7 @@ assert() {
   expected="$1"
   input="$2"
 
-  ./target/release/chacc "$input" > tmp.s
+  echo "$input" | ./target/release/chacc - > tmp.s || exit 1
   cc -o tmp tmp.s tmp2.o
   set +e
   ./tmp

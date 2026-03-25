@@ -3,17 +3,19 @@
 mod ast;
 mod codegen;
 mod parse;
+mod source;
 mod tokenize;
 mod types;
 
 use codegen::codegen_program;
 use parse::Cursor;
+pub use source::Source;
 use tokenize::Tokenizer;
 
-/// Compile the input program into x86-64 assembly.
-pub fn compile_expression_program(input: &str) -> Result<String, String> {
-    let tokens = Tokenizer::new(input).tokenize()?;
-    let mut parser = Cursor::new(input, tokens);
+/// Compile a source into x86-64 assembly.
+pub fn compile(source: &Source) -> Result<String, String> {
+    let tokens = Tokenizer::new(source).tokenize()?;
+    let mut parser = Cursor::new(source, tokens);
     let program = parser.parse_program()?;
-    codegen_program(input, program)
+    codegen_program(source, program)
 }

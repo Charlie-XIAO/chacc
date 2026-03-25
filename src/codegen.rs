@@ -3,7 +3,7 @@
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
-use crate::tokenize::format_error_at;
+use crate::source::Source;
 use crate::types::Type;
 
 const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
@@ -11,7 +11,7 @@ const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
 /// Code generator for a single function body.
 struct Codegen<'a> {
-    input: &'a str,
+    source: &'a Source,
     function_name: String,
     assembly: String,
     depth: i32,
@@ -23,7 +23,7 @@ struct Codegen<'a> {
 impl<'a> Codegen<'a> {
     /// Create a code generator with the standard function prologue.
     fn new(
-        input: &'a str,
+        source: &'a Source,
         function_name: String,
         params: &[usize],
         mut locals: Vec<LocalVar>,
@@ -49,7 +49,7 @@ impl<'a> Codegen<'a> {
         }
 
         Self {
-            input,
+            source,
             function_name,
             assembly,
             depth: 0,
@@ -153,7 +153,7 @@ impl<'a> Codegen<'a> {
                 },
             },
             NodeKind::Deref(expr) => self.gen_expr(expr),
-            _ => Err(format_error_at(self.input, node.offset, "not an lvalue")),
+            _ => Err(self.source.error_at(node.offset, "not an lvalue")),
         }
     }
 
@@ -166,7 +166,7 @@ impl<'a> Codegen<'a> {
             NodeKind::FuncCall { name, args } => {
                 if args.len() > 6 {
                     let msg = format!("too many arguments: expected at most 6, got {}", args.len());
-                    return Err(format_error_at(self.input, node.offset, &msg));
+                    return Err(self.source.error_at(node.offset, &msg));
                 }
 
                 for arg in args {
@@ -298,7 +298,7 @@ impl<'a> Codegen<'a> {
 }
 
 /// Generate assembly for a full program.
-pub fn codegen_program(input: &str, program: Program) -> Result<String, String> {
+pub fn codegen_program(source: &Source, program: Program) -> Result<String, String> {
     let Program { functions, globals } = program;
     let mut assembly = String::new();
 
@@ -311,7 +311,7 @@ pub fn codegen_program(input: &str, program: Program) -> Result<String, String> 
         locals,
     } in functions
     {
-        let mut codegen = Codegen::new(input, name, &params, locals, &globals);
+        let mut codegen = Codegen::new(source, name, &params, locals, &globals);
         codegen.gen_stmt(&body)?;
         codegen.assert_balanced();
         assembly.push_str(&codegen.finish());

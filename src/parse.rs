@@ -5,7 +5,8 @@ use std::rc::Rc;
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
-use crate::tokenize::{Keyword, Token, format_error_at};
+use crate::source::Source;
+use crate::tokenize::{Keyword, Token};
 use crate::types::Type;
 
 /// Declaration of a function parameter.
@@ -33,8 +34,8 @@ struct Declarator {
 /// This is implemented by both [`Cursor`] and [`LookaheadCursor`] to reduce
 /// code duplication when both normal parsing and lookahead are needed.
 trait Parser<'a> {
-    /// Return a reference to the original input string.
-    fn input(&self) -> &'a str;
+    /// Return a reference to the original source.
+    fn source(&self) -> &'a Source;
 
     /// Return a token at a fixed lookahead distance.
     fn peek(&self, offset: usize) -> Option<&Token<'a>>;
@@ -49,7 +50,7 @@ trait Parser<'a> {
 
     /// Format an error message at the current token.
     fn error_current(&self, message: &str) -> String {
-        format_error_at(self.input(), self.current().offset, message)
+        self.source().error_at(self.current().offset, message)
     }
 
     /// Assume and skip a specific punctuator.
@@ -140,11 +141,9 @@ trait Parser<'a> {
             });
 
             if params.len() > 6 {
-                return Err(format_error_at(
-                    self.input(),
-                    declarator.offset,
-                    "too many parameters",
-                ));
+                return Err(self
+                    .source()
+                    .error_at(declarator.offset, "too many parameters"));
             }
         }
 
@@ -173,7 +172,7 @@ trait Parser<'a> {
 
 /// Cursor over the token stream during parsing.
 pub struct Cursor<'a> {
-    input: &'a str,
+    source: &'a Source,
     tokens: Vec<Token<'a>>,
     pos: usize,
     locals: Vec<LocalVar>,
@@ -182,8 +181,8 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Parser<'a> for Cursor<'a> {
-    fn input(&self) -> &'a str {
-        self.input
+    fn source(&self) -> &'a Source {
+        self.source
     }
 
     fn advance(&mut self) {
@@ -197,9 +196,9 @@ impl<'a> Parser<'a> for Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     /// Create a parser over a token stream.
-    pub fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(source: &'a Source, tokens: Vec<Token<'a>>) -> Self {
         Self {
-            input,
+            source,
             tokens,
             pos: 0,
             locals: Vec::new(),
@@ -211,7 +210,7 @@ impl<'a> Cursor<'a> {
     /// Create a [`LookaheadCursor`] at the current position.
     fn lookahead(&self) -> LookaheadCursor<'_, 'a> {
         LookaheadCursor {
-            input: self.input,
+            source: self.source,
             tokens: &self.tokens,
             pos: self.pos,
         }
@@ -297,11 +296,9 @@ impl<'a> Cursor<'a> {
 
             let declarator = self.parse_declarator(base_ty.clone())?;
             if declarator.ty.is_func() {
-                return Err(format_error_at(
-                    self.input,
-                    declarator.offset,
-                    "expected a global variable",
-                ));
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "expected a global variable"));
             }
 
             self.create_global(declarator.name, declarator.ty, None);
@@ -682,7 +679,7 @@ impl<'a> Cursor<'a> {
 
             self.advance();
             let Some(var) = self.find_var(name) else {
-                return Err(format_error_at(self.input, offset, "undefined variable"));
+                return Err(self.source.error_at(offset, "undefined variable"));
             };
             return Ok(Node::var(var, offset));
         }
@@ -796,7 +793,7 @@ impl<'a> Cursor<'a> {
         }
 
         if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
-            return Err(format_error_at(self.input, offset, "invalid operands"));
+            return Err(self.source.error_at(offset, "invalid operands"));
         }
 
         // Canonicalize num + ptr to ptr + num
@@ -846,7 +843,7 @@ impl<'a> Cursor<'a> {
             return Ok(node);
         }
 
-        Err(format_error_at(self.input, offset, "invalid operands"))
+        Err(self.source.error_at(offset, "invalid operands"))
     }
 
     /// Infer types for a statement subtree.
@@ -933,11 +930,9 @@ impl<'a> Cursor<'a> {
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
                 let Some(base) = expr.expect_ty().base() else {
-                    return Err(format_error_at(
-                        self.input,
-                        node.offset,
-                        "invalid pointer dereference",
-                    ));
+                    return Err(self
+                        .source
+                        .error_at(node.offset, "invalid pointer dereference"));
                 };
                 node.ty = Some(base.clone());
             },
@@ -945,7 +940,7 @@ impl<'a> Cursor<'a> {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
                 if lhs.expect_ty().is_array() {
-                    return Err(format_error_at(self.input, lhs.offset, "not an lvalue"));
+                    return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
                 node.ty = lhs.ty.clone();
             },
@@ -961,8 +956,7 @@ impl<'a> Cursor<'a> {
                     self.infer_type(expr)?;
                     node.ty = expr.ty.clone();
                 } else {
-                    return Err(format_error_at(
-                        self.input,
+                    return Err(self.source.error_at(
                         node.offset,
                         "statement expression returning void is not supported",
                     ));
@@ -976,14 +970,14 @@ impl<'a> Cursor<'a> {
 
 /// Cursor for looking ahead in the token stream without advancing.
 struct LookaheadCursor<'cur, 'a> {
-    input: &'a str,
+    source: &'a Source,
     tokens: &'cur [Token<'a>],
     pos: usize,
 }
 
 impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
-    fn input(&self) -> &'a str {
-        self.input
+    fn source(&self) -> &'a Source {
+        self.source
     }
 
     fn advance(&mut self) {

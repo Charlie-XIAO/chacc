@@ -2,6 +2,8 @@
 
 use std::rc::Rc;
 
+use crate::source::Source;
+
 /// Reserved keywords recognized by the tokenizer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Keyword {
@@ -169,29 +171,31 @@ impl<'a> Token<'a> {
 }
 
 pub struct Tokenizer<'a> {
-    input: &'a str,
+    source: &'a Source,
     pos: usize,
     tokens: Vec<Token<'a>>,
 }
 
 impl<'a> Tokenizer<'a> {
-    /// Create a new tokenizer for the given input string.
-    pub fn new(input: &'a str) -> Self {
+    /// Create a new tokenizer for the given source.
+    pub fn new(source: &'a Source) -> Self {
         Self {
-            input,
+            source,
             pos: 0,
             tokens: Vec::new(),
         }
     }
 
     fn error_current(&self, message: &str) -> String {
-        format_error_at(self.input, self.pos, message)
+        self.source.error_at(self.pos, message)
     }
 
-    /// Tokenize the entire input into a flat token list.
+    /// Tokenize the entire source into a flat token list.
     pub fn tokenize(mut self) -> Result<Vec<Token<'a>>, String> {
-        while self.pos < self.input.len() {
-            let ch = self.input.as_bytes()[self.pos];
+        let content = self.source.content();
+
+        while self.pos < content.len() {
+            let ch = content.as_bytes()[self.pos];
 
             if ch.is_ascii_whitespace() {
                 self.pos += 1;
@@ -227,13 +231,16 @@ impl<'a> Tokenizer<'a> {
     /// Read a numeric literal token.
     fn read_number(&mut self) {
         let offset = self.pos;
-        let len = self.input[self.pos..]
+        let content = self.source.content();
+
+        let len = content[self.pos..]
             .bytes()
             .take_while(u8::is_ascii_digit)
             .count();
 
-        let lexeme = &self.input[offset..offset + len];
-        let num = lexeme.parse().expect("failed to parse number");
+        let num = content[offset..offset + len]
+            .parse()
+            .expect("failed to parse number");
 
         self.tokens.push(Token::num(offset, num));
         self.pos += len;
@@ -241,9 +248,9 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a string literal token.
     fn read_string_literal(&mut self) -> Result<(), String> {
-        let mut content = Vec::new();
-        let bytes = self.input.as_bytes();
+        let bytes = self.source.content().as_bytes();
         let mut i = self.pos + 1; // Skip opening quote
+        let mut content = Vec::new();
 
         while i < bytes.len() {
             match bytes[i] {
@@ -277,7 +284,7 @@ impl<'a> Tokenizer<'a> {
     ///
     /// Returns the decoded byte and the number of bytes consumed.
     fn read_escape_char(&self, start: usize) -> Result<(u8, usize), String> {
-        let bytes = self.input.as_bytes();
+        let bytes = self.source.content().as_bytes();
         let first = bytes[start];
 
         // Octal escape sequence (up to three octal digits)
@@ -299,11 +306,7 @@ impl<'a> Tokenizer<'a> {
         if first == b'x' {
             let mut pos = start + 1;
             if pos >= bytes.len() || !bytes[pos].is_ascii_hexdigit() {
-                return Err(format_error_at(
-                    self.input,
-                    pos,
-                    "invalid hex escape sequence",
-                ));
+                return Err(self.source.error_at(pos, "invalid hex escape sequence"));
             }
 
             let mut hex_value = 0u8;
@@ -317,7 +320,8 @@ impl<'a> Tokenizer<'a> {
                         hex_value = next;
                     } else {
                         has_warned_overflow = true;
-                        emit_warning_at(self.input, pos, "hex escape sequence out of range");
+                        self.source
+                            .emit_warning_at(pos, "hex escape sequence out of range");
                         hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
                     }
                 } else {
@@ -340,8 +344,7 @@ impl<'a> Tokenizer<'a> {
             b'r' => b'\r',
             b'e' => 27, // GNU C extension for the ASCII escape character
             _ => {
-                emit_warning_at(
-                    self.input,
+                self.source.emit_warning_at(
                     start,
                     &format!("unknown escape sequence '\\{}'", first as char),
                 );
@@ -354,9 +357,11 @@ impl<'a> Tokenizer<'a> {
     /// Read an identifier or keyword token.
     fn read_ident_or_keyword(&mut self) {
         let offset = self.pos;
-        let len = self.input[self.pos..].bytes().take_while(is_ident2).count();
+        let content = self.source.content();
 
-        let lexeme = &self.input[offset..offset + len];
+        let len = content[self.pos..].bytes().take_while(is_ident2).count();
+        let lexeme = &content[offset..offset + len];
+
         let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
             Token::keyword(offset, keyword)
         } else {
@@ -370,7 +375,7 @@ impl<'a> Tokenizer<'a> {
     /// Read a punctuator token, returning whether there is one.
     fn read_punct(&mut self) -> bool {
         let offset = self.pos;
-        let rest = &self.input[offset..];
+        let rest = &self.source.content()[offset..];
 
         const PUNCTUATORS: &[&str] = &["==", "!=", "<=", ">="];
 
@@ -405,14 +410,4 @@ fn is_ident1(byte: &u8) -> bool {
 /// Return whether the byte is valid after the first identifier byte.
 fn is_ident2(byte: &u8) -> bool {
     is_ident1(byte) || byte.is_ascii_digit()
-}
-
-/// Format an error with a caret pointing at the given byte offset.
-pub fn format_error_at(input: &str, offset: usize, message: &str) -> String {
-    format!("{input}\n{}^ ERROR: {message}", " ".repeat(offset))
-}
-
-/// Emit a warning with a caret pointing at the given byte offset.
-pub fn emit_warning_at(input: &str, offset: usize, message: &str) {
-    eprintln!("{input}\n{}^ WARNING: {message}", " ".repeat(offset))
 }
