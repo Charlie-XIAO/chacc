@@ -2,6 +2,8 @@
 
 use std::fmt::Write as _;
 
+use smol_str::SmolStr;
+
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
@@ -26,7 +28,7 @@ macro_rules! emitln {
 
 /// A state snapshot when generating a function.
 struct FunctionState {
-    name: String,
+    name: SmolStr,
     locals: Vec<LocalVar>,
     depth: usize,
 }

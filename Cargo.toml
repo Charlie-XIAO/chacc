@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.38", features = ["derive"] }
 line-index = "0.1.2"
+smol_str = "0.3.6"

@@ -2,6 +2,8 @@
 
 use std::rc::Rc;
 
+use smol_str::SmolStr;
+
 use crate::types::Type;
 
 /// The parsed program.
@@ -14,7 +16,7 @@ pub struct Program {
 /// A function defined in [`Program`].
 #[derive(Debug, Eq, PartialEq)]
 pub struct Function {
-    pub name: String,
+    pub name: SmolStr,
     /// Parameter local IDs in declaration order.
     pub params: Vec<usize>,
     pub body: Stmt,
@@ -25,7 +27,7 @@ pub struct Function {
 /// A global variable defined in [`Program`].
 #[derive(Debug, Eq, PartialEq)]
 pub struct GlobalVar {
-    pub name: String,
+    pub name: SmolStr,
     pub ty: Type,
     /// Initial bytes for statically initialized data.
     pub init_data: Option<Rc<[u8]>>,
@@ -34,7 +36,7 @@ pub struct GlobalVar {
 /// A local variable stored in a function's stack frame.
 #[derive(Debug, Eq, PartialEq)]
 pub struct LocalVar {
-    pub name: String,
+    pub name: SmolStr,
     pub ty: Type,
     /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i64,
@@ -83,7 +85,7 @@ pub enum NodeKind {
     /// A numeric literal.
     Num(i64),
     /// A function call.
-    FuncCall { name: String, args: Vec<Node> },
+    FuncCall { name: SmolStr, args: Vec<Node> },
     /// An address-of expression.
     Addr(Box<Node>),
     /// A pointer dereference.
@@ -172,11 +174,14 @@ impl Node {
     }
 
     /// Construct a function call node.
-    pub fn func_call(name: String, args: Vec<Node>, offset: usize) -> Self {
+    pub fn func_call(name: impl Into<SmolStr>, args: Vec<Node>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::FuncCall { name, args },
+            kind: NodeKind::FuncCall {
+                name: name.into(),
+                args,
+            },
         }
     }
 

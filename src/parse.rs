@@ -2,6 +2,8 @@
 
 use std::rc::Rc;
 
+use smol_str::{SmolStr, format_smolstr};
+
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
@@ -11,13 +13,13 @@ use crate::types::Type;
 
 /// Declaration of a function parameter.
 struct Parameter {
-    name: String,
+    name: SmolStr,
     ty: Type,
 }
 
 /// An object declarator.
 struct Declarator {
-    name: String,
+    name: SmolStr,
     ty: Type,
     /// The byte offset of the declarator in the source code.
     offset: usize,
@@ -101,7 +103,7 @@ trait Parser<'a> {
         self.advance();
         let (ty, params) = self.parse_type_suffix(ty)?;
         Ok(Declarator {
-            name: name.to_owned(),
+            name: SmolStr::new(name),
             ty,
             offset,
             params,
@@ -715,7 +717,7 @@ impl<'a> Cursor<'a> {
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(name.to_owned(), args, offset))
+        Ok(Node::func_call(name, args, offset))
     }
 
     /// Find an existing local by name; newest binding wins.
@@ -736,9 +738,9 @@ impl<'a> Cursor<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: String, ty: Type) -> usize {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
         self.locals.push(LocalVar {
-            name,
+            name: name.into(),
             ty,
             offset: 0, // Assigned during codegen
         });
@@ -761,9 +763,14 @@ impl<'a> Cursor<'a> {
     }
 
     /// Create a new global variable.
-    fn create_global(&mut self, name: String, ty: Type, init_data: Option<Rc<[u8]>>) -> usize {
+    fn create_global(
+        &mut self,
+        name: impl Into<SmolStr>,
+        ty: Type,
+        init_data: Option<Rc<[u8]>>,
+    ) -> usize {
         self.globals.push(GlobalVar {
-            name,
+            name: name.into(),
             ty,
             init_data,
         });
@@ -772,7 +779,7 @@ impl<'a> Cursor<'a> {
 
     /// Create a new anonymous global variable.
     fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
-        let name = format!(".L..{}", self.next_anon_global);
+        let name = format_smolstr!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
         self.create_global(name, ty, Some(init_data))
     }
