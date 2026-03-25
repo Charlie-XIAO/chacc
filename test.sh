@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-trap 'rm -f tmp tmp.s tmp2.o' EXIT
-
 cargo build --release --quiet
+
+trap "rm -f tmp tmp.s tmp2.o" INT TERM HUP EXIT
 
 cat <<'EOF' | cc -xc -c -o tmp2.o -
 int ret3() { return 3; }
@@ -19,7 +19,7 @@ assert() {
   expected="$1"
   input="$2"
 
-  echo "$input" | ./target/release/chacc - > tmp.s || exit 1
+  echo "$input" | ./target/release/chacc -o tmp.s - || exit 1
   cc -o tmp tmp.s tmp2.o
   set +e
   ./tmp

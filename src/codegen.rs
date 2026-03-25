@@ -1,6 +1,8 @@
 //! Generate x86-64 assembly from an AST.
 
-use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 use smol_str::SmolStr;
 
@@ -14,9 +16,6 @@ const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
 /// A wrapper around [`writeln!`] that panics on error.
-///
-/// Since we are mostly writing to a string in this module, the writing is
-/// mostly infallible unless we run out of memory.
 macro_rules! emitln {
     ($dst:expr $(,)?) => {
         ::core::writeln!($dst).expect("failed to write")
@@ -36,7 +35,7 @@ struct FunctionState {
 /// A x86-64 assembly code generator.
 pub struct Codegen<'a> {
     source: &'a Source,
-    asm: String,
+    out: BufWriter<File>,
     globals: Vec<GlobalVar>,
     next_label: usize,
     function: Option<FunctionState>,
@@ -44,10 +43,13 @@ pub struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator from source.
-    pub fn new(source: &'a Source) -> Self {
+    pub fn new(source: &'a Source, output: &'a Path) -> Self {
+        let out_file = File::create(output).expect("Failed to create output file");
+        let out = BufWriter::new(out_file);
+
         Self {
             source,
-            asm: String::new(),
+            out,
             globals: Vec::new(),
             next_label: 1,
             function: None,
@@ -69,7 +71,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Generate assembly for an entire [`Program`].
-    pub fn generate(mut self, program: Program) -> Result<String, String> {
+    pub fn generate(mut self, program: Program) -> Result<(), String> {
         let Program { functions, globals } = program;
 
         self.globals = globals;
@@ -79,22 +81,22 @@ impl<'a> Codegen<'a> {
             self.gen_function(function)?;
         }
 
-        Ok(self.asm)
+        Ok(())
     }
 
     /// Generate assembly for global variables.
     fn gen_globals(&mut self) {
         for global in &self.globals {
-            emitln!(self.asm, "  .data");
-            emitln!(self.asm, "  .globl {}", global.name);
-            emitln!(self.asm, "{}:", global.name);
+            emitln!(self.out, "  .data");
+            emitln!(self.out, "  .globl {}", global.name);
+            emitln!(self.out, "{}:", global.name);
 
             if let Some(init_data) = &global.init_data {
                 for byte in init_data.iter() {
-                    emitln!(self.asm, "  .byte {byte}");
+                    emitln!(self.out, "  .byte {byte}");
                 }
             } else {
-                emitln!(self.asm, "  .zero {}", global.ty.size());
+                emitln!(self.out, "  .zero {}", global.ty.size());
             }
         }
     }
@@ -109,12 +111,12 @@ impl<'a> Codegen<'a> {
         } = function;
 
         let stack_size = assign_lvar_offsets(&mut locals);
-        emitln!(self.asm, "  .globl {name}");
-        emitln!(self.asm, "  .text");
-        emitln!(self.asm, "{name}:");
-        emitln!(self.asm, "  push %rbp");
-        emitln!(self.asm, "  mov %rsp, %rbp");
-        emitln!(self.asm, "  sub ${stack_size}, %rsp");
+        emitln!(self.out, "  .globl {name}");
+        emitln!(self.out, "  .text");
+        emitln!(self.out, "{name}:");
+        emitln!(self.out, "  push %rbp");
+        emitln!(self.out, "  mov %rsp, %rbp");
+        emitln!(self.out, "  sub ${stack_size}, %rsp");
 
         for (i, param_id) in params.iter().enumerate() {
             let local = &locals[*param_id];
@@ -123,7 +125,7 @@ impl<'a> Codegen<'a> {
             } else {
                 ARGREG64[i]
             };
-            emitln!(self.asm, "  mov {reg}, {}(%rbp)", local.offset);
+            emitln!(self.out, "  mov {reg}, {}(%rbp)", local.offset);
         }
 
         self.function = Some(FunctionState {
@@ -135,10 +137,10 @@ impl<'a> Codegen<'a> {
         self.gen_stmt(&body)?;
         assert_eq!(self.function().depth, 0);
 
-        emitln!(self.asm, ".L.return.{}:", self.function().name.clone());
-        emitln!(self.asm, "  mov %rbp, %rsp");
-        emitln!(self.asm, "  pop %rbp");
-        emitln!(self.asm, "  ret");
+        emitln!(self.out, ".L.return.{}:", self.function().name.clone());
+        emitln!(self.out, "  mov %rbp, %rsp");
+        emitln!(self.out, "  pop %rbp");
+        emitln!(self.out, "  ret");
 
         self.function = None;
         Ok(())
@@ -150,7 +152,7 @@ impl<'a> Codegen<'a> {
             StmtKind::Expr(expr) => self.gen_expr(expr),
             StmtKind::Return(expr) => {
                 self.gen_expr(expr)?;
-                emitln!(self.asm, "  jmp .L.return.{}", self.function().name.clone());
+                emitln!(self.out, "  jmp .L.return.{}", self.function().name.clone());
                 Ok(())
             },
             StmtKind::Loop {
@@ -163,18 +165,18 @@ impl<'a> Codegen<'a> {
                 if let Some(init) = init {
                     self.gen_stmt(init)?;
                 }
-                emitln!(self.asm, ".L.begin.{label}:");
+                emitln!(self.out, ".L.begin.{label}:");
                 if let Some(cond) = cond {
                     self.gen_expr(cond)?;
-                    emitln!(self.asm, "  cmp $0, %rax");
-                    emitln!(self.asm, "  je  .L.end.{label}");
+                    emitln!(self.out, "  cmp $0, %rax");
+                    emitln!(self.out, "  je  .L.end.{label}");
                 }
                 self.gen_stmt(body)?;
                 if let Some(inc) = inc {
                     self.gen_expr(inc)?;
                 }
-                emitln!(self.asm, "  jmp .L.begin.{label}");
-                emitln!(self.asm, ".L.end.{label}:");
+                emitln!(self.out, "  jmp .L.begin.{label}");
+                emitln!(self.out, ".L.end.{label}:");
                 Ok(())
             },
             StmtKind::If {
@@ -184,15 +186,15 @@ impl<'a> Codegen<'a> {
             } => {
                 let label = self.take_label();
                 self.gen_expr(cond)?;
-                emitln!(self.asm, "  cmp $0, %rax");
-                emitln!(self.asm, "  je  .L.else.{label}");
+                emitln!(self.out, "  cmp $0, %rax");
+                emitln!(self.out, "  je  .L.else.{label}");
                 self.gen_stmt(then_branch)?;
-                emitln!(self.asm, "  jmp .L.end.{label}");
-                emitln!(self.asm, ".L.else.{label}:");
+                emitln!(self.out, "  jmp .L.end.{label}");
+                emitln!(self.out, ".L.else.{label}:");
                 if let Some(else_branch) = else_branch {
                     self.gen_stmt(else_branch)?;
                 }
-                emitln!(self.asm, ".L.end.{label}:");
+                emitln!(self.out, ".L.end.{label}:");
                 Ok(())
             },
             StmtKind::Block(stmts) => {
@@ -210,12 +212,12 @@ impl<'a> Codegen<'a> {
             NodeKind::Var(var) => match var {
                 VarRef::Local(local_id) => {
                     let offset = self.function().locals[*local_id].offset;
-                    emitln!(self.asm, "  lea {offset}(%rbp), %rax");
+                    emitln!(self.out, "  lea {offset}(%rbp), %rax");
                     Ok(())
                 },
                 VarRef::Global(global_id) => {
                     let name = &self.globals[*global_id].name;
-                    emitln!(self.asm, "  lea {name}(%rip), %rax");
+                    emitln!(self.out, "  lea {name}(%rip), %rax");
                     Ok(())
                 },
             },
@@ -228,7 +230,7 @@ impl<'a> Codegen<'a> {
     fn gen_expr(&mut self, node: &Node) -> Result<(), String> {
         match &node.kind {
             NodeKind::Num(value) => {
-                emitln!(self.asm, "  mov ${value}, %rax");
+                emitln!(self.out, "  mov ${value}, %rax");
             },
             NodeKind::FuncCall { name, args } => {
                 if args.len() > 6 {
@@ -244,8 +246,8 @@ impl<'a> Codegen<'a> {
                     self.pop(register);
                 }
 
-                emitln!(self.asm, "  mov $0, %rax");
-                emitln!(self.asm, "  call {name}");
+                emitln!(self.out, "  mov $0, %rax");
+                emitln!(self.out, "  call {name}");
             },
             NodeKind::Addr(expr) => {
                 self.gen_addr(expr)?;
@@ -256,7 +258,7 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
-                emitln!(self.asm, "  neg %rax");
+                emitln!(self.out, "  neg %rax");
             },
             NodeKind::Var(_) => {
                 self.gen_addr(node)?;
@@ -275,32 +277,32 @@ impl<'a> Codegen<'a> {
                 self.pop("%rdi");
 
                 match op {
-                    BinaryOp::Add => emitln!(self.asm, "  add %rdi, %rax"),
-                    BinaryOp::Sub => emitln!(self.asm, "  sub %rdi, %rax"),
-                    BinaryOp::Mul => emitln!(self.asm, "  imul %rdi, %rax"),
+                    BinaryOp::Add => emitln!(self.out, "  add %rdi, %rax"),
+                    BinaryOp::Sub => emitln!(self.out, "  sub %rdi, %rax"),
+                    BinaryOp::Mul => emitln!(self.out, "  imul %rdi, %rax"),
                     BinaryOp::Div => {
-                        emitln!(self.asm, "  cqo");
-                        emitln!(self.asm, "  idiv %rdi");
+                        emitln!(self.out, "  cqo");
+                        emitln!(self.out, "  idiv %rdi");
                     },
                     BinaryOp::Eq => {
-                        emitln!(self.asm, "  cmp %rdi, %rax");
-                        emitln!(self.asm, "  sete %al");
-                        emitln!(self.asm, "  movzb %al, %rax");
+                        emitln!(self.out, "  cmp %rdi, %rax");
+                        emitln!(self.out, "  sete %al");
+                        emitln!(self.out, "  movzb %al, %rax");
                     },
                     BinaryOp::Ne => {
-                        emitln!(self.asm, "  cmp %rdi, %rax");
-                        emitln!(self.asm, "  setne %al");
-                        emitln!(self.asm, "  movzb %al, %rax");
+                        emitln!(self.out, "  cmp %rdi, %rax");
+                        emitln!(self.out, "  setne %al");
+                        emitln!(self.out, "  movzb %al, %rax");
                     },
                     BinaryOp::Lt => {
-                        emitln!(self.asm, "  cmp %rdi, %rax");
-                        emitln!(self.asm, "  setl %al");
-                        emitln!(self.asm, "  movzb %al, %rax");
+                        emitln!(self.out, "  cmp %rdi, %rax");
+                        emitln!(self.out, "  setl %al");
+                        emitln!(self.out, "  movzb %al, %rax");
                     },
                     BinaryOp::Le => {
-                        emitln!(self.asm, "  cmp %rdi, %rax");
-                        emitln!(self.asm, "  setle %al");
-                        emitln!(self.asm, "  movzb %al, %rax");
+                        emitln!(self.out, "  cmp %rdi, %rax");
+                        emitln!(self.out, "  setle %al");
+                        emitln!(self.out, "  movzb %al, %rax");
                     },
                 }
             },
@@ -316,7 +318,7 @@ impl<'a> Codegen<'a> {
 
     /// Push `%rax` onto the temporary expression stack.
     fn push(&mut self) {
-        emitln!(self.asm, "  push %rax");
+        emitln!(self.out, "  push %rax");
         self.function_mut().depth += 1;
     }
 
@@ -333,9 +335,9 @@ impl<'a> Codegen<'a> {
         }
 
         if ty.size() == 1 {
-            emitln!(self.asm, "  movsbq (%rax), %rax");
+            emitln!(self.out, "  movsbq (%rax), %rax");
         } else {
-            emitln!(self.asm, "  mov (%rax), %rax");
+            emitln!(self.out, "  mov (%rax), %rax");
         }
     }
 
@@ -344,15 +346,15 @@ impl<'a> Codegen<'a> {
         self.pop("%rdi");
 
         if ty.size() == 1 {
-            emitln!(self.asm, "  mov %al, (%rdi)");
+            emitln!(self.out, "  mov %al, (%rdi)");
         } else {
-            emitln!(self.asm, "  mov %rax, (%rdi)");
+            emitln!(self.out, "  mov %rax, (%rdi)");
         }
     }
 
     /// Pop the top of the temporary stack into a register.
     fn pop(&mut self, register: &str) {
-        emitln!(self.asm, "  pop {register}");
+        emitln!(self.out, "  pop {register}");
         self.function_mut().depth -= 1;
     }
 
