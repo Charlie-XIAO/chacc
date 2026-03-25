@@ -7,7 +7,7 @@ mod source;
 mod tokenize;
 mod types;
 
-use codegen::codegen_program;
+use codegen::Codegen;
 use parse::Cursor;
 pub use source::Source;
 use tokenize::Tokenizer;
@@ -15,7 +15,6 @@ use tokenize::Tokenizer;
 /// Compile a source into x86-64 assembly.
 pub fn compile(source: &Source) -> Result<String, String> {
     let tokens = Tokenizer::new(source).tokenize()?;
-    let mut parser = Cursor::new(source, tokens);
-    let program = parser.parse_program()?;
-    codegen_program(source, program)
+    let program = Cursor::new(source, tokens).parse_program()?;
+    Codegen::new(source).generate(program)
 }
