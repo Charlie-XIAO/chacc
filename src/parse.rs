@@ -1,4 +1,6 @@
-//! A recursive-descent parser.
+//! A [recursive-descent parser][1] for the C programming language.
+//!
+//! [1]: https://en.wikipedia.org/wiki/Recursive_descent_parser
 
 use std::rc::Rc;
 
@@ -7,6 +9,7 @@ use smol_str::{SmolStr, format_smolstr};
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
+use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
 use crate::types::Type;
@@ -51,12 +54,12 @@ trait Parser<'a> {
     }
 
     /// Format an error message at the current token.
-    fn error_current(&self, message: &str) -> String {
+    fn error_current(&self, message: &str) -> Error {
         self.source().error_at(self.current().offset, message)
     }
 
     /// Assume and skip a specific punctuator.
-    fn skip_punct(&mut self, expected: &str) -> Result<(), String> {
+    fn skip_punct(&mut self, expected: &str) -> Result<()> {
         if !self.current().is_punct(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
@@ -65,7 +68,7 @@ trait Parser<'a> {
     }
 
     /// Assume and skip a specific keyword.
-    fn skip_keyword(&mut self, expected: Keyword) -> Result<(), String> {
+    fn skip_keyword(&mut self, expected: Keyword) -> Result<()> {
         if !self.current().is_keyword(expected) {
             return Err(self.error_current(&format!("expected '{expected}'")));
         }
@@ -76,7 +79,7 @@ trait Parser<'a> {
     /// ```bnf
     /// <declspec> ::= "char" | "int"
     /// ```
-    fn parse_declspec(&mut self) -> Result<Type, String> {
+    fn parse_declspec(&mut self) -> Result<Type> {
         if self.current().is_keyword(Keyword::Char) {
             self.skip_keyword(Keyword::Char)?;
             return Ok(Type::Char);
@@ -89,7 +92,7 @@ trait Parser<'a> {
     /// ```bnf
     /// <declarator> ::= "*"* <ident> <type-suffix>
     /// ```
-    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator, String> {
+    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator> {
         while self.current().is_punct("*") {
             self.advance();
             ty = Type::ptr(ty);
@@ -113,7 +116,7 @@ trait Parser<'a> {
     /// ```bnf
     /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
     /// ```
-    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>), String> {
+    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>)> {
         if self.current().is_punct("(") {
             self.advance();
             return self.parse_func_params(ty);
@@ -127,7 +130,7 @@ trait Parser<'a> {
     /// <func-params> ::= (<param> ("," <param>)*)? ")"
     /// <param> ::= <declspec> <declarator>
     /// ```
-    fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>), String> {
+    fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>)> {
         let mut params = Vec::new();
 
         while !self.current().is_punct(")") {
@@ -157,7 +160,7 @@ trait Parser<'a> {
     /// ```bnf
     /// <array-dimensions> ::= ("[" <num> "]")*
     /// ```
-    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type, String> {
+    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type> {
         if self.current().is_punct("[") {
             self.advance();
             let Some(len) = self.current().as_num() else {
@@ -221,14 +224,14 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <expr> ::= <assign>
     /// ```
-    pub fn parse_expr(&mut self) -> Result<Node, String> {
+    pub fn parse_expr(&mut self) -> Result<Node> {
         self.parse_assign()
     }
 
     /// ```bnf
     /// <program> ::= (<function> | <global-variable>)* <eof>
     /// ```
-    pub fn parse_program(&mut self) -> Result<Program, String> {
+    pub fn parse_program(&mut self) -> Result<Program> {
         let mut functions = Vec::new();
 
         while !self.current().is_eof() {
@@ -251,7 +254,7 @@ impl<'a> Cursor<'a> {
     /// Lookahead to determine whether we are at a [`<function>`].
     ///
     /// [`<function>`]: Self::parse_function
-    fn is_function(&self) -> Result<bool, String> {
+    fn is_function(&self) -> Result<bool> {
         if self.current().is_punct(";") {
             return Ok(false);
         }
@@ -264,7 +267,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <function> ::= <declspec> <declarator> "{" <compound-stmt>
     /// ```
-    fn parse_function(&mut self, return_ty: Type) -> Result<Function, String> {
+    fn parse_function(&mut self, return_ty: Type) -> Result<Function> {
         let declarator = self.parse_declarator(return_ty)?;
         if !declarator.ty.is_func() {
             return Err(self.error_current("expected a function"));
@@ -287,7 +290,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <global-variable> ::= <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_global_variable(&mut self, base_ty: Type) -> Result<(), String> {
+    fn parse_global_variable(&mut self, base_ty: Type) -> Result<()> {
         let mut first = true;
 
         while !self.current().is_punct(";") {
@@ -319,7 +322,7 @@ impl<'a> Cursor<'a> {
     ///   | "{" <compound-stmt>
     ///   | <expr-stmt>
     /// ```
-    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+    fn parse_stmt(&mut self) -> Result<Stmt> {
         if self.current().is_keyword(Keyword::Return) {
             let offset = self.current().offset;
             self.advance();
@@ -388,7 +391,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <compound-stmt> ::= (<declaration> | <stmt>)* "}"
     /// ```
-    fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>, String> {
+    fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>> {
         let mut stmts = Vec::new();
 
         while !self.current().is_punct("}") {
@@ -408,7 +411,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <expr-stmt> ::= <expr>? ";"
     /// ```
-    fn parse_expr_stmt(&mut self) -> Result<Stmt, String> {
+    fn parse_expr_stmt(&mut self) -> Result<Stmt> {
         if self.current().is_punct(";") {
             let offset = self.current().offset;
             self.advance();
@@ -426,7 +429,7 @@ impl<'a> Cursor<'a> {
     ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
     /// <declarator-init> ::= <declarator> ("=" <assign>)?
     /// ```
-    fn parse_declaration(&mut self) -> Result<Stmt, String> {
+    fn parse_declaration(&mut self) -> Result<Stmt> {
         let offset = self.current().offset;
         let base_ty = self.parse_declspec()?;
         let mut stmts = Vec::new();
@@ -461,7 +464,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <assign> ::= <equality> ("=" <assign>)?
     /// ```
-    fn parse_assign(&mut self) -> Result<Node, String> {
+    fn parse_assign(&mut self) -> Result<Node> {
         let node = self.parse_equality()?;
 
         if self.current().is_punct("=") {
@@ -476,7 +479,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <equality> ::= <relational> ("==" <relational> | "!=" <relational>)*
     /// ```
-    fn parse_equality(&mut self) -> Result<Node, String> {
+    fn parse_equality(&mut self) -> Result<Node> {
         let mut node = self.parse_relational()?;
 
         loop {
@@ -501,7 +504,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <relational> ::= <add> ("<" <add> | "<=" <add> | ">" <add> | ">=" <add>)*
     /// ```
-    fn parse_relational(&mut self) -> Result<Node, String> {
+    fn parse_relational(&mut self) -> Result<Node> {
         let mut node = self.parse_add()?;
 
         loop {
@@ -542,7 +545,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <add> ::= <mul> ("+" <mul> | "-" <mul>)*
     /// ```
-    fn parse_add(&mut self) -> Result<Node, String> {
+    fn parse_add(&mut self) -> Result<Node> {
         let mut node = self.parse_mul()?;
 
         loop {
@@ -569,7 +572,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <mul> ::= <unary> ("*" <unary> | "/" <unary>)*
     /// ```
-    fn parse_mul(&mut self) -> Result<Node, String> {
+    fn parse_mul(&mut self) -> Result<Node> {
         let mut node = self.parse_unary()?;
 
         loop {
@@ -594,7 +597,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <postfix>
     /// ```
-    fn parse_unary(&mut self) -> Result<Node, String> {
+    fn parse_unary(&mut self) -> Result<Node> {
         if self.current().is_punct("+") {
             self.advance();
             return self.parse_unary();
@@ -623,7 +626,7 @@ impl<'a> Cursor<'a> {
 
     /// ```bnf
     /// <postfix> ::= <primary> ("[" <expr> "]")*
-    fn parse_postfix(&mut self) -> Result<Node, String> {
+    fn parse_postfix(&mut self) -> Result<Node> {
         let mut node = self.parse_primary()?;
 
         while self.current().is_punct("[") {
@@ -648,7 +651,7 @@ impl<'a> Cursor<'a> {
     ///   | <str>
     ///   | <num>
     /// ```
-    fn parse_primary(&mut self) -> Result<Node, String> {
+    fn parse_primary(&mut self) -> Result<Node> {
         let offset = self.current().offset;
 
         if self.current().is_punct("(") {
@@ -704,7 +707,7 @@ impl<'a> Cursor<'a> {
     /// ```bnf
     /// <func-call> ::= <ident> "(" (<assign> ("," <assign>)*)? ")"
     /// ```
-    fn parse_func_call(&mut self, name: &str, offset: usize) -> Result<Node, String> {
+    fn parse_func_call(&mut self, name: &str, offset: usize) -> Result<Node> {
         self.advance();
         self.skip_punct("(")?;
 
@@ -785,7 +788,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Build an addition node with pointer scaling.
-    fn new_add(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node, String> {
+    fn new_add(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
@@ -818,7 +821,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Build a subtraction node with pointer scaling.
-    fn new_sub(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node, String> {
+    fn new_sub(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
@@ -854,7 +857,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Infer types for a statement subtree.
-    fn infer_type_stmt(&self, stmt: &mut Stmt) -> Result<(), String> {
+    fn infer_type_stmt(&self, stmt: &mut Stmt) -> Result<()> {
         match &mut stmt.kind {
             StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr),
             StmtKind::Loop {
@@ -896,7 +899,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Infer the type for an expression subtree.
-    fn infer_type(&self, node: &mut Node) -> Result<(), String> {
+    fn infer_type(&self, node: &mut Node) -> Result<()> {
         if node.ty.is_some() {
             return Ok(());
         }

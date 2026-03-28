@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use crate::error::{Error, Result};
 use crate::source::Source;
 
 /// Reserved keywords recognized by the tokenizer.
@@ -186,12 +187,12 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    fn error_current(&self, message: &str) -> String {
+    fn error_current(&self, message: &str) -> Error {
         self.source.error_at(self.pos, message)
     }
 
     /// Tokenize the entire source into a flat token list.
-    pub fn tokenize(mut self) -> Result<Vec<Token<'a>>, String> {
+    pub fn tokenize(mut self) -> Result<Vec<Token<'a>>> {
         let content = self.source.content();
 
         while self.pos < content.len() {
@@ -247,7 +248,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Read a string literal token.
-    fn read_string_literal(&mut self) -> Result<(), String> {
+    fn read_string_literal(&mut self) -> Result<()> {
         let bytes = self.source.content().as_bytes();
         let mut i = self.pos + 1; // Skip opening quote
         let mut content = Vec::new();
@@ -283,7 +284,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an escape sequence starting at the first byte after the backslash.
     ///
     /// Returns the decoded byte and the number of bytes consumed.
-    fn read_escape_char(&self, start: usize) -> Result<(u8, usize), String> {
+    fn read_escape_char(&self, start: usize) -> Result<(u8, usize)> {
         let bytes = self.source.content().as_bytes();
         let first = bytes[start];
 
@@ -320,8 +321,7 @@ impl<'a> Tokenizer<'a> {
                         hex_value = next;
                     } else {
                         has_warned_overflow = true;
-                        self.source
-                            .emit_warning_at(pos, "hex escape sequence out of range");
+                        self.source.warn_at(pos, "hex escape sequence out of range");
                         hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
                     }
                 } else {
@@ -344,7 +344,7 @@ impl<'a> Tokenizer<'a> {
             b'r' => b'\r',
             b'e' => 27, // GNU C extension for the ASCII escape character
             _ => {
-                self.source.emit_warning_at(
+                self.source.warn_at(
                     start,
                     &format!("unknown escape sequence '\\{}'", first as char),
                 );

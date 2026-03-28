@@ -9,21 +9,12 @@ use smol_str::SmolStr;
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
 };
+use crate::error::Result;
 use crate::source::Source;
 use crate::types::Type;
 
 const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
-
-/// A wrapper around [`writeln!`] that panics on error.
-macro_rules! emitln {
-    ($dst:expr $(,)?) => {
-        ::core::writeln!($dst).expect("failed to write")
-    };
-    ($dst:expr, $($arg:tt)*) => {
-        ::core::writeln!($dst, $($arg)*).expect("failed to write")
-    };
-}
 
 /// A state snapshot when generating a function.
 struct FunctionState {
@@ -43,17 +34,17 @@ pub struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator from source.
-    pub fn new(source: &'a Source, output: &'a Path) -> Self {
-        let out_file = File::create(output).expect("Failed to create output file");
+    pub fn new(source: &'a Source, output: &'a Path) -> Result<Self> {
+        let out_file = File::create(output)?;
         let out = BufWriter::new(out_file);
 
-        Self {
+        Ok(Self {
             source,
             out,
             globals: Vec::new(),
             next_label: 1,
             function: None,
-        }
+        })
     }
 
     /// Get a reference of function state, expecting it to be set.
@@ -71,11 +62,11 @@ impl<'a> Codegen<'a> {
     }
 
     /// Generate assembly for an entire [`Program`].
-    pub fn generate(mut self, program: Program) -> Result<(), String> {
+    pub fn generate(mut self, program: Program) -> Result<()> {
         let Program { functions, globals } = program;
 
         self.globals = globals;
-        self.gen_globals();
+        self.gen_globals()?;
 
         for function in functions {
             self.gen_function(function)?;
@@ -85,24 +76,25 @@ impl<'a> Codegen<'a> {
     }
 
     /// Generate assembly for global variables.
-    fn gen_globals(&mut self) {
+    fn gen_globals(&mut self) -> Result<()> {
         for global in &self.globals {
-            emitln!(self.out, "  .data");
-            emitln!(self.out, "  .globl {}", global.name);
-            emitln!(self.out, "{}:", global.name);
+            writeln!(self.out, "  .data")?;
+            writeln!(self.out, "  .globl {}", global.name)?;
+            writeln!(self.out, "{}:", global.name)?;
 
             if let Some(init_data) = &global.init_data {
                 for byte in init_data.iter() {
-                    emitln!(self.out, "  .byte {byte}");
+                    writeln!(self.out, "  .byte {byte}")?;
                 }
             } else {
-                emitln!(self.out, "  .zero {}", global.ty.size());
+                writeln!(self.out, "  .zero {}", global.ty.size())?;
             }
         }
+        Ok(())
     }
 
     /// Generate assembly for a function.
-    fn gen_function(&mut self, function: Function) -> Result<(), String> {
+    fn gen_function(&mut self, function: Function) -> Result<()> {
         let Function {
             name,
             params,
@@ -111,12 +103,12 @@ impl<'a> Codegen<'a> {
         } = function;
 
         let stack_size = assign_lvar_offsets(&mut locals);
-        emitln!(self.out, "  .globl {name}");
-        emitln!(self.out, "  .text");
-        emitln!(self.out, "{name}:");
-        emitln!(self.out, "  push %rbp");
-        emitln!(self.out, "  mov %rsp, %rbp");
-        emitln!(self.out, "  sub ${stack_size}, %rsp");
+        writeln!(self.out, "  .globl {name}")?;
+        writeln!(self.out, "  .text")?;
+        writeln!(self.out, "{name}:")?;
+        writeln!(self.out, "  push %rbp")?;
+        writeln!(self.out, "  mov %rsp, %rbp")?;
+        writeln!(self.out, "  sub ${stack_size}, %rsp")?;
 
         for (i, param_id) in params.iter().enumerate() {
             let local = &locals[*param_id];
@@ -125,7 +117,7 @@ impl<'a> Codegen<'a> {
             } else {
                 ARGREG64[i]
             };
-            emitln!(self.out, "  mov {reg}, {}(%rbp)", local.offset);
+            writeln!(self.out, "  mov {reg}, {}(%rbp)", local.offset)?;
         }
 
         self.function = Some(FunctionState {
@@ -137,22 +129,22 @@ impl<'a> Codegen<'a> {
         self.gen_stmt(&body)?;
         assert_eq!(self.function().depth, 0);
 
-        emitln!(self.out, ".L.return.{}:", self.function().name.clone());
-        emitln!(self.out, "  mov %rbp, %rsp");
-        emitln!(self.out, "  pop %rbp");
-        emitln!(self.out, "  ret");
+        writeln!(self.out, ".L.return.{}:", self.function().name.clone())?;
+        writeln!(self.out, "  mov %rbp, %rsp")?;
+        writeln!(self.out, "  pop %rbp")?;
+        writeln!(self.out, "  ret")?;
 
         self.function = None;
         Ok(())
     }
 
     /// Generate assembly for a statement.
-    fn gen_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+    fn gen_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr),
             StmtKind::Return(expr) => {
                 self.gen_expr(expr)?;
-                emitln!(self.out, "  jmp .L.return.{}", self.function().name.clone());
+                writeln!(self.out, "  jmp .L.return.{}", self.function().name.clone())?;
                 Ok(())
             },
             StmtKind::Loop {
@@ -165,18 +157,18 @@ impl<'a> Codegen<'a> {
                 if let Some(init) = init {
                     self.gen_stmt(init)?;
                 }
-                emitln!(self.out, ".L.begin.{label}:");
+                writeln!(self.out, ".L.begin.{label}:")?;
                 if let Some(cond) = cond {
                     self.gen_expr(cond)?;
-                    emitln!(self.out, "  cmp $0, %rax");
-                    emitln!(self.out, "  je  .L.end.{label}");
+                    writeln!(self.out, "  cmp $0, %rax")?;
+                    writeln!(self.out, "  je  .L.end.{label}")?;
                 }
                 self.gen_stmt(body)?;
                 if let Some(inc) = inc {
                     self.gen_expr(inc)?;
                 }
-                emitln!(self.out, "  jmp .L.begin.{label}");
-                emitln!(self.out, ".L.end.{label}:");
+                writeln!(self.out, "  jmp .L.begin.{label}")?;
+                writeln!(self.out, ".L.end.{label}:")?;
                 Ok(())
             },
             StmtKind::If {
@@ -186,15 +178,15 @@ impl<'a> Codegen<'a> {
             } => {
                 let label = self.take_label();
                 self.gen_expr(cond)?;
-                emitln!(self.out, "  cmp $0, %rax");
-                emitln!(self.out, "  je  .L.else.{label}");
+                writeln!(self.out, "  cmp $0, %rax")?;
+                writeln!(self.out, "  je  .L.else.{label}")?;
                 self.gen_stmt(then_branch)?;
-                emitln!(self.out, "  jmp .L.end.{label}");
-                emitln!(self.out, ".L.else.{label}:");
+                writeln!(self.out, "  jmp .L.end.{label}")?;
+                writeln!(self.out, ".L.else.{label}:")?;
                 if let Some(else_branch) = else_branch {
                     self.gen_stmt(else_branch)?;
                 }
-                emitln!(self.out, ".L.end.{label}:");
+                writeln!(self.out, ".L.end.{label}:")?;
                 Ok(())
             },
             StmtKind::Block(stmts) => {
@@ -207,17 +199,17 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit the address of an lvalue expression into `%rax`.
-    fn gen_addr(&mut self, node: &Node) -> Result<(), String> {
+    fn gen_addr(&mut self, node: &Node) -> Result<()> {
         match &node.kind {
             NodeKind::Var(var) => match var {
                 VarRef::Local(local_id) => {
                     let offset = self.function().locals[*local_id].offset;
-                    emitln!(self.out, "  lea {offset}(%rbp), %rax");
+                    writeln!(self.out, "  lea {offset}(%rbp), %rax")?;
                     Ok(())
                 },
                 VarRef::Global(global_id) => {
                     let name = &self.globals[*global_id].name;
-                    emitln!(self.out, "  lea {name}(%rip), %rax");
+                    writeln!(self.out, "  lea {name}(%rip), %rax")?;
                     Ok(())
                 },
             },
@@ -227,10 +219,10 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit assembly for the given expression node.
-    fn gen_expr(&mut self, node: &Node) -> Result<(), String> {
+    fn gen_expr(&mut self, node: &Node) -> Result<()> {
         match &node.kind {
             NodeKind::Num(value) => {
-                emitln!(self.out, "  mov ${value}, %rax");
+                writeln!(self.out, "  mov ${value}, %rax")?;
             },
             NodeKind::FuncCall { name, args } => {
                 if args.len() > 6 {
@@ -240,69 +232,69 @@ impl<'a> Codegen<'a> {
 
                 for arg in args {
                     self.gen_expr(arg)?;
-                    self.push();
+                    self.push()?;
                 }
                 for register in ARGREG64.iter().take(args.len()).rev() {
-                    self.pop(register);
+                    self.pop(register)?;
                 }
 
-                emitln!(self.out, "  mov $0, %rax");
-                emitln!(self.out, "  call {name}");
+                writeln!(self.out, "  mov $0, %rax")?;
+                writeln!(self.out, "  call {name}")?;
             },
             NodeKind::Addr(expr) => {
                 self.gen_addr(expr)?;
             },
             NodeKind::Deref(expr) => {
                 self.gen_expr(expr)?;
-                self.load(node.expect_ty());
+                self.load(node.expect_ty())?;
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
-                emitln!(self.out, "  neg %rax");
+                writeln!(self.out, "  neg %rax")?;
             },
             NodeKind::Var(_) => {
                 self.gen_addr(node)?;
-                self.load(node.expect_ty());
+                self.load(node.expect_ty())?;
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.gen_addr(lhs)?;
-                self.push();
+                self.push()?;
                 self.gen_expr(rhs)?;
-                self.store(lhs.expect_ty());
+                self.store(lhs.expect_ty())?;
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
-                self.push();
+                self.push()?;
                 self.gen_expr(lhs)?;
-                self.pop("%rdi");
+                self.pop("%rdi")?;
 
                 match op {
-                    BinaryOp::Add => emitln!(self.out, "  add %rdi, %rax"),
-                    BinaryOp::Sub => emitln!(self.out, "  sub %rdi, %rax"),
-                    BinaryOp::Mul => emitln!(self.out, "  imul %rdi, %rax"),
+                    BinaryOp::Add => writeln!(self.out, "  add %rdi, %rax")?,
+                    BinaryOp::Sub => writeln!(self.out, "  sub %rdi, %rax")?,
+                    BinaryOp::Mul => writeln!(self.out, "  imul %rdi, %rax")?,
                     BinaryOp::Div => {
-                        emitln!(self.out, "  cqo");
-                        emitln!(self.out, "  idiv %rdi");
+                        writeln!(self.out, "  cqo")?;
+                        writeln!(self.out, "  idiv %rdi")?;
                     },
                     BinaryOp::Eq => {
-                        emitln!(self.out, "  cmp %rdi, %rax");
-                        emitln!(self.out, "  sete %al");
-                        emitln!(self.out, "  movzb %al, %rax");
+                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  sete %al")?;
+                        writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Ne => {
-                        emitln!(self.out, "  cmp %rdi, %rax");
-                        emitln!(self.out, "  setne %al");
-                        emitln!(self.out, "  movzb %al, %rax");
+                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  setne %al")?;
+                        writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Lt => {
-                        emitln!(self.out, "  cmp %rdi, %rax");
-                        emitln!(self.out, "  setl %al");
-                        emitln!(self.out, "  movzb %al, %rax");
+                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  setl %al")?;
+                        writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Le => {
-                        emitln!(self.out, "  cmp %rdi, %rax");
-                        emitln!(self.out, "  setle %al");
-                        emitln!(self.out, "  movzb %al, %rax");
+                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  setle %al")?;
+                        writeln!(self.out, "  movzb %al, %rax")?;
                     },
                 }
             },
@@ -317,9 +309,10 @@ impl<'a> Codegen<'a> {
     }
 
     /// Push `%rax` onto the temporary expression stack.
-    fn push(&mut self) {
-        emitln!(self.out, "  push %rax");
+    fn push(&mut self) -> Result<()> {
+        writeln!(self.out, "  push %rax")?;
         self.function_mut().depth += 1;
+        Ok(())
     }
 
     /// Load a value from where `%rax` is pointing to.
@@ -329,33 +322,36 @@ impl<'a> Codegen<'a> {
     /// into a register. Consequently, the result of an evaluation of an array
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
-    fn load(&mut self, ty: &Type) {
+    fn load(&mut self, ty: &Type) -> Result<()> {
         if ty.is_array() {
-            return;
+            return Ok(());
         }
 
         if ty.size() == 1 {
-            emitln!(self.out, "  movsbq (%rax), %rax");
+            writeln!(self.out, "  movsbq (%rax), %rax")?;
         } else {
-            emitln!(self.out, "  mov (%rax), %rax");
+            writeln!(self.out, "  mov (%rax), %rax")?;
         }
+        Ok(())
     }
 
     /// Store `%rax` into the address on top of the temporary stack.
-    fn store(&mut self, ty: &Type) {
-        self.pop("%rdi");
+    fn store(&mut self, ty: &Type) -> Result<()> {
+        self.pop("%rdi")?;
 
         if ty.size() == 1 {
-            emitln!(self.out, "  mov %al, (%rdi)");
+            writeln!(self.out, "  mov %al, (%rdi)")?;
         } else {
-            emitln!(self.out, "  mov %rax, (%rdi)");
+            writeln!(self.out, "  mov %rax, (%rdi)")?;
         }
+        Ok(())
     }
 
     /// Pop the top of the temporary stack into a register.
-    fn pop(&mut self, register: &str) {
-        emitln!(self.out, "  pop {register}");
+    fn pop(&mut self, register: &str) -> Result<()> {
+        writeln!(self.out, "  pop {register}")?;
         self.function_mut().depth -= 1;
+        Ok(())
     }
 
     /// Allocate a fresh numeric suffix for local labels.
