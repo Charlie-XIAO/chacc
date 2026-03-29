@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
 use smol_str::{SmolStr, format_smolstr};
 
 use crate::ast::{
@@ -175,6 +176,12 @@ trait Parser<'a> {
     }
 }
 
+/// A stack of variable scopes.
+#[derive(Debug, Default)]
+struct ScopeFrame {
+    vars: FxHashMap<SmolStr, VarRef>,
+}
+
 /// Cursor over the token stream during parsing.
 pub struct Cursor<'a> {
     source: &'a Source,
@@ -182,6 +189,7 @@ pub struct Cursor<'a> {
     pos: usize,
     locals: Vec<LocalVar>,
     globals: Vec<GlobalVar>,
+    scopes: Vec<ScopeFrame>,
     next_anon_global: usize,
 }
 
@@ -208,6 +216,7 @@ impl<'a> Cursor<'a> {
             pos: 0,
             locals: Vec::new(),
             globals: Vec::new(),
+            scopes: vec![ScopeFrame::default()],
             next_anon_global: 0,
         }
     }
@@ -275,9 +284,11 @@ impl<'a> Cursor<'a> {
 
         let body_offset = self.current().offset;
         self.locals.clear();
+        self.enter_scope();
         let params = self.create_param_locals(declarator.params);
         self.skip_punct("{")?;
         let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
+        self.leave_scope();
 
         Ok(Function {
             name: declarator.name,
@@ -393,6 +404,7 @@ impl<'a> Cursor<'a> {
     /// ```
     fn parse_compound_stmt(&mut self) -> Result<Vec<Stmt>> {
         let mut stmts = Vec::new();
+        self.enter_scope();
 
         while !self.current().is_punct("}") {
             let mut stmt = if self.current().is_typename_keyword() {
@@ -404,6 +416,7 @@ impl<'a> Cursor<'a> {
             stmts.push(stmt);
         }
 
+        self.leave_scope();
         self.advance();
         Ok(stmts)
     }
@@ -723,31 +736,48 @@ impl<'a> Cursor<'a> {
         Ok(Node::func_call(name, args, offset))
     }
 
-    /// Find an existing local by name; newest binding wins.
-    fn find_local(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|local| local.name == name)
+    /// Enter a new variable scope.
+    fn enter_scope(&mut self) {
+        self.scopes.push(ScopeFrame::default());
     }
 
-    /// Find an existing global by name.
-    fn find_global(&self, name: &str) -> Option<usize> {
-        self.globals.iter().rposition(|global| global.name == name)
+    /// Leave the current variable scope.
+    fn leave_scope(&mut self) {
+        self.scopes.pop();
     }
 
-    /// Find a variable by name; local bindings shadow globals.
+    /// Push a variable into the current scope.
+    fn push_scope(&mut self, name: SmolStr, var: VarRef) {
+        self.scopes
+            .last_mut()
+            .expect("no scope to push variable into")
+            .vars
+            .insert(name, var);
+    }
+
+    /// Find a variable by name.
     fn find_var(&self, name: &str) -> Option<VarRef> {
-        self.find_local(name)
-            .map(VarRef::Local)
-            .or_else(|| self.find_global(name).map(VarRef::Global))
+        for frame in self.scopes.iter().rev() {
+            if let Some(var) = frame.vars.get(name) {
+                return Some(*var);
+            }
+        }
+        None
     }
 
     /// Create a new local variable.
     fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+        let name = name.into();
         self.locals.push(LocalVar {
-            name: name.into(),
+            name: name.clone(),
             ty,
             offset: 0, // Assigned during codegen
         });
-        self.locals.len() - 1
+
+        let id = self.locals.len() - 1;
+        let var = VarRef::Local(id);
+        self.push_scope(name, var);
+        id
     }
 
     /// Create local variables for function parameters.
@@ -772,12 +802,17 @@ impl<'a> Cursor<'a> {
         ty: Type,
         init_data: Option<Rc<[u8]>>,
     ) -> usize {
+        let name = name.into();
         self.globals.push(GlobalVar {
-            name: name.into(),
+            name: name.clone(),
             ty,
             init_data,
         });
-        self.globals.len() - 1
+
+        let id = self.globals.len() - 1;
+        let var = VarRef::Global(id);
+        self.push_scope(name, var);
+        id
     }
 
     /// Create a new anonymous global variable.
