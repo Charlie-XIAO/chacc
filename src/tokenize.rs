@@ -198,6 +198,10 @@ impl<'a> Tokenizer<'a> {
         while self.pos < content.len() {
             let ch = content.as_bytes()[self.pos];
 
+            if self.read_comment()? {
+                continue;
+            }
+
             if ch.is_ascii_whitespace() {
                 self.pos += 1;
                 continue;
@@ -227,6 +231,36 @@ impl<'a> Tokenizer<'a> {
 
         self.tokens.push(Token::eof(self.pos));
         Ok(self.tokens)
+    }
+
+    /// Read an inline or block comment, returning whether there is one.
+    fn read_comment(&mut self) -> Result<bool> {
+        let offset = self.pos;
+        let content = self.source.content();
+        let bytes = content.as_bytes();
+        let rest = &content[offset..];
+
+        if rest.starts_with("//") {
+            self.pos += 2;
+            while self.pos < content.len() && bytes[self.pos] != b'\n' {
+                self.pos += 1;
+            }
+            return Ok(true);
+        }
+
+        if rest.starts_with("/*") {
+            self.pos += 2;
+            while self.pos + 1 < content.len() {
+                if bytes[self.pos] == b'*' && bytes[self.pos + 1] == b'/' {
+                    self.pos += 2;
+                    return Ok(true);
+                }
+                self.pos += 1;
+            }
+            return Err(self.source.error_at(offset, "unclosed block comment"));
+        }
+
+        Ok(false)
     }
 
     /// Read a numeric literal token.
