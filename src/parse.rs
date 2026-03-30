@@ -231,10 +231,18 @@ impl<'a> Cursor<'a> {
     }
 
     /// ```bnf
-    /// <expr> ::= <assign>
+    /// <expr> ::= <assign> ("," <expr>)?
     /// ```
     pub fn parse_expr(&mut self) -> Result<Node> {
-        self.parse_assign()
+        let node = self.parse_assign()?;
+
+        if self.current().is_punct(",") {
+            let offset = self.current().offset;
+            self.advance();
+            return Ok(Node::comma(node, self.parse_expr()?, offset));
+        }
+
+        Ok(node)
     }
 
     /// ```bnf
@@ -988,6 +996,11 @@ impl<'a> Cursor<'a> {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
                 node.ty = lhs.ty.clone();
+            },
+            NodeKind::Comma { lhs, rhs } => {
+                self.infer_type(lhs)?;
+                self.infer_type(rhs)?;
+                node.ty = rhs.ty.clone();
             },
             NodeKind::Binary { lhs, rhs, .. } => {
                 self.infer_type(lhs)?;

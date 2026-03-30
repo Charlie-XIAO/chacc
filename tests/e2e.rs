@@ -114,6 +114,7 @@ impl Fixture {
     }
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_arith() {
     let mut f = Fixture::new();
@@ -153,6 +154,7 @@ fn test_arith() {
     f.run("arith");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_control() {
     let mut f = Fixture::new();
@@ -165,23 +167,22 @@ fn test_control() {
     f.assert(3, "({ int x; if (1-1) x=2; else x=3; x; })");
     f.assert(2, "({ int x; if (1) x=2; else x=3; x; })");
     f.assert(2, "({ int x; if (2-1) x=2; else x=3; x; })");
-    f.assert(
-        55,
-        "({ int i=0; int j=0; for (i=0; i<=10; i=i+1) j=i+j; j; })",
-    );
+    f.assert(55, "({ int i=0; int j=0; for (i=0; i<=10; i=i+1) j=i+j; j; })");
     f.assert(10, "({ int i=0; while(i<10) i=i+1; i; })");
     f.assert(3, "({ 1; {2;} 3; })");
     f.assert(5, "({ ;;; 5; })");
     f.assert(10, "({ int i=0; while(i<10) i=i+1; i; })");
-    f.assert(
-        55,
-        "({ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} j; })",
-    );
+    f.assert(55, "({ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} j; })");
+
+    f.assert(3, "(1,2,3)");
+    f.assert(5, "({ int i=2, j=3; (i=5,j)=6; i; })");
+    f.assert(6, "({ int i=2, j=3; (i=5,j)=6; j; })");
 
     f.finish();
     f.run("control");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_function() {
     let mut f = Fixture::new();
@@ -199,10 +200,7 @@ fn test_function() {
     f.assert(2, "sub2(5, 3)");
     f.assert(21, "add6(1,2,3,4,5,6)");
     f.assert(66, "add6(1,2,add6(3,4,5,6,7,8),9,10,11)");
-    f.assert(
-        136,
-        "add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16)",
-    );
+    f.assert(136, "add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16)");
     f.assert(7, "add2(3,4)");
     f.assert(1, "sub2(4,3)");
     f.assert(55, "fib(9)");
@@ -259,6 +257,7 @@ fn test_pointer() {
     f.run("pointer");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_string() {
     let mut f = Fixture::new();
@@ -301,6 +300,7 @@ fn test_string() {
     f.run("string");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_variable() {
     let mut f = Fixture::new();

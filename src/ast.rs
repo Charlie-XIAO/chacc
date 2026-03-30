@@ -99,15 +99,19 @@ pub enum NodeKind {
     Var(VarRef),
     /// An assignment.
     Assign { lhs: Box<Node>, rhs: Box<Node> },
+    /// A comma operator for [generalized lvalues][1] as in GNU C Extension.
+    ///
+    /// [1]: https://gcc.gnu.org/onlinedocs/gcc-3.2.1/gcc/Lvalues.html
+    Comma { lhs: Box<Node>, rhs: Box<Node> },
     /// A binary operation.
     Binary {
         op: BinaryOp,
         lhs: Box<Node>,
         rhs: Box<Node>,
     },
-    /// A statement expression as in [GNU C Extension].
+    /// A [statement expression][1] as in GNU C Extension.
     ///
-    /// [GNU C Extension]: https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html
+    /// [1]: https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html
     StmtExpr(Vec<Stmt>),
 }
 
@@ -158,6 +162,18 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Assign {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+        }
+    }
+
+    /// Construct a comma operator node.
+    pub fn comma(lhs: Node, rhs: Node, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::Comma {
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },

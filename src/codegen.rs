@@ -218,6 +218,11 @@ impl<'a> Codegen<'a> {
                 },
             },
             NodeKind::Deref(expr) => self.gen_expr(expr),
+            NodeKind::Comma { lhs, rhs } => {
+                self.gen_expr(lhs)?;
+                self.gen_addr(rhs)?;
+                Ok(())
+            },
             _ => Err(self.source.error_at(node.offset, "not an lvalue")),
         }
     }
@@ -267,6 +272,10 @@ impl<'a> Codegen<'a> {
                 self.push()?;
                 self.gen_expr(rhs)?;
                 self.store(lhs.expect_ty())?;
+            },
+            NodeKind::Comma { lhs, rhs } => {
+                self.gen_expr(lhs)?;
+                self.gen_expr(rhs)?;
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
