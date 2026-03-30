@@ -74,12 +74,12 @@ trait Parser<'a> {
     fn parse_declspec(&mut self) -> Result<Type> {
         if self.current().is_keyword(Keyword::Char) {
             self.advance();
-            return Ok(Type::Char);
+            return Ok(Type::char());
         }
 
         if self.current().is_keyword(Keyword::Int) {
             self.advance();
-            return Ok(Type::Int);
+            return Ok(Type::int());
         }
 
         if self.current().is_keyword(Keyword::Struct) {
@@ -315,7 +315,7 @@ impl<'a> Cursor<'a> {
         }
 
         let mut lookahead = self.lookahead();
-        let declarator = lookahead.parse_declarator(Type::default())?;
+        let declarator = lookahead.parse_declarator(Type::dummy())?;
         Ok(declarator.ty.is_func())
     }
 
@@ -776,7 +776,7 @@ impl<'a> Cursor<'a> {
         }
 
         if let Some(content) = self.current().as_str() {
-            let ty = Type::array(Type::Char, content.len());
+            let ty = Type::array(Type::char(), content.len());
             let global_id = self.create_anon_global(ty, content);
             self.advance();
             return Ok(Node::var(VarRef::Global(global_id), offset));
@@ -906,7 +906,7 @@ impl<'a> Cursor<'a> {
         // num + num
         if lhs_ty.is_int() && rhs_ty.is_int() {
             let mut node = Node::binary(BinaryOp::Add, lhs, rhs, offset);
-            node.ty = Some(Type::Int);
+            node.ty = Some(Type::int());
             return Ok(node);
         }
 
@@ -939,7 +939,7 @@ impl<'a> Cursor<'a> {
         // num - num
         if lhs_ty.is_int() && rhs_ty.is_int() {
             let mut node = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            node.ty = Some(Type::Int);
+            node.ty = Some(Type::int());
             return Ok(node);
         }
 
@@ -957,7 +957,7 @@ impl<'a> Cursor<'a> {
             let base_size = lhs_ty.base().unwrap().size();
             let diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
             let mut node = Node::binary(BinaryOp::Div, diff, Node::num(base_size, offset), offset);
-            node.ty = Some(Type::Int);
+            node.ty = Some(Type::int());
             return Ok(node);
         }
 
@@ -1014,17 +1014,17 @@ impl<'a> Cursor<'a> {
 
         match &mut node.kind {
             NodeKind::Num(_) => {
-                node.ty = Some(Type::Int);
+                node.ty = Some(Type::int());
             },
             NodeKind::FuncCall { args, .. } => {
                 for arg in args {
                     self.infer_type(arg)?;
                 }
-                node.ty = Some(Type::Int);
+                node.ty = Some(Type::int());
             },
             NodeKind::Neg(expr) => {
                 self.infer_type(expr)?;
-                node.ty = Some(Type::Int);
+                node.ty = Some(Type::int());
             },
             NodeKind::Var(var) => {
                 let ty = match *var {
@@ -1070,7 +1070,7 @@ impl<'a> Cursor<'a> {
             NodeKind::Binary { lhs, rhs, .. } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                node.ty = Some(Type::Int);
+                node.ty = Some(Type::int());
             },
             NodeKind::Member { member, .. } => {
                 node.ty = Some(member.ty.clone());
