@@ -65,6 +65,8 @@ impl<'a> Codegen<'a> {
     pub fn generate(mut self, program: Program) -> Result<()> {
         let Program { functions, globals } = program;
 
+        writeln!(self.out, ".file 1 \"{}\"", self.source.file())?;
+
         self.globals = globals;
         self.gen_globals()?;
 
@@ -140,6 +142,8 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for a statement.
     fn gen_stmt(&mut self, stmt: &Stmt) -> Result<()> {
+        writeln!(self.out, "  .loc 1 {}", self.source.line_no(stmt.offset))?;
+
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr),
             StmtKind::Return(expr) => {
@@ -220,6 +224,8 @@ impl<'a> Codegen<'a> {
 
     /// Emit assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
+        writeln!(self.out, "  .loc 1 {}", self.source.line_no(node.offset))?;
+
         match &node.kind {
             NodeKind::Num(value) => {
                 writeln!(self.out, "  mov ${value}, %rax")?;

@@ -10,7 +10,7 @@ use crate::error::{Diagnostic, DiagnosticLevel, Error};
 
 /// A source file.
 #[derive(Debug)]
-enum SourceFile {
+pub enum SourceFile {
     Stdin,
     Path(PathBuf),
 }
@@ -27,7 +27,7 @@ impl std::fmt::Display for SourceFile {
 /// A C program source to be compiled.
 #[derive(Debug)]
 pub struct Source {
-    source: SourceFile,
+    file: SourceFile,
     content: SmolStr,
     line_index: LineIndex,
 }
@@ -47,19 +47,27 @@ impl Source {
         Ok(Self::new(SourceFile::Stdin, content))
     }
 
-    fn new(source: SourceFile, content: impl Into<SmolStr>) -> Self {
+    fn new(file: SourceFile, content: impl Into<SmolStr>) -> Self {
         let content = content.into();
         let line_index = LineIndex::new(&content);
         Self {
-            source,
+            file,
             content,
             line_index,
         }
     }
 
-    /// Get a reference to the source content.
+    pub fn file(&self) -> &SourceFile {
+        &self.file
+    }
+
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    /// Get the line number (1-based) of the given byte offset.
+    pub fn line_no(&self, offset: usize) -> u32 {
+        self.line_index.line_col(text_size(offset)).line + 1
     }
 
     /// Format an error message rooted at the given byte offset.
@@ -77,9 +85,7 @@ impl Source {
     }
 
     fn diagnostic_at(&self, offset: usize, level: DiagnosticLevel, message: &str) -> Diagnostic {
-        let line_col = self
-            .line_index
-            .line_col(TextSize::try_from(offset).expect("invalid byte offset"));
+        let line_col = self.line_index.line_col(text_size(offset));
         let range = self
             .line_index
             .line(line_col.line)
@@ -90,7 +96,7 @@ impl Source {
 
         Diagnostic {
             level,
-            source_name: self.source.to_smolstr(),
+            source_name: self.file.to_smolstr(),
             source_content: self.content.clone(),
             message: message.to_smolstr(),
             line: (line_col.line as usize) + 1,
@@ -99,4 +105,8 @@ impl Source {
             line_end,
         }
     }
+}
+
+fn text_size(offset: usize) -> TextSize {
+    TextSize::try_from(offset).expect("invalid byte offset")
 }
