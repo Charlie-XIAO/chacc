@@ -390,6 +390,7 @@ fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i64 {
     // The first parsed local stays closest to `%rbp`
     for local in locals.iter_mut().rev() {
         offset += local.ty.size();
+        offset = align_to(offset, local.ty.align());
         local.offset = -offset;
     }
 

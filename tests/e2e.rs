@@ -388,6 +388,9 @@ fn test_variable() {
     f.assert(2, "({ int x=2; { int x=3; } int y=4; x; })");
     f.assert(3, "({ int x=2; { x=3; } x; })");
 
+    f.assert(15, "({ int x; int y; char z; char *a=&y; char *b=&z; b-a; })");
+    f.assert(1, "({ int x; char y; int z; char *a=&y; char *b=&z; b-a; })");
+
     f.finish();
     f.run("variable");
 }
