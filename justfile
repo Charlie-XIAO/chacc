@@ -1,6 +1,8 @@
 set windows-shell := ["powershell"]
 set shell := ["bash", "-cu"]
 
+alias t := test
+
 _default:
     just --list -u
 
@@ -13,14 +15,5 @@ lint:
 doc *flags:
     cargo +nightly doc --no-deps --document-private-items -Z rustdoc-map {{ flags }}
 
-alias t := test
-alias tu := test-unit
-alias ti := test-integration
-
-test: test-unit test-integration
-
-test-unit:
-    cargo test --lib
-
-test-integration:
-    ./test.sh
+test:
+    cargo test --test e2e

@@ -1,0 +1,381 @@
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use tempfile::tempdir;
+
+fn tests_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")
+}
+
+trait CommandExt {
+    fn cc() -> Command {
+        let cc = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
+        Command::new(cc)
+    }
+
+    fn chacc() -> Command {
+        Command::new(env!("CARGO_BIN_EXE_chacc"))
+    }
+
+    fn run_checked(&mut self, what: &str) -> Output;
+}
+
+impl CommandExt for Command {
+    fn run_checked(&mut self, what: &str) -> Output {
+        let output = self
+            .output()
+            .unwrap_or_else(|err| panic!("{what} failed to start: {err}"));
+
+        let context = format!(
+            "command: {self:?}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        assert!(output.status.success(), "{what} failed\n{context}",);
+        output
+    }
+}
+
+#[derive(Debug, Default)]
+struct Fixture {
+    source: String,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let mut f = Self::default();
+        f.line("#include \"test.h\"");
+        f
+    }
+
+    fn line(&mut self, content: &str) {
+        self.source.push_str(content);
+        if !content.ends_with('\n') {
+            self.source.push('\n');
+        }
+    }
+
+    fn main(&mut self) {
+        self.line("int main() {");
+    }
+
+    fn assert(&mut self, expected: i32, actual: &str) {
+        self.line(&format!("  ASSERT({expected}, {actual});"));
+    }
+
+    fn finish(&mut self) {
+        self.line("  return 0;");
+        self.line("}");
+    }
+
+    fn run(&self, stem: &str) {
+        let tests_dir = tests_dir();
+        let tmp = tempdir().expect("failed to create temporary directory");
+        let source = tmp.path().join(format!("{stem}.c"));
+        let preprocessed = tmp.path().join(format!("{stem}.i"));
+        let asm = tmp.path().join(format!("{stem}.s"));
+        let exe = tmp.path().join(stem);
+
+        std::fs::write(&source, &self.source).expect("failed to write fixture");
+
+        Command::cc()
+            .args([
+                OsStr::new("-E"),
+                OsStr::new("-P"),
+                OsStr::new("-C"),
+                OsStr::new("-I"),
+                tests_dir.as_os_str(),
+                source.as_os_str(),
+                OsStr::new("-o"),
+                preprocessed.as_os_str(),
+            ])
+            .run_checked(&format!("preprocessing {}", source.display()));
+
+        Command::chacc()
+            .arg("-o")
+            .arg(&asm)
+            .arg(&preprocessed)
+            .run_checked(&format!("compiling {}", source.display()));
+
+        Command::cc()
+            .arg("-o")
+            .arg(&exe)
+            .arg(&asm)
+            .arg(tests_dir.join("test.c"))
+            .run_checked(&format!("linking {}", source.display()));
+
+        Command::new(&exe).run_checked(&format!(
+            "running {}",
+            source.file_name().unwrap().to_string_lossy()
+        ));
+    }
+}
+
+#[test]
+fn test_arith() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(0, "0");
+    f.assert(42, "42");
+    f.assert(21, "5+20-4");
+    f.assert(41, " 12 + 34 - 5 ");
+    f.assert(47, "5+6*7");
+    f.assert(15, "5*(9-6)");
+    f.assert(4, "(3+5)/2");
+    f.assert(10, "-10+20");
+    f.assert(10, "- -10");
+    f.assert(10, "- - +10");
+
+    f.assert(0, "0==1");
+    f.assert(1, "42==42");
+    f.assert(1, "0!=1");
+    f.assert(0, "42!=42");
+
+    f.assert(1, "0<1");
+    f.assert(0, "1<1");
+    f.assert(0, "2<1");
+    f.assert(1, "0<=1");
+    f.assert(1, "1<=1");
+    f.assert(0, "2<=1");
+
+    f.assert(1, "1>0");
+    f.assert(0, "1>1");
+    f.assert(0, "1>2");
+    f.assert(1, "1>=0");
+    f.assert(1, "1>=1");
+    f.assert(0, "1>=2");
+
+    f.finish();
+    f.run("arith");
+}
+
+#[test]
+fn test_control() {
+    let mut f = Fixture::new();
+    f.line("/*");
+    f.line(" * This is a block comment.");
+    f.line(" */");
+    f.main();
+
+    f.assert(3, "({ int x; if (0) x=2; else x=3; x; })");
+    f.assert(3, "({ int x; if (1-1) x=2; else x=3; x; })");
+    f.assert(2, "({ int x; if (1) x=2; else x=3; x; })");
+    f.assert(2, "({ int x; if (2-1) x=2; else x=3; x; })");
+    f.assert(
+        55,
+        "({ int i=0; int j=0; for (i=0; i<=10; i=i+1) j=i+j; j; })",
+    );
+    f.assert(10, "({ int i=0; while(i<10) i=i+1; i; })");
+    f.assert(3, "({ 1; {2;} 3; })");
+    f.assert(5, "({ ;;; 5; })");
+    f.assert(10, "({ int i=0; while(i<10) i=i+1; i; })");
+    f.assert(
+        55,
+        "({ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} j; })",
+    );
+
+    f.finish();
+    f.run("control");
+}
+
+#[test]
+fn test_function() {
+    let mut f = Fixture::new();
+    f.line("int ret3() { return 3; return 5; }");
+    f.line("int add2(int x, int y) { return x + y; }");
+    f.line("int sub2(int x, int y) { return x - y; }");
+    f.line("int add6(int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; }");
+    f.line("int addx(int *x, int y) { return *x + y; }");
+    f.line("int sub_char(char a, char b, char c) { return a - b - c; }");
+    f.line("int fib(int x) { if (x<=1) return 1; return fib(x-1) + fib(x-2); }");
+    f.main();
+
+    f.assert(3, "ret3()");
+    f.assert(8, "add2(3, 5)");
+    f.assert(2, "sub2(5, 3)");
+    f.assert(21, "add6(1,2,3,4,5,6)");
+    f.assert(66, "add6(1,2,add6(3,4,5,6,7,8),9,10,11)");
+    f.assert(
+        136,
+        "add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16)",
+    );
+    f.assert(7, "add2(3,4)");
+    f.assert(1, "sub2(4,3)");
+    f.assert(55, "fib(9)");
+    f.assert(1, "({ sub_char(7, 3, 3); })");
+
+    f.finish();
+    f.run("function");
+}
+
+#[test]
+fn test_pointer() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(3, "({ int x=3; *&x; })");
+    f.assert(3, "({ int x=3; int *y=&x; int **z=&y; **z; })");
+    f.assert(5, "({ int x=3; int y=5; *(&x+1); })");
+    f.assert(3, "({ int x=3; int y=5; *(&y-1); })");
+    f.assert(5, "({ int x=3; int y=5; *(&x-(-1)); })");
+    f.assert(5, "({ int x=3; int *y=&x; *y=5; x; })");
+    f.assert(7, "({ int x=3; int y=5; *(&x+1)=7; y; })");
+    f.assert(7, "({ int x=3; int y=5; *(&y-2+1)=7; x; })");
+    f.assert(5, "({ int x=3; (&x+2)-&x+3; })");
+    f.assert(8, "({ int x, y; x=3; y=5; x+y; })");
+    f.assert(8, "({ int x=3, y=5; x+y; })");
+
+    f.assert(3, "({ int x[2]; int *y=&x; *y=3; *x; })");
+
+    f.assert(3, "({ int x[3]; *x=3; *(x+1)=4; *(x+2)=5; *x; })");
+    f.assert(4, "({ int x[3]; *x=3; *(x+1)=4; *(x+2)=5; *(x+1); })");
+    f.assert(5, "({ int x[3]; *x=3; *(x+1)=4; *(x+2)=5; *(x+2); })");
+
+    f.assert(0, "({ int x[2][3]; int *y=x; *y=0; **x; })");
+    f.assert(1, "({ int x[2][3]; int *y=x; *(y+1)=1; *(*x+1); })");
+    f.assert(2, "({ int x[2][3]; int *y=x; *(y+2)=2; *(*x+2); })");
+    f.assert(3, "({ int x[2][3]; int *y=x; *(y+3)=3; **(x+1); })");
+    f.assert(4, "({ int x[2][3]; int *y=x; *(y+4)=4; *(*(x+1)+1); })");
+    f.assert(5, "({ int x[2][3]; int *y=x; *(y+5)=5; *(*(x+1)+2); })");
+
+    f.assert(3, "({ int x[3]; *x=3; x[1]=4; x[2]=5; *x; })");
+    f.assert(4, "({ int x[3]; *x=3; x[1]=4; x[2]=5; *(x+1); })");
+    f.assert(5, "({ int x[3]; *x=3; x[1]=4; x[2]=5; *(x+2); })");
+    f.assert(5, "({ int x[3]; *x=3; x[1]=4; x[2]=5; *(x+2); })");
+    f.assert(5, "({ int x[3]; *x=3; x[1]=4; 2[x]=5; *(x+2); })");
+
+    f.assert(0, "({ int x[2][3]; int *y=x; y[0]=0; x[0][0]; })");
+    f.assert(1, "({ int x[2][3]; int *y=x; y[1]=1; x[0][1]; })");
+    f.assert(2, "({ int x[2][3]; int *y=x; y[2]=2; x[0][2]; })");
+    f.assert(3, "({ int x[2][3]; int *y=x; y[3]=3; x[1][0]; })");
+    f.assert(4, "({ int x[2][3]; int *y=x; y[4]=4; x[1][1]; })");
+    f.assert(5, "({ int x[2][3]; int *y=x; y[5]=5; x[1][2]; })");
+
+    f.finish();
+    f.run("pointer");
+}
+
+#[test]
+fn test_string() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(0, r#"""[0]"#);
+    f.assert(1, r#"sizeof("")"#);
+    f.assert(97, r#""abc"[0]"#);
+    f.assert(98, r#""abc"[1]"#);
+    f.assert(99, r#""abc"[2]"#);
+    f.assert(0, r#""abc"[3]"#);
+    f.assert(4, r#"sizeof("abc")"#);
+
+    f.assert(7, r#""\a"[0]"#);
+    f.assert(8, r#""\b"[0]"#);
+    f.assert(9, r#""\t"[0]"#);
+    f.assert(10, r#""\n"[0]"#);
+    f.assert(11, r#""\v"[0]"#);
+    f.assert(12, r#""\f"[0]"#);
+    f.assert(13, r#""\r"[0]"#);
+    f.assert(27, r#""\e"[0]"#);
+
+    f.assert(106, r#""\j"[0]"#);
+    f.assert(107, r#""\k"[0]"#);
+    f.assert(108, r#""\l"[0]"#);
+
+    f.assert(7, r#""\ax\ny"[0]"#);
+    f.assert(120, r#""\ax\ny"[1]"#);
+    f.assert(10, r#""\ax\ny"[2]"#);
+    f.assert(121, r#""\ax\ny"[3]"#);
+
+    f.assert(0, r#""\0"[0]"#);
+    f.assert(16, r#""\20"[0]"#);
+    f.assert(65, r#""\101"[0]"#);
+    f.assert(104, r#""\1500"[0]"#);
+    f.assert(0, r#""\x00"[0]"#);
+    f.assert(119, r#""\x77"[0]"#);
+
+    f.finish();
+    f.run("string");
+}
+
+#[test]
+fn test_variable() {
+    let mut f = Fixture::new();
+    f.line("int g1, g2[4];");
+    f.main();
+
+    f.assert(3, "({ int a; a=3; a; })");
+    f.assert(3, "({ int a=3; a; })");
+    f.assert(8, "({ int a=3; int z=5; a+z; })");
+
+    f.assert(3, "({ int a=3; a; })");
+    f.assert(8, "({ int a=3; int z=5; a+z; })");
+    f.assert(6, "({ int a; int b; a=b=3; a+b; })");
+    f.assert(3, "({ int foo=3; foo; })");
+    f.assert(8, "({ int foo123=3; int bar=5; foo123+bar; })");
+
+    f.assert(8, "({ int x; sizeof(x); })");
+    f.assert(8, "({ int x; sizeof x; })");
+    f.assert(8, "({ int *x; sizeof(x); })");
+    f.assert(32, "({ int x[4]; sizeof(x); })");
+    f.assert(96, "({ int x[3][4]; sizeof(x); })");
+    f.assert(32, "({ int x[3][4]; sizeof(*x); })");
+    f.assert(8, "({ int x[3][4]; sizeof(**x); })");
+    f.assert(9, "({ int x[3][4]; sizeof(**x) + 1; })");
+    f.assert(9, "({ int x[3][4]; sizeof **x + 1; })");
+    f.assert(8, "({ int x[3][4]; sizeof(**x + 1); })");
+    f.assert(8, "({ int x=1; sizeof(x=2); })");
+    f.assert(1, "({ int x=1; sizeof(x=2); x; })");
+
+    f.assert(0, "g1");
+    f.assert(3, "({ g1=3; g1; })");
+    f.assert(0, "({ g2[0]=0; g2[1]=1; g2[2]=2; g2[3]=3; g2[0]; })");
+    f.assert(1, "({ g2[0]=0; g2[1]=1; g2[2]=2; g2[3]=3; g2[1]; })");
+    f.assert(2, "({ g2[0]=0; g2[1]=1; g2[2]=2; g2[3]=3; g2[2]; })");
+    f.assert(3, "({ g2[0]=0; g2[1]=1; g2[2]=2; g2[3]=3; g2[3]; })");
+
+    f.assert(8, "sizeof(g1)");
+    f.assert(32, "sizeof(g2)");
+
+    f.assert(1, "({ char x=1; x; })");
+    f.assert(1, "({ char x=1; char y=2; x; })");
+    f.assert(2, "({ char x=1; char y=2; y; })");
+
+    f.assert(1, "({ char x; sizeof(x); })");
+    f.assert(10, "({ char x[10]; sizeof(x); })");
+
+    f.assert(2, "({ int x=2; { int x=3; } x; })");
+    f.assert(2, "({ int x=2; { int x=3; } int y=4; x; })");
+    f.assert(3, "({ int x=2; { x=3; } x; })");
+
+    f.finish();
+    f.run("variable");
+}
+
+#[test]
+fn test_help_flag() {
+    let output = Command::chacc()
+        .arg("--help")
+        .run_checked("running with --help flag");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage:"));
+    assert!(stdout.contains("chacc"));
+}
+
+#[test]
+fn test_output_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let input = tmp.path().join("input.c");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input f");
+
+    let asm = tmp.path().join("out.s");
+    Command::chacc()
+        .arg("-o")
+        .arg(&asm)
+        .arg(&input)
+        .run_checked("compiling with -o flag");
+    assert!(asm.is_file(), "expected {} to be created", asm.display());
+}
