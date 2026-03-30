@@ -16,6 +16,7 @@ pub enum Keyword {
     Char,
     Int,
     Sizeof,
+    Struct,
 }
 
 impl std::fmt::Display for Keyword {
@@ -29,6 +30,7 @@ impl std::fmt::Display for Keyword {
             Self::Char => "char",
             Self::Int => "int",
             Self::Sizeof => "sizeof",
+            Self::Struct => "struct",
         };
         write!(f, "{s}")
     }
@@ -47,6 +49,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "char" => Ok(Self::Char),
             "int" => Ok(Self::Int),
             "sizeof" => Ok(Self::Sizeof),
+            "struct" => Ok(Self::Struct),
             _ => Err(()),
         }
     }
@@ -70,7 +73,7 @@ pub enum TokenKind<'a> {
 }
 
 /// A token.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     /// The byte offset of the token in the input string.
@@ -138,7 +141,10 @@ impl<'a> Token<'a> {
 
     /// Return whether this token is a type name keyword.
     pub fn is_typename_keyword(&self) -> bool {
-        matches!(self.kind, TokenKind::Keyword(Keyword::Char | Keyword::Int))
+        matches!(
+            self.kind,
+            TokenKind::Keyword(Keyword::Char | Keyword::Int | Keyword::Struct)
+        )
     }
 
     /// Return the lexeme if this is an identifier token.

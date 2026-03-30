@@ -4,17 +4,17 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
-use crate::types::Type;
+use crate::types::{Member, Type};
 
 /// The parsed program.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
     pub globals: Vec<GlobalVar>,
 }
 
 /// A function defined in [`Program`].
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Function {
     pub name: SmolStr,
     /// Parameter local IDs in declaration order.
@@ -25,7 +25,7 @@ pub struct Function {
 }
 
 /// A global variable defined in [`Program`].
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct GlobalVar {
     pub name: SmolStr,
     pub ty: Type,
@@ -34,16 +34,16 @@ pub struct GlobalVar {
 }
 
 /// A local variable stored in a function's stack frame.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct LocalVar {
-    pub name: SmolStr,
+    pub _name: SmolStr,
     pub ty: Type,
     /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i64,
 }
 
 /// Reference to a variable expression.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum VarRef {
     /// A local variable, identified by its index in the function's local
     /// variable table [`Function::locals`].
@@ -54,7 +54,7 @@ pub enum VarRef {
 }
 
 /// Binary operators.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -67,7 +67,7 @@ pub enum BinaryOp {
 }
 
 /// An AST node representing an expression.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Node {
     pub kind: NodeKind,
     /// The offset from the start of the source code in bytes.
@@ -80,7 +80,7 @@ pub struct Node {
 }
 
 /// The specific expression form carried by [`Node`].
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum NodeKind {
     /// A numeric literal.
     Num(i64),
@@ -109,6 +109,8 @@ pub enum NodeKind {
         lhs: Box<Node>,
         rhs: Box<Node>,
     },
+    /// A struct member.
+    Member { parent: Box<Node>, member: Member },
     /// A [statement expression][1] as in GNU C Extension.
     ///
     /// [1]: https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html
@@ -210,6 +212,18 @@ impl Node {
         }
     }
 
+    /// Construct a struct member access node.
+    pub fn member(parent: Node, member: Member, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::Member {
+                parent: Box::new(parent),
+                member,
+            },
+        }
+    }
+
     /// Construct a statement expression node.
     pub fn stmt_expr(stmts: Vec<Stmt>, offset: usize) -> Self {
         Self {
@@ -226,7 +240,7 @@ impl Node {
 }
 
 /// An AST node representing a statement.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Stmt {
     pub kind: StmtKind,
     /// The offset from the start of the source code in bytes.
@@ -234,7 +248,7 @@ pub struct Stmt {
 }
 
 /// The specific statement form carried by [`Stmt`].
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum StmtKind {
     /// An expression statement.
     Expr(Node),

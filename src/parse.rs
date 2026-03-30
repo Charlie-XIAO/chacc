@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
-use crate::types::Type;
+use crate::types::{Member, Type};
 
 /// Declaration of a function parameter.
 struct Parameter {
@@ -68,26 +68,31 @@ trait Parser<'a> {
         Ok(())
     }
 
-    /// Assume and skip a specific keyword.
-    fn skip_keyword(&mut self, expected: Keyword) -> Result<()> {
-        if !self.current().is_keyword(expected) {
-            return Err(self.error_current(&format!("expected '{expected}'")));
-        }
-        self.advance();
-        Ok(())
-    }
-
     /// ```bnf
-    /// <declspec> ::= "char" | "int"
+    /// <declspec> ::= "char" | "int" | <struct-decl>
     /// ```
     fn parse_declspec(&mut self) -> Result<Type> {
         if self.current().is_keyword(Keyword::Char) {
-            self.skip_keyword(Keyword::Char)?;
+            self.advance();
             return Ok(Type::Char);
         }
 
-        self.skip_keyword(Keyword::Int)?;
-        Ok(Type::Int)
+        if self.current().is_keyword(Keyword::Int) {
+            self.advance();
+            return Ok(Type::Int);
+        }
+
+        if self.current().is_keyword(Keyword::Struct) {
+            self.advance();
+            return self.parse_struct_decl();
+        }
+
+        debug_assert!(
+            !self.current().is_typename_keyword(),
+            "all typenames should have been handled, but {:?} is not",
+            self.current()
+        );
+        Err(self.error_current("expected a typename"))
     }
 
     /// ```bnf
@@ -173,6 +178,39 @@ trait Parser<'a> {
             return Ok(Type::array(ty, len as _));
         }
         Ok(ty)
+    }
+
+    /// ```bnf
+    /// <struct-decl> ::= "{" <struct_member>* "}"
+    /// <struct-member> ::= <declspec> <declarator> ("," <declarator>)* ";"
+    /// ```
+    fn parse_struct_decl(&mut self) -> Result<Type> {
+        self.skip_punct("{")?;
+
+        let mut members = Vec::new();
+        while !self.current().is_punct("}") {
+            let base_ty = self.parse_declspec()?;
+
+            let mut first = true;
+            while !self.current().is_punct(";") {
+                if !first {
+                    self.skip_punct(",")?;
+                }
+                first = false;
+
+                let declarator = self.parse_declarator(base_ty.clone())?;
+                members.push(Member {
+                    name: declarator.name,
+                    ty: declarator.ty,
+                    offset: 0, // Assigned in the constructor
+                });
+            }
+
+            self.advance();
+        }
+
+        self.advance();
+        Ok(Type::struct_(members))
     }
 }
 
@@ -646,20 +684,47 @@ impl<'a> Cursor<'a> {
     }
 
     /// ```bnf
-    /// <postfix> ::= <primary> ("[" <expr> "]")*
+    /// <postfix> ::= <primary> ("[" <expr> "]" | "." <ident>)*
     fn parse_postfix(&mut self) -> Result<Node> {
         let mut node = self.parse_primary()?;
 
-        while self.current().is_punct("[") {
-            let offset = self.current().offset;
-            self.advance();
-            let index = self.parse_expr()?;
-            self.skip_punct("]")?;
-            // Canonicalize a[b] to *(a + b)
-            node = Node::deref(self.new_add(node, index, offset)?, offset);
-        }
+        loop {
+            if self.current().is_punct("[") {
+                let offset = self.current().offset;
+                self.advance();
+                let index = self.parse_expr()?;
+                self.skip_punct("]")?;
+                // Canonicalize a[b] to *(a + b)
+                node = Node::deref(self.new_add(node, index, offset)?, offset);
+                continue;
+            }
 
-        Ok(node)
+            if self.current().is_punct(".") {
+                self.advance();
+                self.infer_type(&mut node)?;
+
+                let members = match node.expect_ty().members() {
+                    Some(members) => members,
+                    None => return Err(self.error_current("not a struct")),
+                };
+
+                let ident = match self.current().as_ident() {
+                    Some(ident) => ident,
+                    None => return Err(self.error_current("not an ident")),
+                };
+
+                let member = match members.iter().find(|member| member.name == ident) {
+                    Some(member) => member.clone(),
+                    None => return Err(self.error_current("no such member")),
+                };
+
+                node = Node::member(node, member, self.current().offset);
+                self.advance();
+                continue;
+            }
+
+            return Ok(node);
+        }
     }
 
     /// ```bnf
@@ -777,7 +842,7 @@ impl<'a> Cursor<'a> {
     fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
         let name = name.into();
         self.locals.push(LocalVar {
-            name: name.clone(),
+            _name: name.clone(),
             ty,
             offset: 0, // Assigned during codegen
         });
@@ -1006,6 +1071,9 @@ impl<'a> Cursor<'a> {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
                 node.ty = Some(Type::Int);
+            },
+            NodeKind::Member { member, .. } => {
+                node.ty = Some(member.ty.clone());
             },
             NodeKind::StmtExpr(body) => {
                 if let Some(stmt) = body.last_mut()

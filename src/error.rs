@@ -3,7 +3,7 @@
 use smol_str::SmolStr;
 
 /// The severity level of a diagnostic message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum DiagnosticLevel {
     Warning,
     Error,

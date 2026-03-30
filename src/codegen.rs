@@ -223,6 +223,11 @@ impl<'a> Codegen<'a> {
                 self.gen_addr(rhs)?;
                 Ok(())
             },
+            NodeKind::Member { parent, member } => {
+                self.gen_addr(parent)?;
+                writeln!(self.out, "  add ${}, %rax", member.offset)?;
+                Ok(())
+            },
             _ => Err(self.source.error_at(node.offset, "not an lvalue")),
         }
     }
@@ -263,7 +268,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(expr)?;
                 writeln!(self.out, "  neg %rax")?;
             },
-            NodeKind::Var(_) => {
+            NodeKind::Var(_) | NodeKind::Member { .. } => {
                 self.gen_addr(node)?;
                 self.load(node.expect_ty())?;
             },

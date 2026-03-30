@@ -1,7 +1,16 @@
 //! The type system for expressions.
 
+use smol_str::SmolStr;
+
+#[derive(Clone, Debug)]
+pub struct Member {
+    pub ty: Type,
+    pub name: SmolStr,
+    pub offset: usize,
+}
+
 /// Expression types used for semantic analysis.
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum Type {
     #[default] // Use Type::default() as a dummy type
     Char,
@@ -12,8 +21,12 @@ pub enum Type {
         len: usize,
     },
     Func {
-        return_ty: Box<Type>,
-        params: Vec<Type>,
+        _return_ty: Box<Type>,
+        _params: Vec<Type>,
+    },
+    Struct {
+        members: Vec<Member>,
+        size: i64,
     },
 }
 
@@ -26,8 +39,8 @@ impl Type {
     /// Construct a function type with the given return type and parameters.
     pub fn func(return_ty: Type, params: Vec<Type>) -> Self {
         Self::Func {
-            return_ty: Box::new(return_ty),
-            params,
+            _return_ty: Box::new(return_ty),
+            _params: params,
         }
     }
 
@@ -36,6 +49,23 @@ impl Type {
         Self::Array {
             base: Box::new(base),
             len,
+        }
+    }
+
+    /// Construct a struct type with the given members.
+    ///
+    /// The offsets of the given members do not need to be precomputed.
+    pub fn struct_(mut members: Vec<Member>) -> Self {
+        // TODO: correctly handle padding and alignment
+        let mut offset = 0;
+        for member in members.iter_mut() {
+            member.offset = offset as usize;
+            offset += member.ty.size();
+        }
+
+        Self::Struct {
+            members,
+            size: offset,
         }
     }
 
@@ -49,6 +79,14 @@ impl Type {
         match self {
             Self::Ptr(base) => Some(base),
             Self::Array { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+
+    /// Return the members of the struct type.
+    pub fn members(&self) -> Option<&[Member]> {
+        match self {
+            Self::Struct { members, .. } => Some(members),
             _ => None,
         }
     }
@@ -71,6 +109,7 @@ impl Type {
             Self::Ptr(_) => 8,
             Self::Array { base, len } => base.size() * (*len as i64),
             Self::Func { .. } => unreachable!("function types do not have a size"),
+            Self::Struct { size, .. } => *size,
         }
     }
 }

@@ -302,6 +302,42 @@ fn test_string() {
 
 #[rustfmt::skip]
 #[test]
+fn test_struct() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(1, "({ struct {int a; int b;} x; x.a=1; x.b=2; x.a; })");
+    f.assert(2, "({ struct {int a; int b;} x; x.a=1; x.b=2; x.b; })");
+    f.assert(1, "({ struct {char a; int b; char c;} x; x.a=1; x.b=2; x.c=3; x.a; })");
+    f.assert(2, "({ struct {char a; int b; char c;} x; x.b=1; x.b=2; x.c=3; x.b; })");
+    f.assert(3, "({ struct {char a; int b; char c;} x; x.a=1; x.b=2; x.c=3; x.c; })");
+
+    f.assert(0, "({ struct {char a; char b;} x[3]; char *p=x; p[0]=0; x[0].a; })");
+    f.assert(1, "({ struct {char a; char b;} x[3]; char *p=x; p[1]=1; x[0].b; })");
+    f.assert(2, "({ struct {char a; char b;} x[3]; char *p=x; p[2]=2; x[1].a; })");
+    f.assert(3, "({ struct {char a; char b;} x[3]; char *p=x; p[3]=3; x[1].b; })");
+
+    f.assert(6, "({ struct {char a[3]; char b[5];} x; char *p=&x; x.a[0]=6; p[0]; })");
+    f.assert(7, "({ struct {char a[3]; char b[5];} x; char *p=&x; x.b[0]=7; p[3]; })");
+
+    f.assert(6, "({ struct { struct { char b; } a; } x; x.a.b=6; x.a.b; })");
+
+    f.assert(8, "({ struct {int a;} x; sizeof(x); })");
+    f.assert(16, "({ struct {int a; int b;} x; sizeof(x); })");
+    f.assert(16, "({ struct {int a, b;} x; sizeof(x); })");
+    f.assert(24, "({ struct {int a[3];} x; sizeof(x); })");
+    f.assert(32, "({ struct {int a;} x[4]; sizeof(x); })");
+    f.assert(48, "({ struct {int a[3];} x[2]; sizeof(x); })");
+    f.assert(2, "({ struct {char a; char b;} x; sizeof(x); })");
+    f.assert(9, "({ struct {char a; int b;} x; sizeof(x); })");
+    f.assert(0, "({ struct {} x; sizeof(x); })");
+
+    f.finish();
+    f.run("struct");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_variable() {
     let mut f = Fixture::new();
     f.line("int g1, g2[4];");
