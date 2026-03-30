@@ -4,6 +4,8 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
+use crate::utils::align_to;
+
 /// A member of a struct.
 #[derive(Clone, Debug)]
 pub struct Member {
@@ -21,6 +23,7 @@ pub struct Type(Rc<TypeInner>);
 struct TypeInner {
     kind: TypeKind,
     size: i64,
+    align: i64,
 }
 
 /// The specific type form carried by [`Type`].
@@ -41,8 +44,8 @@ enum TypeKind {
 }
 
 impl Type {
-    fn new(kind: TypeKind, size: i64) -> Self {
-        Self(Rc::new(TypeInner { kind, size }))
+    fn new(kind: TypeKind, size: i64, align: i64) -> Self {
+        Self(Rc::new(TypeInner { kind, size, align }))
     }
 
     /// Construct a dummy type. This should **NOT** be considered a real type!
@@ -52,17 +55,17 @@ impl Type {
 
     /// Construct a character type.
     pub fn char() -> Self {
-        Self::new(TypeKind::Char, 1)
+        Self::new(TypeKind::Char, 1, 1)
     }
 
     /// Construct an integer type.
     pub fn int() -> Self {
-        Self::new(TypeKind::Int, 8)
+        Self::new(TypeKind::Int, 8, 8)
     }
 
     /// Construct a pointer type to the given base type.
     pub fn ptr(base: Type) -> Self {
-        Self::new(TypeKind::Ptr(Box::new(base)), 8)
+        Self::new(TypeKind::Ptr(Box::new(base)), 8, 8)
     }
 
     /// Construct a function type with the given return type and parameters.
@@ -72,38 +75,51 @@ impl Type {
                 _return_ty: Box::new(return_ty),
                 _params: params,
             },
-            0, // Function types do not have a size
+            0, // Not applicable
+            0, // Not applicable
         )
     }
 
     /// Construct an array type with the given element type and length.
     pub fn array(base: Type, len: usize) -> Self {
         let size = base.size() * (len as i64);
+        let align = base.align();
         Self::new(
             TypeKind::Array {
                 base: Box::new(base),
                 _len: len,
             },
             size,
+            align,
         )
     }
 
     /// Construct a struct type with the given members.
     ///
-    /// The offsets of the given members do not need to be precomputed.
+    /// The member offsets will be assigned here so they do not need to be
+    /// pre-computed.
     pub fn struct_(mut members: Vec<Member>) -> Self {
-        // TODO: correctly handle padding and alignment
         let mut offset = 0;
+        let mut align = 1;
         for member in members.iter_mut() {
+            let member_align = member.ty.align();
+            offset = align_to(offset, member_align); // Internal field padding
             member.offset = offset as usize;
             offset += member.ty.size();
+            align = align.max(member_align);
         }
-        Self::new(TypeKind::Struct(members), offset)
+        let size = align_to(offset, align); // Trailing padding
+        Self::new(TypeKind::Struct(members), size, align)
     }
 
     /// Return the size of the type in bytes.
     pub fn size(&self) -> i64 {
         self.0.size
+    }
+
+    /// Return the byte alignment of the type.
+    pub fn align(&self) -> i64 {
+        self.0.align
     }
 
     /// Return whether the type is an integer data type.

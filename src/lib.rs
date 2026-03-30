@@ -7,6 +7,7 @@ mod parse;
 mod source;
 mod tokenize;
 mod types;
+mod utils;
 
 use std::path::PathBuf;
 

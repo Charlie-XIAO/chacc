@@ -12,6 +12,7 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::Source;
 use crate::types::Type;
+use crate::utils::align_to;
 
 const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
@@ -393,13 +394,4 @@ fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i64 {
     }
 
     align_to(offset, 16)
-}
-
-/// Round `n` up to the nearest multiple of `align`, which must be a power of 2.
-fn align_to(n: i64, align: i64) -> i64 {
-    debug_assert!(
-        align > 0 && (align & (align - 1)) == 0,
-        "align must be a power of 2"
-    );
-    (n + align - 1) & !(align - 1)
 }

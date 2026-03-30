@@ -329,8 +329,9 @@ fn test_struct() {
     f.assert(32, "({ struct {int a;} x[4]; sizeof(x); })");
     f.assert(48, "({ struct {int a[3];} x[2]; sizeof(x); })");
     f.assert(2, "({ struct {char a; char b;} x; sizeof(x); })");
-    f.assert(9, "({ struct {char a; int b;} x; sizeof(x); })");
     f.assert(0, "({ struct {} x; sizeof(x); })");
+    f.assert(16, "({ struct {char a; int b;} x; sizeof(x); })");
+    f.assert(16, "({ struct {int a; char b;} x; sizeof(x); })");
 
     f.finish();
     f.run("struct");
