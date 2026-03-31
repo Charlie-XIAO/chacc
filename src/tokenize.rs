@@ -417,7 +417,7 @@ impl<'a> Tokenizer<'a> {
         let offset = self.pos;
         let rest = &self.source.content()[offset..];
 
-        const PUNCTUATORS: &[&str] = &["==", "!=", "<=", ">="];
+        const PUNCTUATORS: &[&str] = &["==", "!=", "<=", ">=", "->"];
 
         let punct_len =
             if let Some(punct) = PUNCTUATORS.iter().find(|prefix| rest.starts_with(*prefix)) {

@@ -691,7 +691,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <postfix> ::= <primary> ("[" <expr> "]" | "." <ident>)*
+    /// <postfix> ::= <primary> ("[" <expr> "]" | "." <ident> | "->" <ident>)*
     fn parse_postfix(&mut self) -> Result<Node> {
         let mut node = self.parse_primary()?;
 
@@ -708,24 +708,17 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct(".") {
                 self.advance();
-                self.infer_type(&mut node)?;
+                node = self.new_struct_ref(node)?;
+                self.advance();
+                continue;
+            }
 
-                let members = match node.expect_ty().members() {
-                    Some(members) => members,
-                    None => return Err(self.error_current("not a struct")),
-                };
-
-                let ident = match self.current().as_ident() {
-                    Some(ident) => ident,
-                    None => return Err(self.error_current("not an ident")),
-                };
-
-                let member = match members.iter().find(|member| member.name == ident) {
-                    Some(member) => member.clone(),
-                    None => return Err(self.error_current("no such member")),
-                };
-
-                node = Node::member(node, member, self.current().offset);
+            if self.current().is_punct("->") {
+                let offset = self.current().offset;
+                self.advance();
+                // Canonicalize a->b to (*a).b
+                node = Node::deref(node, offset);
+                node = self.new_struct_ref(node)?;
                 self.advance();
                 continue;
             }
@@ -988,6 +981,28 @@ impl<'a> Parser<'a> {
         }
 
         Err(self.source.error_at(offset, "invalid operands"))
+    }
+
+    /// Build a member node for the given node (with struct type).
+    fn new_struct_ref(&self, mut node: Node) -> Result<Node> {
+        self.infer_type(&mut node)?;
+
+        let members = match node.expect_ty().members() {
+            Some(members) => members,
+            None => return Err(self.error_current("not a struct")),
+        };
+
+        let ident = match self.current().as_ident() {
+            Some(ident) => ident,
+            None => return Err(self.error_current("not an ident")),
+        };
+
+        let member = match members.iter().find(|member| member.name == ident) {
+            Some(member) => member.clone(),
+            None => return Err(self.error_current("no such member")),
+        };
+
+        Ok(Node::member(node, member, self.current().offset))
     }
 
     /// Infer types for a statement subtree.
