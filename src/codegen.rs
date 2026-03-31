@@ -344,7 +344,7 @@ impl<'a> Codegen<'a> {
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
     fn load(&mut self, ty: &Type) -> Result<()> {
-        if ty.is_array() {
+        if ty.is_array() || ty.members().is_some() {
             return Ok(());
         }
 
@@ -359,6 +359,14 @@ impl<'a> Codegen<'a> {
     /// Store `%rax` into the address on top of the temporary stack.
     fn store(&mut self, ty: &Type) -> Result<()> {
         self.pop("%rdi")?;
+
+        if ty.members().is_some() {
+            for i in 0..ty.size() {
+                writeln!(self.out, "  mov {i}(%rax), %r8b")?;
+                writeln!(self.out, "  mov %r8b, {i}(%rdi)")?;
+            }
+            return Ok(());
+        }
 
         if ty.size() == 1 {
             writeln!(self.out, "  mov %al, (%rdi)")?;

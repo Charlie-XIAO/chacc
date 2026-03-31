@@ -3,7 +3,6 @@
 //! [1]: https://en.wikipedia.org/wiki/Recursive_descent_parser
 
 use std::rc::Rc;
-use std::usize;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};

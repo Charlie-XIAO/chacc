@@ -341,6 +341,11 @@ fn test_struct() {
     f.assert(3, "({ struct t {char a;} x; struct t *y = &x; x.a=3; y->a; })");
     f.assert(3, "({ struct t {char a;} x; struct t *y = &x; y->a=3; x.a; })");
 
+    f.assert(3, "({ struct {int a,b;} x,y; x.a=3; y=x; y.a; })");
+    f.assert(7, "({ struct t {int a,b;}; struct t x; x.a=7; struct t y; struct t *z=&y; *z=x; y.a; })");
+    f.assert(7, "({ struct t {int a,b;}; struct t x; x.a=7; struct t y, *p=&x, *q=&y; *q=*p; y.a; })");
+    f.assert(5, "({ struct t {char a, b;} x, y; x.a=5; y=x; y.a; })");
+
     f.finish();
     f.run("struct");
 }
@@ -356,6 +361,9 @@ fn test_union() {
     f.assert(2, "({ union { int a; char b[4]; } x; x.a = 515; x.b[1]; })");
     f.assert(0, "({ union { int a; char b[4]; } x; x.a = 515; x.b[2]; })");
     f.assert(0, "({ union { int a; char b[4]; } x; x.a = 515; x.b[3]; })");
+
+    f.assert(3, "({ union {int a,b;} x,y; x.a=3; y.a=5; y=x; y.a; })");
+    f.assert(3, "({ union {struct {int a,b;} c;} x,y; x.c.b=3; y.c.b=5; y=x; y.c.b; })");
 
     f.finish();
     f.run("union");
