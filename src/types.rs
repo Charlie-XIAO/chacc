@@ -58,7 +58,7 @@ impl Type {
 
     /// Construct an integer type.
     pub fn int() -> Self {
-        Self::new(TypeKind::Int, 8, 8)
+        Self::new(TypeKind::Int, 4, 4)
     }
 
     /// Construct a pointer type to the given base type.

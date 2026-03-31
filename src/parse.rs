@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
 use crate::types::{Member, Type};
+use crate::utils::GP_ARG_REGS;
 
 /// Declaration of a function parameter.
 struct Parameter {
@@ -195,7 +196,7 @@ impl<'a> Parser<'a> {
                 ty: declarator.ty,
             });
 
-            if params.len() > 6 {
+            if params.len() > GP_ARG_REGS.len() {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "too many parameters"));

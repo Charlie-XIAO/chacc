@@ -12,10 +12,7 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::Source;
 use crate::types::Type;
-use crate::utils::align_to;
-
-const ARGREG8: [&str; 6] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
-const ARGREG64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+use crate::utils::{GP_ARG_REGS, align_to};
 
 /// A state snapshot when generating a function.
 struct FunctionState {
@@ -115,12 +112,7 @@ impl<'a> Codegen<'a> {
 
         for (i, param_id) in params.iter().enumerate() {
             let local = &locals[*param_id];
-            let reg = if local.ty.size() == 1 {
-                ARGREG8[i]
-            } else {
-                ARGREG64[i]
-            };
-            writeln!(self.out, "  mov {reg}, {}(%rbp)", local.offset)?;
+            self.store_gp(i, local.offset, local.ty.size())?;
         }
 
         self.function = Some(FunctionState {
@@ -242,8 +234,12 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  mov ${value}, %rax")?;
             },
             NodeKind::FuncCall { name, args } => {
-                if args.len() > 6 {
-                    let msg = format!("too many arguments: expected at most 6, got {}", args.len());
+                if args.len() > GP_ARG_REGS.len() {
+                    let msg = format!(
+                        "too many arguments: expected at most {}, got {}",
+                        GP_ARG_REGS.len(),
+                        args.len()
+                    );
                     return Err(self.source.error_at(node.offset, &msg));
                 }
 
@@ -251,8 +247,8 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(arg)?;
                     self.push()?;
                 }
-                for register in ARGREG64.iter().take(args.len()).rev() {
-                    self.pop(register)?;
+                for register in GP_ARG_REGS.iter().take(args.len()).rev() {
+                    self.pop(register.b64)?;
                 }
 
                 writeln!(self.out, "  mov $0, %rax")?;
@@ -350,6 +346,8 @@ impl<'a> Codegen<'a> {
 
         if ty.size() == 1 {
             writeln!(self.out, "  movsbq (%rax), %rax")?;
+        } else if ty.size() == 4 {
+            writeln!(self.out, "  movsxd (%rax), %rax")?;
         } else {
             writeln!(self.out, "  mov (%rax), %rax")?;
         }
@@ -370,6 +368,8 @@ impl<'a> Codegen<'a> {
 
         if ty.size() == 1 {
             writeln!(self.out, "  mov %al, (%rdi)")?;
+        } else if ty.size() == 4 {
+            writeln!(self.out, "  mov %eax, (%rdi)")?;
         } else {
             writeln!(self.out, "  mov %rax, (%rdi)")?;
         }
@@ -380,6 +380,18 @@ impl<'a> Codegen<'a> {
     fn pop(&mut self, register: &str) -> Result<()> {
         writeln!(self.out, "  pop {register}")?;
         self.function_mut().depth -= 1;
+        Ok(())
+    }
+
+    /// Store an incoming general-purpose argument register to its stack slot.
+    fn store_gp(&mut self, r: usize, offset: i64, size: i64) -> Result<()> {
+        let register = match size {
+            1 => GP_ARG_REGS[r].b8,
+            4 => GP_ARG_REGS[r].b32,
+            8 => GP_ARG_REGS[r].b64,
+            _ => unreachable!(),
+        };
+        writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
         Ok(())
     }
 
