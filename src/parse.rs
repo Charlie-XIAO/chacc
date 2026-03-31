@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
@@ -39,6 +39,7 @@ struct Declarator {
 #[derive(Debug, Default)]
 struct ScopeFrame {
     vars: FxHashMap<SmolStr, VarRef>,
+    struct_tags: FxHashMap<SmolStr, Type>,
 }
 
 /// Stateful parser over the token stream during parsing.
@@ -208,10 +209,24 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <struct-decl> ::= "{" <struct_member>* "}"
+    /// <struct-decl> ::= <ident> | <ident>? "{" <struct_member>* "}"
     /// <struct-member> ::= <declspec> <declarator> ("," <declarator>)* ";"
     /// ```
     fn parse_struct_decl(&mut self) -> Result<Type> {
+        let tag = self.current().as_ident();
+
+        if let Some(tag) = tag {
+            let offset = self.current().offset;
+            self.advance();
+            if !self.current().is_punct("{") {
+                // We have e.g. `struct t` but it is not followed by "{", so it
+                // is not defining the struct but using a declared struct
+                return self
+                    .find_struct_tag(tag)
+                    .ok_or_else(|| self.source.error_at(offset, "unknown struct type"));
+            }
+        }
+
         self.skip_punct("{")?;
 
         let mut members = Vec::new();
@@ -237,7 +252,12 @@ impl<'a> Parser<'a> {
         }
 
         self.advance();
-        Ok(Type::struct_(members))
+
+        let ty = Type::struct_(members);
+        if let Some(tag) = tag {
+            self.push_scope_struct_tag(tag.to_smolstr(), ty.clone());
+        }
+        Ok(ty)
     }
 
     /// ```bnf
@@ -807,7 +827,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Push a variable into the current scope.
-    fn push_scope(&mut self, name: SmolStr, var: VarRef) {
+    fn push_scope_var(&mut self, name: SmolStr, var: VarRef) {
         self.scopes
             .last_mut()
             .expect("no scope to push variable into")
@@ -815,11 +835,30 @@ impl<'a> Parser<'a> {
             .insert(name, var);
     }
 
+    /// Push a struct tag into the current scope.
+    fn push_scope_struct_tag(&mut self, name: SmolStr, ty: Type) {
+        self.scopes
+            .last_mut()
+            .expect("no scope to push struct tag into")
+            .struct_tags
+            .insert(name, ty);
+    }
+
     /// Find a variable by name.
     fn find_var(&self, name: &str) -> Option<VarRef> {
         for frame in self.scopes.iter().rev() {
             if let Some(var) = frame.vars.get(name) {
                 return Some(*var);
+            }
+        }
+        None
+    }
+
+    /// Find a struct tag by name.
+    fn find_struct_tag(&self, tag: &str) -> Option<Type> {
+        for frame in self.scopes.iter().rev() {
+            if let Some(ty) = frame.struct_tags.get(tag) {
+                return Some(ty.clone());
             }
         }
         None
@@ -836,7 +875,7 @@ impl<'a> Parser<'a> {
 
         let id = self.locals.len() - 1;
         let var = VarRef::Local(id);
-        self.push_scope(name, var);
+        self.push_scope_var(name, var);
         id
     }
 
@@ -871,7 +910,7 @@ impl<'a> Parser<'a> {
 
         let id = self.globals.len() - 1;
         let var = VarRef::Global(id);
-        self.push_scope(name, var);
+        self.push_scope_var(name, var);
         id
     }
 
