@@ -5,7 +5,7 @@ pub const MAX_FUNC_PARAMS: usize = 6;
 
 /// Round `n` up to the nearest multiple of `align`.
 pub const fn align_to(n: i64, align: i64) -> i64 {
-    assert!(align > 0, "align must be positive");
+    debug_assert!(align > 0, "align must be positive");
 
     if (align & (align - 1)) == 0 {
         // Fast path when align is power of 2; if align is provided as a compile

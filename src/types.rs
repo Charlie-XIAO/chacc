@@ -53,6 +53,11 @@ impl Type {
         Self(Rc::new(TypeInner { kind, size, align }))
     }
 
+    /// Construct a dummy type for parser-only use. This is **NOT** a real type!
+    pub fn dummy() -> Self {
+        Self::char()
+    }
+
     /// Construct a character type.
     pub fn char() -> Self {
         Self::new(TypeKind::Char, 1, 1)

@@ -49,10 +49,12 @@ pub struct Parser<'a> {
     source: &'a Source,
     tokens: Vec<Token<'a>>,
     pos: usize,
+    // Mutable states
     locals: Vec<LocalVar>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_anon_global: usize,
+    speculate_depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -66,6 +68,7 @@ impl<'a> Parser<'a> {
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_anon_global: 0,
+            speculate_depth: 0,
         }
     }
 
@@ -96,6 +99,64 @@ impl<'a> Parser<'a> {
         }
         self.advance();
         Ok(())
+    }
+
+    /// Run a parser operation speculatively.
+    ///
+    /// All read operations on the parser states allowed. Mutation is only
+    /// allowed for:
+    ///
+    /// - Mutating position;
+    /// - Mutating the outermost scope frame, or appending new frames;
+    ///
+    /// The parser state will be rolled back when the callback completes. The
+    /// rollback is valid only if the rules above are respected. Returns both
+    /// the operation result and the token position that was reached before the
+    /// checkpoint was restored.
+    fn speculate<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<(T, usize)> {
+        // Push an extra top scope frame to hold e.g. transient tags introduced
+        // during speculative parsing, while preserving access to outer scopes
+        self.scopes.push(ScopeFrame::default());
+
+        let saved_pos = self.pos;
+        let saved_scope_depth = self.scopes.len();
+        let saved_locals_len = self.locals.len();
+        let saved_globals_len = self.globals.len();
+        let saved_next_anon_global = self.next_anon_global;
+        self.speculate_depth += 1;
+
+        let result = f(self).map(|value| (value, self.pos));
+
+        debug_assert!(self.speculate_depth > 0, "speculation state is broken",);
+        debug_assert!(
+            self.scopes.len() >= saved_scope_depth,
+            "cannot pop more scope frames than appended during speculation",
+        );
+        debug_assert!(
+            self.locals.len() >= saved_locals_len,
+            "cannot remove pre-existing locals during speculation",
+        );
+        debug_assert!(
+            self.globals.len() >= saved_globals_len,
+            "cannot remove pre-existing globals during speculation",
+        );
+
+        self.pos = saved_pos;
+        self.scopes.truncate(saved_scope_depth);
+        self.locals.truncate(saved_locals_len);
+        self.globals.truncate(saved_globals_len);
+        self.next_anon_global = saved_next_anon_global;
+        self.speculate_depth -= 1;
+
+        self.scopes.pop(); // Pop the extra frame we inserted
+        result
+    }
+
+    fn disallow_speculation(&self) {
+        debug_assert_eq!(
+            self.speculate_depth, 0,
+            "this operation is not allowed during parser speculation"
+        );
     }
 
     /// ```bnf
@@ -146,12 +207,39 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declarator> ::= "*"* <ident> <type-suffix>
+    /// <declarator> ::= "*"* (<ident> | "(" <declarator> ")") <type-suffix>
     /// ```
     fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator> {
         while self.current().is_punct("*") {
             self.advance();
             ty = Type::ptr(ty);
+        }
+
+        if self.current().is_punct("(") {
+            self.advance();
+            let inner_pos = self.pos; // After "("
+
+            // Try to parse the inner declarator to find where it ends, i.e.,
+            // the matching ")"
+            let (_, next_pos) = self.speculate(|parser| {
+                parser.parse_declarator(Type::dummy())?;
+                parser.skip_punct(")")?;
+                Ok(())
+            })?;
+
+            // Parse the type suffix after ")"
+            self.pos = next_pos;
+            let (ty, params) = self.parse_type_suffix(ty)?;
+            let next_pos = self.pos;
+
+            // Rewind to parse the inner declarator again, this time with the
+            // real type; we don't go through the type suffix again but rather
+            // directly take its params
+            self.pos = inner_pos;
+            let mut declarator = self.parse_declarator(ty)?;
+            declarator.params = params;
+            self.pos = next_pos;
+            return Ok(declarator);
         }
 
         let offset = self.current().offset;
@@ -316,6 +404,7 @@ impl<'a> Parser<'a> {
     /// <program> ::= (<function> | <global-variable>)* <eof>
     /// ```
     pub fn parse_program(&mut self) -> Result<Program> {
+        self.disallow_speculation();
         let mut functions = Vec::new();
 
         while !self.current().is_eof() {
@@ -338,35 +427,24 @@ impl<'a> Parser<'a> {
     /// Lookahead to determine whether we are at a [`<function>`].
     ///
     /// [`<function>`]: Self::parse_function
-    fn is_function(&self) -> Result<bool> {
+    fn is_function(&mut self) -> Result<bool> {
         if self.current().is_punct(";") {
             return Ok(false);
         }
 
-        let mut offset = 0;
-        while self.peek(offset).is_some_and(|token| token.is_punct("*")) {
-            offset += 1;
-        }
-
-        let Some(token) = self.peek(offset) else {
-            return Err(self.error_current("expected a variable name"));
-        };
-
-        if token.as_ident().is_none() {
-            return Err(self
-                .source
-                .error_at(token.offset, "expected a variable name"));
-        }
-
-        Ok(self
-            .peek(offset + 1)
-            .is_some_and(|token| token.is_punct("(")))
+        let (ty, _) = self.speculate(|parser| {
+            let declarator = parser.parse_declarator(Type::dummy())?;
+            Ok(declarator.ty)
+        })?;
+        Ok(ty.is_func())
     }
 
     /// ```bnf
     /// <function> ::= <declspec> <declarator> "{" <compound-stmt>
     /// ```
     fn parse_function(&mut self, return_ty: Type) -> Result<Function> {
+        self.disallow_speculation();
+
         let declarator = self.parse_declarator(return_ty)?;
         if !declarator.ty.is_func() {
             return Err(self.error_current("expected a function"));
@@ -392,6 +470,7 @@ impl<'a> Parser<'a> {
     /// <global-variable> ::= <declarator> ("," <declarator>)* ";"
     /// ```
     fn parse_global_variable(&mut self, base_ty: Type) -> Result<()> {
+        self.disallow_speculation();
         let mut first = true;
 
         while !self.current().is_punct(";") {
@@ -856,6 +935,7 @@ impl<'a> Parser<'a> {
 
     /// Leave the current variable scope.
     fn leave_scope(&mut self) {
+        debug_assert!(self.scopes.len() > 1, "cannot leave root scope");
         self.scopes.pop();
     }
 
@@ -915,6 +995,8 @@ impl<'a> Parser<'a> {
 
     /// Create a new local variable.
     fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, offset: usize) -> Result<usize> {
+        self.disallow_speculation();
+
         let name = name.into();
         self.locals.push(LocalVar {
             _name: name.clone(),
@@ -954,6 +1036,8 @@ impl<'a> Parser<'a> {
         init_data: Option<Rc<[u8]>>,
         offset: usize,
     ) -> Result<usize> {
+        self.disallow_speculation();
+
         let name = name.into();
         self.globals.push(GlobalVar {
             name: name.clone(),
@@ -969,6 +1053,8 @@ impl<'a> Parser<'a> {
 
     /// Create a new anonymous global variable.
     fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> Result<usize> {
+        self.disallow_speculation();
+
         let name = format_smolstr!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
         self.create_global(name, ty, Some(init_data), usize::MAX)

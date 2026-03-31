@@ -439,6 +439,15 @@ fn test_variable() {
     f.assert(8, "({ long x; sizeof(x); })");
     f.assert(2, "({ short x; sizeof(x); })");
 
+    f.assert(24, "({ char *x[3]; sizeof(x); })");
+    f.assert(8, "({ char (*x)[3]; sizeof(x); })");
+    f.assert(1, "({ char (x); sizeof(x); })");
+    f.assert(3, "({ char (x)[3]; sizeof(x); })");
+    f.assert(12, "({ char (x[3])[4]; sizeof(x); })");
+    f.assert(4, "({ char (x[3])[4]; sizeof(x[0]); })");
+    f.assert(3, "({ char *x[3]; char y; x[0]=&y; y=3; x[0][0]; })");
+    f.assert(4, "({ char x[3]; char (*y)[3]=x; y[0][0]=4; y[0][0]; })");
+
     f.finish();
     f.run("variable");
 }
