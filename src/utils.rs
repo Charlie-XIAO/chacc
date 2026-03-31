@@ -1,52 +1,7 @@
 //! Shared utilities across multiple components.
 
-/// The width-specific spellings of an integer argument register.
-pub struct GpArgReg {
-    pub b8: &'static str,
-    pub b16: &'static str,
-    pub b32: &'static str,
-    pub b64: &'static str,
-}
-
-/// The first six [`GpArgReg`] in calling convention order.
-pub const GP_ARG_REGS: [GpArgReg; 6] = [
-    GpArgReg {
-        b8: "%dil",
-        b16: "%di",
-        b32: "%edi",
-        b64: "%rdi",
-    },
-    GpArgReg {
-        b8: "%sil",
-        b16: "%si",
-        b32: "%esi",
-        b64: "%rsi",
-    },
-    GpArgReg {
-        b8: "%dl",
-        b16: "%dx",
-        b32: "%edx",
-        b64: "%rdx",
-    },
-    GpArgReg {
-        b8: "%cl",
-        b16: "%cx",
-        b32: "%ecx",
-        b64: "%rcx",
-    },
-    GpArgReg {
-        b8: "%r8b",
-        b16: "%r8w",
-        b32: "%r8d",
-        b64: "%r8",
-    },
-    GpArgReg {
-        b8: "%r9b",
-        b16: "%r9w",
-        b32: "%r9d",
-        b64: "%r9",
-    },
-];
+/// The maximum number of function arguments supported.
+pub const MAX_FUNC_PARAMS: usize = 6;
 
 /// Round `n` up to the nearest multiple of `align`.
 pub const fn align_to(n: i64, align: i64) -> i64 {

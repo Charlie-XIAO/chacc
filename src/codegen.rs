@@ -12,7 +12,64 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::Source;
 use crate::types::Type;
-use crate::utils::{GP_ARG_REGS, align_to};
+use crate::utils::{MAX_FUNC_PARAMS, align_to};
+
+const GP_ARG_REGS_8: [&str; MAX_FUNC_PARAMS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
+const GP_ARG_REGS_16: [&str; MAX_FUNC_PARAMS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
+const GP_ARG_REGS_32: [&str; MAX_FUNC_PARAMS] = ["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
+const GP_ARG_REGS_64: [&str; MAX_FUNC_PARAMS] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+/// Width of an integer scalar used to select size-specific x86-64 operations.
+#[derive(Clone, Copy)]
+enum ScalarWidth {
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+impl ScalarWidth {
+    /// Convert a scalar size in bytes to its corresponding width.
+    fn from_size(size: i64) -> Self {
+        match size {
+            1 => Self::Byte,
+            2 => Self::Word,
+            4 => Self::Dword,
+            8 => Self::Qword,
+            _ => unreachable!("unsupported scalar width: {size}"),
+        }
+    }
+
+    /// Return the general-purpose argument register for this width at `index`.
+    fn gp_arg_reg(&self, index: usize) -> &'static str {
+        match self {
+            Self::Byte => GP_ARG_REGS_8[index],
+            Self::Word => GP_ARG_REGS_16[index],
+            Self::Dword => GP_ARG_REGS_32[index],
+            Self::Qword => GP_ARG_REGS_64[index],
+        }
+    }
+
+    /// Return the accumulator register for this width.
+    fn acc_reg(&self) -> &'static str {
+        match self {
+            Self::Byte => "%al",
+            Self::Word => "%ax",
+            Self::Dword => "%eax",
+            Self::Qword => "%rax",
+        }
+    }
+
+    /// Return the mnemonic used to load a signed scalar of this width.
+    fn signed_load_mnemonic(&self) -> &'static str {
+        match self {
+            Self::Byte => "movsbq",
+            Self::Word => "movswq",
+            Self::Dword => "movsxd",
+            Self::Qword => "mov",
+        }
+    }
+}
 
 /// A state snapshot when generating a function.
 struct FunctionState {
@@ -234,10 +291,9 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  mov ${value}, %rax")?;
             },
             NodeKind::FuncCall { name, args } => {
-                if args.len() > GP_ARG_REGS.len() {
+                if args.len() > MAX_FUNC_PARAMS {
                     let msg = format!(
-                        "too many arguments: expected at most {}, got {}",
-                        GP_ARG_REGS.len(),
+                        "too many arguments: expected at most {MAX_FUNC_PARAMS}, got {}",
                         args.len()
                     );
                     return Err(self.source.error_at(node.offset, &msg));
@@ -247,8 +303,8 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(arg)?;
                     self.push()?;
                 }
-                for register in GP_ARG_REGS.iter().take(args.len()).rev() {
-                    self.pop(register.b64)?;
+                for register in GP_ARG_REGS_64.iter().take(args.len()).rev() {
+                    self.pop(register)?;
                 }
 
                 writeln!(self.out, "  mov $0, %rax")?;
@@ -344,12 +400,8 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
-        match ty.size() {
-            1 => writeln!(self.out, "  movsbq (%rax), %rax")?,
-            2 => writeln!(self.out, "  movswq (%rax), %rax")?,
-            4 => writeln!(self.out, "  movsxd (%rax), %rax")?,
-            _ => writeln!(self.out, "  mov (%rax), %rax")?,
-        }
+        let width = ScalarWidth::from_size(ty.size());
+        writeln!(self.out, "  {} (%rax), %rax", width.signed_load_mnemonic())?;
         Ok(())
     }
 
@@ -365,12 +417,8 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
-        match ty.size() {
-            1 => writeln!(self.out, "  mov %al, (%rdi)")?,
-            2 => writeln!(self.out, "  mov %ax, (%rdi)")?,
-            4 => writeln!(self.out, "  mov %eax, (%rdi)")?,
-            _ => writeln!(self.out, "  mov %rax, (%rdi)")?,
-        }
+        let width = ScalarWidth::from_size(ty.size());
+        writeln!(self.out, "  mov {}, (%rdi)", width.acc_reg())?;
         Ok(())
     }
 
@@ -383,13 +431,7 @@ impl<'a> Codegen<'a> {
 
     /// Store an incoming general-purpose argument register to its stack slot.
     fn store_gp(&mut self, r: usize, offset: i64, size: i64) -> Result<()> {
-        let register = match size {
-            1 => GP_ARG_REGS[r].b8,
-            2 => GP_ARG_REGS[r].b16,
-            4 => GP_ARG_REGS[r].b32,
-            8 => GP_ARG_REGS[r].b64,
-            _ => unreachable!(),
-        };
+        let register = ScalarWidth::from_size(size).gp_arg_reg(r);
         writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
         Ok(())
     }
