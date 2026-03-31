@@ -11,16 +11,16 @@ mod utils;
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::Parser as _;
 
 use crate::codegen::Codegen;
 use crate::error::Result;
-use crate::parse::Cursor;
+use crate::parse::Parser;
 use crate::source::Source;
 use crate::tokenize::Tokenizer;
 
 /// The Cha C compiler (chacc).
-#[derive(Debug, Parser)]
+#[derive(Debug, clap::Parser)]
 struct Cli {
     /// The input file path, or "-" for stdin.
     input: PathBuf,
@@ -39,7 +39,7 @@ pub fn run() -> Result<()> {
     };
 
     let tokens = Tokenizer::new(&source).tokenize()?;
-    let program = Cursor::new(&source, tokens).parse_program()?;
+    let program = Parser::new(&source, tokens).parse_program()?;
     let codegen = Codegen::new(&source, &cli.output)?;
     codegen.generate(program)?;
 

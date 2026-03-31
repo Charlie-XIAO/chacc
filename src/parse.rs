@@ -35,28 +35,55 @@ struct Declarator {
     params: Vec<Parameter>,
 }
 
-/// A trait for parsing tokens into an AST.
-///
-/// This is implemented by both [`Cursor`] and [`LookaheadCursor`] to reduce
-/// code duplication when both normal parsing and lookahead are needed.
-trait Parser<'a> {
-    /// Return a reference to the original source.
-    fn source(&self) -> &'a Source;
+/// A stack of variable scopes.
+#[derive(Debug, Default)]
+struct ScopeFrame {
+    vars: FxHashMap<SmolStr, VarRef>,
+}
 
-    /// Return a token at a fixed lookahead distance.
-    fn peek(&self, offset: usize) -> Option<&Token<'a>>;
+/// Stateful parser over the token stream during parsing.
+pub struct Parser<'a> {
+    source: &'a Source,
+    tokens: Vec<Token<'a>>,
+    pos: usize,
+    locals: Vec<LocalVar>,
+    globals: Vec<GlobalVar>,
+    scopes: Vec<ScopeFrame>,
+    next_anon_global: usize,
+}
+
+impl<'a> Parser<'a> {
+    /// Create a parser over a token stream.
+    pub fn new(source: &'a Source, tokens: Vec<Token<'a>>) -> Self {
+        Self {
+            source,
+            tokens,
+            pos: 0,
+            locals: Vec::new(),
+            globals: Vec::new(),
+            scopes: vec![ScopeFrame::default()],
+            next_anon_global: 0,
+        }
+    }
 
     /// Advance to the next token.
-    fn advance(&mut self);
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
 
     /// Return the current token.
     fn current(&self) -> &Token<'a> {
-        self.peek(0).expect("parser is in a broken state")
+        &self.tokens[self.pos]
+    }
+
+    /// Return the token at the given lookahead distance.
+    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
+        self.tokens.get(self.pos + offset)
     }
 
     /// Format an error message at the current token.
     fn error_current(&self, message: &str) -> Error {
-        self.source().error_at(self.current().offset, message)
+        self.source.error_at(self.current().offset, message)
     }
 
     /// Assume and skip a specific punctuator.
@@ -153,7 +180,7 @@ trait Parser<'a> {
 
             if params.len() > 6 {
                 return Err(self
-                    .source()
+                    .source
                     .error_at(declarator.offset, "too many parameters"));
             }
         }
@@ -212,66 +239,11 @@ trait Parser<'a> {
         self.advance();
         Ok(Type::struct_(members))
     }
-}
-
-/// A stack of variable scopes.
-#[derive(Debug, Default)]
-struct ScopeFrame {
-    vars: FxHashMap<SmolStr, VarRef>,
-}
-
-/// Cursor over the token stream during parsing.
-pub struct Cursor<'a> {
-    source: &'a Source,
-    tokens: Vec<Token<'a>>,
-    pos: usize,
-    locals: Vec<LocalVar>,
-    globals: Vec<GlobalVar>,
-    scopes: Vec<ScopeFrame>,
-    next_anon_global: usize,
-}
-
-impl<'a> Parser<'a> for Cursor<'a> {
-    fn source(&self) -> &'a Source {
-        self.source
-    }
-
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
-
-    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
-        self.tokens.get(self.pos + offset)
-    }
-}
-
-impl<'a> Cursor<'a> {
-    /// Create a parser over a token stream.
-    pub fn new(source: &'a Source, tokens: Vec<Token<'a>>) -> Self {
-        Self {
-            source,
-            tokens,
-            pos: 0,
-            locals: Vec::new(),
-            globals: Vec::new(),
-            scopes: vec![ScopeFrame::default()],
-            next_anon_global: 0,
-        }
-    }
-
-    /// Create a [`LookaheadCursor`] at the current position.
-    fn lookahead(&self) -> LookaheadCursor<'_, 'a> {
-        LookaheadCursor {
-            source: self.source,
-            tokens: &self.tokens,
-            pos: self.pos,
-        }
-    }
 
     /// ```bnf
     /// <expr> ::= <assign> ("," <expr>)?
     /// ```
-    pub fn parse_expr(&mut self) -> Result<Node> {
+    fn parse_expr(&mut self) -> Result<Node> {
         let node = self.parse_assign()?;
 
         if self.current().is_punct(",") {
@@ -314,9 +286,24 @@ impl<'a> Cursor<'a> {
             return Ok(false);
         }
 
-        let mut lookahead = self.lookahead();
-        let declarator = lookahead.parse_declarator(Type::dummy())?;
-        Ok(declarator.ty.is_func())
+        let mut offset = 0;
+        while self.peek(offset).is_some_and(|token| token.is_punct("*")) {
+            offset += 1;
+        }
+
+        let Some(token) = self.peek(offset) else {
+            return Err(self.error_current("expected a variable name"));
+        };
+
+        if token.as_ident().is_none() {
+            return Err(self
+                .source
+                .error_at(token.offset, "expected a variable name"));
+        }
+
+        Ok(self
+            .peek(offset + 1)
+            .is_some_and(|token| token.is_punct("(")))
     }
 
     /// ```bnf
@@ -1091,26 +1078,5 @@ impl<'a> Cursor<'a> {
         }
 
         Ok(())
-    }
-}
-
-/// Cursor for looking ahead in the token stream without advancing.
-struct LookaheadCursor<'cur, 'a> {
-    source: &'a Source,
-    tokens: &'cur [Token<'a>],
-    pos: usize,
-}
-
-impl<'cur, 'a> Parser<'a> for LookaheadCursor<'cur, 'a> {
-    fn source(&self) -> &'a Source {
-        self.source
-    }
-
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
-
-    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
-        self.tokens.get(self.pos + offset)
     }
 }
