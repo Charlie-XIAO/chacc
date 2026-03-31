@@ -17,6 +17,7 @@ pub enum Keyword {
     Int,
     Sizeof,
     Struct,
+    Union,
 }
 
 impl std::fmt::Display for Keyword {
@@ -31,6 +32,7 @@ impl std::fmt::Display for Keyword {
             Self::Int => "int",
             Self::Sizeof => "sizeof",
             Self::Struct => "struct",
+            Self::Union => "union",
         };
         write!(f, "{s}")
     }
@@ -50,6 +52,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "int" => Ok(Self::Int),
             "sizeof" => Ok(Self::Sizeof),
             "struct" => Ok(Self::Struct),
+            "union" => Ok(Self::Union),
             _ => Err(()),
         }
     }
@@ -143,7 +146,7 @@ impl<'a> Token<'a> {
     pub fn is_typename_keyword(&self) -> bool {
         matches!(
             self.kind,
-            TokenKind::Keyword(Keyword::Char | Keyword::Int | Keyword::Struct)
+            TokenKind::Keyword(Keyword::Char | Keyword::Int | Keyword::Struct | Keyword::Union)
         )
     }
 

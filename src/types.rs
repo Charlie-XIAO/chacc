@@ -40,7 +40,10 @@ enum TypeKind {
         _return_ty: Box<Type>,
         _params: Vec<Type>,
     },
-    Struct(Vec<Member>),
+    StructOrUnion {
+        _is_struct: bool,
+        members: Vec<Member>,
+    },
 }
 
 impl Type {
@@ -89,22 +92,38 @@ impl Type {
         )
     }
 
-    /// Construct a struct type with the given members.
+    /// Construct a struct or union type with the given members.
     ///
-    /// The member offsets will be assigned here so they do not need to be
-    /// pre-computed.
-    pub fn struct_(mut members: Vec<Member>) -> Self {
+    /// For a struct, the member offsets will be assigned here so they do not
+    /// need to be pre-computed. For a union, the member offsets must be all 0.
+    pub fn struct_or_union(is_struct: bool, mut members: Vec<Member>) -> Self {
         let mut offset = 0;
         let mut align = 1;
-        for member in members.iter_mut() {
-            let member_align = member.ty.align();
-            offset = align_to(offset, member_align); // Internal field padding
-            member.offset = offset as usize;
-            offset += member.ty.size();
-            align = align.max(member_align);
+
+        if is_struct {
+            for member in members.iter_mut() {
+                let member_align = member.ty.align();
+                offset = align_to(offset, member_align); // Field alignment
+                member.offset = offset as usize;
+                offset += member.ty.size();
+                align = align.max(member_align);
+            }
+        } else {
+            for member in members.iter() {
+                offset = offset.max(member.ty.size());
+                align = align.max(member.ty.align());
+            }
         }
+
         let size = align_to(offset, align); // Trailing padding
-        Self::new(TypeKind::Struct(members), size, align)
+        Self::new(
+            TypeKind::StructOrUnion {
+                _is_struct: is_struct,
+                members,
+            },
+            size,
+            align,
+        )
     }
 
     /// Return the size of the type in bytes.
@@ -144,7 +163,7 @@ impl Type {
     /// Return the members of the struct type.
     pub fn members(&self) -> Option<&[Member]> {
         match &self.0.kind {
-            TypeKind::Struct(members) => Some(members),
+            TypeKind::StructOrUnion { members, .. } => Some(members),
             _ => None,
         }
     }

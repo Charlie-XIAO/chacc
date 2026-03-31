@@ -39,7 +39,8 @@ struct Declarator {
 #[derive(Debug, Default)]
 struct ScopeFrame {
     vars: FxHashMap<SmolStr, VarRef>,
-    struct_tags: FxHashMap<SmolStr, Type>,
+    /// Struct or union tags.
+    tags: FxHashMap<SmolStr, Type>,
 }
 
 /// Stateful parser over the token stream during parsing.
@@ -112,7 +113,12 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Struct) {
             self.advance();
-            return self.parse_struct_decl();
+            return self.parse_struct_or_union_decl(true);
+        }
+
+        if self.current().is_keyword(Keyword::Union) {
+            self.advance();
+            return self.parse_struct_or_union_decl(false);
         }
 
         debug_assert!(
@@ -209,21 +215,24 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <struct-decl> ::= <ident> | <ident>? "{" <struct_member>* "}"
-    /// <struct-member> ::= <declspec> <declarator> ("," <declarator>)* ";"
+    /// <struct-or-union-decl> ::= <ident> | <ident>? "{" <struct_member>* "}"
+    /// <struct-or-union-member> ::=
+    ///   <declspec> <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_struct_decl(&mut self) -> Result<Type> {
+    fn parse_struct_or_union_decl(&mut self, is_struct: bool) -> Result<Type> {
         let tag = self.current().as_ident();
 
         if let Some(tag) = tag {
             let offset = self.current().offset;
             self.advance();
             if !self.current().is_punct("{") {
-                // We have e.g. `struct t` but it is not followed by "{", so it
-                // is not defining the struct but using a declared struct
-                return self
-                    .find_struct_tag(tag)
-                    .ok_or_else(|| self.source.error_at(offset, "unknown struct type"));
+                return self.find_tag(tag).ok_or_else(|| {
+                    let message = format!(
+                        "unknown {} type",
+                        if is_struct { "struct" } else { "union" }
+                    );
+                    self.source.error_at(offset, &message)
+                });
             }
         }
 
@@ -253,9 +262,9 @@ impl<'a> Parser<'a> {
 
         self.advance();
 
-        let ty = Type::struct_(members);
+        let ty = Type::struct_or_union(is_struct, members);
         if let Some(tag) = tag {
-            self.push_scope_struct_tag(tag.to_smolstr(), ty.clone());
+            self.push_scope_tag(tag.to_smolstr(), ty.clone());
         }
         Ok(ty)
     }
@@ -692,6 +701,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <postfix> ::= <primary> ("[" <expr> "]" | "." <ident> | "->" <ident>)*
+    /// ```
     fn parse_postfix(&mut self) -> Result<Node> {
         let mut node = self.parse_primary()?;
 
@@ -708,7 +718,7 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct(".") {
                 self.advance();
-                node = self.new_struct_ref(node)?;
+                node = self.new_member_access(node)?;
                 self.advance();
                 continue;
             }
@@ -718,7 +728,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 // Canonicalize a->b to (*a).b
                 node = Node::deref(node, offset);
-                node = self.new_struct_ref(node)?;
+                node = self.new_member_access(node)?;
                 self.advance();
                 continue;
             }
@@ -828,12 +838,12 @@ impl<'a> Parser<'a> {
             .insert(name, var);
     }
 
-    /// Push a struct tag into the current scope.
-    fn push_scope_struct_tag(&mut self, name: SmolStr, ty: Type) {
+    /// Push a struct or union tag into the current scope.
+    fn push_scope_tag(&mut self, name: SmolStr, ty: Type) {
         self.scopes
             .last_mut()
-            .expect("no scope to push struct tag into")
-            .struct_tags
+            .expect("no scope to push struct or union tag into")
+            .tags
             .insert(name, ty);
     }
 
@@ -847,10 +857,10 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Find a struct tag by name.
-    fn find_struct_tag(&self, tag: &str) -> Option<Type> {
+    /// Find a struct or union tag by name.
+    fn find_tag(&self, tag: &str) -> Option<Type> {
         for frame in self.scopes.iter().rev() {
-            if let Some(ty) = frame.struct_tags.get(tag) {
+            if let Some(ty) = frame.tags.get(tag) {
                 return Some(ty.clone());
             }
         }
@@ -983,13 +993,13 @@ impl<'a> Parser<'a> {
         Err(self.source.error_at(offset, "invalid operands"))
     }
 
-    /// Build a member node for the given node (with struct type).
-    fn new_struct_ref(&self, mut node: Node) -> Result<Node> {
+    /// Build a member access node for the given node.
+    fn new_member_access(&self, mut node: Node) -> Result<Node> {
         self.infer_type(&mut node)?;
 
         let members = match node.expect_ty().members() {
             Some(members) => members,
-            None => return Err(self.error_current("not a struct")),
+            None => return Err(self.error_current("not a struct or union")),
         };
 
         let ident = match self.current().as_ident() {

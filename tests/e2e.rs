@@ -347,6 +347,22 @@ fn test_struct() {
 
 #[rustfmt::skip]
 #[test]
+fn test_union() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(8, "({ union { int a; char b[6]; } x; sizeof(x); })");
+    f.assert(3, "({ union { int a; char b[4]; } x; x.a = 515; x.b[0]; })");
+    f.assert(2, "({ union { int a; char b[4]; } x; x.a = 515; x.b[1]; })");
+    f.assert(0, "({ union { int a; char b[4]; } x; x.a = 515; x.b[2]; })");
+    f.assert(0, "({ union { int a; char b[4]; } x; x.a = 515; x.b[3]; })");
+
+    f.finish();
+    f.run("union");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_variable() {
     let mut f = Fixture::new();
     f.line("int g1, g2[4];");
