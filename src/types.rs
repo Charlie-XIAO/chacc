@@ -30,7 +30,9 @@ struct TypeInner {
 #[derive(Debug)]
 enum TypeKind {
     Char,
+    Short,
     Int,
+    Long,
     Ptr(Box<Type>),
     Array {
         base: Box<Type>,
@@ -56,9 +58,19 @@ impl Type {
         Self::new(TypeKind::Char, 1, 1)
     }
 
+    /// Construct a short integer type.
+    pub fn short() -> Self {
+        Self::new(TypeKind::Short, 2, 2)
+    }
+
     /// Construct an integer type.
     pub fn int() -> Self {
         Self::new(TypeKind::Int, 4, 4)
+    }
+
+    /// Construct a long integer type.
+    pub fn long() -> Self {
+        Self::new(TypeKind::Long, 8, 8)
     }
 
     /// Construct a pointer type to the given base type.
@@ -138,7 +150,10 @@ impl Type {
 
     /// Return whether the type is an integer data type.
     pub fn is_int(&self) -> bool {
-        matches!(self.0.kind, TypeKind::Char | TypeKind::Int)
+        matches!(
+            self.0.kind,
+            TypeKind::Char | TypeKind::Short | TypeKind::Int | TypeKind::Long
+        )
     }
 
     /// Return whether the type is a function.

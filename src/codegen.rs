@@ -344,12 +344,11 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
-        if ty.size() == 1 {
-            writeln!(self.out, "  movsbq (%rax), %rax")?;
-        } else if ty.size() == 4 {
-            writeln!(self.out, "  movsxd (%rax), %rax")?;
-        } else {
-            writeln!(self.out, "  mov (%rax), %rax")?;
+        match ty.size() {
+            1 => writeln!(self.out, "  movsbq (%rax), %rax")?,
+            2 => writeln!(self.out, "  movswq (%rax), %rax")?,
+            4 => writeln!(self.out, "  movsxd (%rax), %rax")?,
+            _ => writeln!(self.out, "  mov (%rax), %rax")?,
         }
         Ok(())
     }
@@ -366,12 +365,11 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
-        if ty.size() == 1 {
-            writeln!(self.out, "  mov %al, (%rdi)")?;
-        } else if ty.size() == 4 {
-            writeln!(self.out, "  mov %eax, (%rdi)")?;
-        } else {
-            writeln!(self.out, "  mov %rax, (%rdi)")?;
+        match ty.size() {
+            1 => writeln!(self.out, "  mov %al, (%rdi)")?,
+            2 => writeln!(self.out, "  mov %ax, (%rdi)")?,
+            4 => writeln!(self.out, "  mov %eax, (%rdi)")?,
+            _ => writeln!(self.out, "  mov %rax, (%rdi)")?,
         }
         Ok(())
     }
@@ -387,6 +385,7 @@ impl<'a> Codegen<'a> {
     fn store_gp(&mut self, r: usize, offset: i64, size: i64) -> Result<()> {
         let register = match size {
             1 => GP_ARG_REGS[r].b8,
+            2 => GP_ARG_REGS[r].b16,
             4 => GP_ARG_REGS[r].b32,
             8 => GP_ARG_REGS[r].b64,
             _ => unreachable!(),

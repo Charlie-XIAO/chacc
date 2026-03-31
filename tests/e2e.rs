@@ -193,6 +193,8 @@ fn test_function() {
     f.line("int addx(int *x, int y) { return *x + y; }");
     f.line("int sub_char(char a, char b, char c) { return a - b - c; }");
     f.line("int fib(int x) { if (x<=1) return 1; return fib(x-1) + fib(x-2); }");
+    f.line("int sub_long(long a, long b, long c) { return a - b - c; }");
+    f.line("int sub_short(short a, short b, short c) { return a - b - c; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -201,10 +203,15 @@ fn test_function() {
     f.assert(21, "add6(1,2,3,4,5,6)");
     f.assert(66, "add6(1,2,add6(3,4,5,6,7,8),9,10,11)");
     f.assert(136, "add6(1,2,add6(3,add6(4,5,6,7,8,9),10,11,12,13),14,15,16)");
+
     f.assert(7, "add2(3,4)");
     f.assert(1, "sub2(4,3)");
     f.assert(55, "fib(9)");
+
     f.assert(1, "({ sub_char(7, 3, 3); })");
+
+    f.assert(1, "sub_long(7, 3, 3)");
+    f.assert(1, "sub_short(7, 3, 3)");
 
     f.finish();
     f.run("function");
@@ -349,6 +356,9 @@ fn test_struct() {
     f.assert(8, "({ struct t {int a; int b;}; struct t y; sizeof(y); })");
     f.assert(8, "({ struct t {int a; int b;} x; struct t y; sizeof(y); })");
 
+    f.assert(16, "({ struct {char a; long b;} x; sizeof(x); })");
+    f.assert(4, "({ struct {char a; short b;} x; sizeof(x); })");
+
     f.finish();
     f.run("struct");
 }
@@ -425,6 +435,9 @@ fn test_variable() {
 
     f.assert(7, "({ int x; int y; char z; char *a=&y; char *b=&z; b-a; })");
     f.assert(1, "({ int x; char y; int z; char *a=&y; char *b=&z; b-a; })");
+
+    f.assert(8, "({ long x; sizeof(x); })");
+    f.assert(2, "({ short x; sizeof(x); })");
 
     f.finish();
     f.run("variable");

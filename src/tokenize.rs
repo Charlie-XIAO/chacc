@@ -14,7 +14,9 @@ pub enum Keyword {
     For,
     While,
     Char,
+    Short,
     Int,
+    Long,
     Sizeof,
     Struct,
     Union,
@@ -29,7 +31,9 @@ impl std::fmt::Display for Keyword {
             Self::For => "for",
             Self::While => "while",
             Self::Char => "char",
+            Self::Short => "short",
             Self::Int => "int",
+            Self::Long => "long",
             Self::Sizeof => "sizeof",
             Self::Struct => "struct",
             Self::Union => "union",
@@ -49,7 +53,9 @@ impl std::convert::TryFrom<&str> for Keyword {
             "for" => Ok(Self::For),
             "while" => Ok(Self::While),
             "char" => Ok(Self::Char),
+            "short" => Ok(Self::Short),
             "int" => Ok(Self::Int),
+            "long" => Ok(Self::Long),
             "sizeof" => Ok(Self::Sizeof),
             "struct" => Ok(Self::Struct),
             "union" => Ok(Self::Union),
@@ -146,7 +152,14 @@ impl<'a> Token<'a> {
     pub fn is_typename_keyword(&self) -> bool {
         matches!(
             self.kind,
-            TokenKind::Keyword(Keyword::Char | Keyword::Int | Keyword::Struct | Keyword::Union)
+            TokenKind::Keyword(
+                Keyword::Char
+                    | Keyword::Short
+                    | Keyword::Int
+                    | Keyword::Long
+                    | Keyword::Struct
+                    | Keyword::Union
+            )
         )
     }
 

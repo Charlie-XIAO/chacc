@@ -99,7 +99,12 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declspec> ::= "char" | "int" | <struct-decl>
+    /// <declspec> ::=
+    ///   "char"
+    ///   | "short"
+    ///   | "int"
+    ///   | "long"
+    ///   | <struct-or-union-decl>
     /// ```
     fn parse_declspec(&mut self) -> Result<Type> {
         if self.current().is_keyword(Keyword::Char) {
@@ -107,9 +112,19 @@ impl<'a> Parser<'a> {
             return Ok(Type::char());
         }
 
+        if self.current().is_keyword(Keyword::Short) {
+            self.advance();
+            return Ok(Type::short());
+        }
+
         if self.current().is_keyword(Keyword::Int) {
             self.advance();
             return Ok(Type::int());
+        }
+
+        if self.current().is_keyword(Keyword::Long) {
+            self.advance();
+            return Ok(Type::long());
         }
 
         if self.current().is_keyword(Keyword::Struct) {
@@ -969,9 +984,7 @@ impl<'a> Parser<'a> {
 
         // num + num
         if lhs_ty.is_int() && rhs_ty.is_int() {
-            let mut node = Node::binary(BinaryOp::Add, lhs, rhs, offset);
-            node.ty = Some(Type::int());
-            return Ok(node);
+            return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
         if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
@@ -1002,9 +1015,7 @@ impl<'a> Parser<'a> {
 
         // num - num
         if lhs_ty.is_int() && rhs_ty.is_int() {
-            let mut node = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            node.ty = Some(Type::int());
-            return Ok(node);
+            return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
         // ptr - num
@@ -1098,26 +1109,21 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        match &mut node.kind {
-            NodeKind::Num(_) => {
-                node.ty = Some(Type::int());
-            },
+        node.ty = Some(match &mut node.kind {
+            NodeKind::Num(_) => Type::long(),
             NodeKind::FuncCall { args, .. } => {
                 for arg in args {
                     self.infer_type(arg)?;
                 }
-                node.ty = Some(Type::int());
+                Type::long()
             },
             NodeKind::Neg(expr) => {
                 self.infer_type(expr)?;
-                node.ty = Some(Type::int());
+                expr.expect_ty().clone()
             },
-            NodeKind::Var(var) => {
-                let ty = match *var {
-                    VarRef::Local(local_id) => self.locals[local_id].ty.clone(),
-                    VarRef::Global(global_id) => self.globals[global_id].ty.clone(),
-                };
-                node.ty = Some(ty);
+            NodeKind::Var(var) => match *var {
+                VarRef::Local(local_id) => self.locals[local_id].ty.clone(),
+                VarRef::Global(global_id) => self.globals[global_id].ty.clone(),
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
@@ -1129,7 +1135,7 @@ impl<'a> Parser<'a> {
                 } else {
                     pointee.clone()
                 };
-                node.ty = Some(Type::ptr(base));
+                Type::ptr(base)
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
@@ -1138,7 +1144,7 @@ impl<'a> Parser<'a> {
                         .source
                         .error_at(node.offset, "invalid pointer dereference"));
                 };
-                node.ty = Some(base.clone());
+                base.clone()
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;
@@ -1146,27 +1152,30 @@ impl<'a> Parser<'a> {
                 if lhs.expect_ty().is_array() {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
-                node.ty = lhs.ty.clone();
+                lhs.expect_ty().clone()
             },
             NodeKind::Comma { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                node.ty = rhs.ty.clone();
+                rhs.expect_ty().clone()
             },
-            NodeKind::Binary { lhs, rhs, .. } => {
+            NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                node.ty = Some(Type::int());
+                match op {
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                        lhs.expect_ty().clone()
+                    },
+                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::long(),
+                }
             },
-            NodeKind::Member { member, .. } => {
-                node.ty = Some(member.ty.clone());
-            },
+            NodeKind::Member { member, .. } => member.ty.clone(),
             NodeKind::StmtExpr(body) => {
                 if let Some(stmt) = body.last_mut()
                     && let StmtKind::Expr(expr) = &mut stmt.kind
                 {
                     self.infer_type(expr)?;
-                    node.ty = expr.ty.clone();
+                    expr.expect_ty().clone()
                 } else {
                     return Err(self.source.error_at(
                         node.offset,
@@ -1174,7 +1183,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
             },
-        }
+        });
 
         Ok(())
     }
