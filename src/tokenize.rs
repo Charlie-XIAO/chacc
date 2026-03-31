@@ -196,6 +196,7 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    /// Return an error diagnostic at the current token.
     fn error_current(&self, message: &str) -> Error {
         self.source.error_at(self.pos, message)
     }

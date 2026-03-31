@@ -70,13 +70,13 @@ impl Source {
         self.line_index.line_col(text_size(offset)).line + 1
     }
 
-    /// Format an error message rooted at the given byte offset.
+    /// Return an error diagnostic at the given offset.
     pub fn error_at(&self, offset: usize, message: &str) -> Error {
         self.diagnostic_at(offset, DiagnosticLevel::Error, message)
             .into()
     }
 
-    /// Emit a warning message rooted at the given byte offset.
+    /// Emit a warning message at the given byte offset.
     pub fn warn_at(&self, offset: usize, message: &str) {
         eprintln!(
             "{}",

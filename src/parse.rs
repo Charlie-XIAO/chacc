@@ -3,8 +3,9 @@
 //! [1]: https://en.wikipedia.org/wiki/Recursive_descent_parser
 
 use std::rc::Rc;
+use std::usize;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::ast::{
@@ -83,7 +84,7 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos + offset)
     }
 
-    /// Format an error message at the current token.
+    /// Return an error diagnostic at the current token,
     fn error_current(&self, message: &str) -> Error {
         self.source.error_at(self.current().offset, message)
     }
@@ -172,6 +173,7 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>)> {
         let mut params = Vec::new();
+        let mut param_names = FxHashSet::default();
 
         while !self.current().is_punct(")") {
             if !params.is_empty() {
@@ -179,7 +181,16 @@ impl<'a> Parser<'a> {
             }
 
             let base_ty = self.parse_declspec()?;
+            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty)?;
+
+            if !param_names.insert(declarator.name.clone()) {
+                return Err(self.source.error_at(
+                    offset,
+                    &format!("redefinition of parameter '{}'", declarator.name),
+                ));
+            }
+
             params.push(Parameter {
                 name: declarator.name,
                 ty: declarator.ty,
@@ -220,18 +231,20 @@ impl<'a> Parser<'a> {
     ///   <declspec> <declarator> ("," <declarator>)* ";"
     /// ```
     fn parse_struct_or_union_decl(&mut self, is_struct: bool) -> Result<Type> {
+        let offset = self.current().offset;
         let tag = self.current().as_ident();
 
         if let Some(tag) = tag {
-            let offset = self.current().offset;
             self.advance();
             if !self.current().is_punct("{") {
                 return self.find_tag(tag).ok_or_else(|| {
-                    let message = format!(
-                        "unknown {} type",
-                        if is_struct { "struct" } else { "union" }
-                    );
-                    self.source.error_at(offset, &message)
+                    self.source.error_at(
+                        offset,
+                        &format!(
+                            "unknown {} type",
+                            if is_struct { "struct" } else { "union" }
+                        ),
+                    )
                 });
             }
         }
@@ -264,7 +277,7 @@ impl<'a> Parser<'a> {
 
         let ty = Type::struct_or_union(is_struct, members);
         if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty.clone());
+            self.push_scope_tag(tag.to_smolstr(), ty.clone(), offset)?;
         }
         Ok(ty)
     }
@@ -347,7 +360,7 @@ impl<'a> Parser<'a> {
         let body_offset = self.current().offset;
         self.locals.clear();
         self.enter_scope();
-        let params = self.create_param_locals(declarator.params);
+        let params = self.create_param_locals(declarator.params)?;
         self.skip_punct("{")?;
         let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
         self.leave_scope();
@@ -372,6 +385,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
+            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
             if declarator.ty.is_func() {
                 return Err(self
@@ -379,7 +393,7 @@ impl<'a> Parser<'a> {
                     .error_at(declarator.offset, "expected a global variable"));
             }
 
-            self.create_global(declarator.name, declarator.ty, None);
+            self.create_global(declarator.name, declarator.ty, None, offset)?;
         }
 
         self.skip_punct(";")?;
@@ -516,8 +530,9 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
+            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
-            let local_id = self.create_local(declarator.name, declarator.ty);
+            let local_id = self.create_local(declarator.name, declarator.ty, offset)?;
 
             if !self.current().is_punct("=") {
                 continue;
@@ -787,7 +802,7 @@ impl<'a> Parser<'a> {
 
         if let Some(content) = self.current().as_str() {
             let ty = Type::array(Type::char(), content.len());
-            let global_id = self.create_anon_global(ty, content);
+            let global_id = self.create_anon_global(ty, content)?;
             self.advance();
             return Ok(Node::var(VarRef::Global(global_id), offset));
         }
@@ -830,21 +845,37 @@ impl<'a> Parser<'a> {
     }
 
     /// Push a variable into the current scope.
-    fn push_scope_var(&mut self, name: SmolStr, var: VarRef) {
-        self.scopes
+    fn push_scope_var(&mut self, name: SmolStr, var: VarRef, offset: usize) -> Result<()> {
+        if self
+            .scopes
             .last_mut()
             .expect("no scope to push variable into")
             .vars
-            .insert(name, var);
+            .insert(name.clone(), var)
+            .is_some()
+        {
+            return Err(self
+                .source
+                .error_at(offset, &format!("redefinition of variable '{name}'")));
+        }
+        Ok(())
     }
 
     /// Push a struct or union tag into the current scope.
-    fn push_scope_tag(&mut self, name: SmolStr, ty: Type) {
-        self.scopes
+    fn push_scope_tag(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<()> {
+        if self
+            .scopes
             .last_mut()
             .expect("no scope to push struct or union tag into")
             .tags
-            .insert(name, ty);
+            .insert(name.clone(), ty)
+            .is_some()
+        {
+            return Err(self
+                .source
+                .error_at(offset, &format!("redefinition of tag '{name}'")));
+        }
+        Ok(())
     }
 
     /// Find a variable by name.
@@ -868,7 +899,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, offset: usize) -> Result<usize> {
         let name = name.into();
         self.locals.push(LocalVar {
             _name: name.clone(),
@@ -878,23 +909,26 @@ impl<'a> Parser<'a> {
 
         let id = self.locals.len() - 1;
         let var = VarRef::Local(id);
-        self.push_scope_var(name, var);
-        id
+        self.push_scope_var(name, var, offset)?;
+        Ok(id)
     }
 
     /// Create local variables for function parameters.
     ///
     /// Parameters are pushed in reverse order to ensure the first parameter
     /// gets the lowest local ID.
-    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Vec<usize> {
+    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Result<Vec<usize>> {
         let mut param_ids = Vec::with_capacity(params.len());
 
         for param in params.into_iter().rev() {
-            param_ids.push(self.create_local(param.name, param.ty));
+            param_ids.push(
+                self.create_local(param.name, param.ty, usize::MAX)
+                    .expect("parameter names are not unique"),
+            );
         }
 
         param_ids.reverse();
-        param_ids
+        Ok(param_ids)
     }
 
     /// Create a new global variable.
@@ -903,7 +937,8 @@ impl<'a> Parser<'a> {
         name: impl Into<SmolStr>,
         ty: Type,
         init_data: Option<Rc<[u8]>>,
-    ) -> usize {
+        offset: usize,
+    ) -> Result<usize> {
         let name = name.into();
         self.globals.push(GlobalVar {
             name: name.clone(),
@@ -913,15 +948,15 @@ impl<'a> Parser<'a> {
 
         let id = self.globals.len() - 1;
         let var = VarRef::Global(id);
-        self.push_scope_var(name, var);
-        id
+        self.push_scope_var(name, var, offset)?;
+        Ok(id)
     }
 
     /// Create a new anonymous global variable.
-    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
+    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> Result<usize> {
         let name = format_smolstr!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
-        self.create_global(name, ty, Some(init_data))
+        self.create_global(name, ty, Some(init_data), usize::MAX)
     }
 
     /// Build an addition node with pointer scaling.
