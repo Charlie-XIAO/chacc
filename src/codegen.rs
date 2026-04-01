@@ -154,10 +154,14 @@ impl<'a> Codegen<'a> {
     fn gen_function(&mut self, function: Function) -> Result<()> {
         let Function {
             name,
-            params,
             body,
+            param_locals,
             mut locals,
         } = function;
+
+        let Some(body) = body else {
+            return Ok(());
+        };
 
         let stack_size = assign_lvar_offsets(&mut locals);
         writeln!(self.out, "  .globl {name}")?;
@@ -167,7 +171,7 @@ impl<'a> Codegen<'a> {
         writeln!(self.out, "  mov %rsp, %rbp")?;
         writeln!(self.out, "  sub ${stack_size}, %rsp")?;
 
-        for (i, param_id) in params.iter().enumerate() {
+        for (i, param_id) in param_locals.iter().enumerate() {
             let local = &locals[*param_id];
             self.store_gp(i, local.offset, local.ty.size())?;
         }

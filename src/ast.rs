@@ -17,9 +17,13 @@ pub struct Program {
 #[derive(Debug)]
 pub struct Function {
     pub name: SmolStr,
+    /// The function body.
+    ///
+    /// If this is `Some`, then this is a function definition. Otherwise, this
+    /// is a function declaration.
+    pub body: Option<Stmt>,
     /// Parameter local IDs in declaration order.
-    pub params: Vec<usize>,
-    pub body: Stmt,
+    pub param_locals: Vec<usize>,
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
 }

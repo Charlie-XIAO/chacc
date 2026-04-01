@@ -450,18 +450,28 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("expected a function"));
         }
 
+        if self.current().is_punct(";") {
+            self.advance();
+            return Ok(Function {
+                name: declarator.name,
+                body: None,
+                param_locals: Default::default(),
+                locals: Default::default(),
+            });
+        }
+
         let body_offset = self.current().offset;
         self.locals.clear();
         self.enter_scope();
-        let params = self.create_param_locals(declarator.params)?;
+        let param_locals = self.create_param_locals(declarator.params)?;
         self.skip_punct("{")?;
         let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
         self.leave_scope();
 
         Ok(Function {
             name: declarator.name,
-            params,
-            body,
+            body: Some(body),
+            param_locals,
             locals: std::mem::take(&mut self.locals),
         })
     }
