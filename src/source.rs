@@ -71,20 +71,25 @@ impl Source {
     }
 
     /// Return an error diagnostic at the given offset.
-    pub fn error_at(&self, offset: usize, message: &str) -> Error {
+    pub fn error_at(&self, offset: usize, message: impl Into<SmolStr>) -> Error {
         self.diagnostic_at(offset, DiagnosticLevel::Error, message)
             .into()
     }
 
     /// Emit a warning message at the given byte offset.
-    pub fn warn_at(&self, offset: usize, message: &str) {
+    pub fn warn_at(&self, offset: usize, message: impl Into<SmolStr>) {
         eprintln!(
             "{}",
             self.diagnostic_at(offset, DiagnosticLevel::Warning, message)
         );
     }
 
-    fn diagnostic_at(&self, offset: usize, level: DiagnosticLevel, message: &str) -> Diagnostic {
+    fn diagnostic_at(
+        &self,
+        offset: usize,
+        level: DiagnosticLevel,
+        message: impl Into<SmolStr>,
+    ) -> Diagnostic {
         let line_col = self.line_index.line_col(text_size(offset));
         let range = self
             .line_index
@@ -98,7 +103,7 @@ impl Source {
             level,
             source_name: self.file.to_smolstr(),
             source_content: self.content.clone(),
-            message: message.to_smolstr(),
+            message: message.into(),
             line: (line_col.line as usize) + 1,
             column: (line_col.col as usize) + 1,
             line_start,

@@ -88,14 +88,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Return an error diagnostic at the current token,
-    fn error_current(&self, message: &str) -> Error {
+    fn error_current(&self, message: impl Into<SmolStr>) -> Error {
         self.source.error_at(self.current().offset, message)
     }
 
     /// Assume and skip a specific punctuator.
     fn skip_punct(&mut self, expected: &str) -> Result<()> {
         if !self.current().is_punct(expected) {
-            return Err(self.error_current(&format!("expected '{expected}'")));
+            return Err(self.error_current(format_smolstr!("expected '{expected}'")));
         }
         self.advance();
         Ok(())
@@ -293,17 +293,13 @@ impl<'a> Parser<'a> {
             let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty)?;
             if declarator.ty.is_void() {
-                return Err(self.source.error_at(
-                    offset,
-                    &format!("parameter '{}' has incomplete type", declarator.name),
-                ));
+                return Err(self
+                    .source
+                    .error_at(offset, "parameter has incomplete type"));
             }
 
             if !param_names.insert(declarator.name.clone()) {
-                return Err(self.source.error_at(
-                    offset,
-                    &format!("redefinition of parameter '{}'", declarator.name),
-                ));
+                return Err(self.source.error_at(offset, "redefinition of parameter"));
             }
 
             params.push(Parameter {
@@ -355,7 +351,7 @@ impl<'a> Parser<'a> {
                 return self.find_tag(tag).ok_or_else(|| {
                     self.source.error_at(
                         offset,
-                        &format!(
+                        format_smolstr!(
                             "unknown {} type",
                             if is_struct { "struct" } else { "union" }
                         ),
@@ -979,9 +975,7 @@ impl<'a> Parser<'a> {
             .insert(name.clone(), var)
             .is_some()
         {
-            return Err(self
-                .source
-                .error_at(offset, &format!("redefinition of variable '{name}'")));
+            return Err(self.source.error_at(offset, "redefinition of variable"));
         }
         Ok(())
     }
@@ -996,9 +990,7 @@ impl<'a> Parser<'a> {
             .insert(name.clone(), ty)
             .is_some()
         {
-            return Err(self
-                .source
-                .error_at(offset, &format!("redefinition of tag '{name}'")));
+            return Err(self.source.error_at(offset, "redefinition of tag"));
         }
         Ok(())
     }

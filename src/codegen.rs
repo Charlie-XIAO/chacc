@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 
 use crate::ast::{
     BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
@@ -296,11 +296,10 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::FuncCall { name, args } => {
                 if args.len() > MAX_FUNC_PARAMS {
-                    let msg = format!(
-                        "too many arguments: expected at most {MAX_FUNC_PARAMS}, got {}",
-                        args.len()
-                    );
-                    return Err(self.source.error_at(node.offset, &msg));
+                    return Err(self.source.error_at(
+                        node.offset,
+                        format_smolstr!("too many arguments; expected at most {MAX_FUNC_PARAMS}"),
+                    ));
                 }
 
                 for arg in args {

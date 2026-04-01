@@ -2,6 +2,8 @@
 
 use std::rc::Rc;
 
+use smol_str::SmolStr;
+
 use crate::error::{Error, Result};
 use crate::source::Source;
 
@@ -214,7 +216,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Return an error diagnostic at the current token.
-    fn error_current(&self, message: &str) -> Error {
+    fn error_current(&self, message: impl Into<SmolStr>) -> Error {
         self.source.error_at(self.pos, message)
     }
 
@@ -405,10 +407,7 @@ impl<'a> Tokenizer<'a> {
             b'r' => b'\r',
             b'e' => 27, // GNU C extension for the ASCII escape character
             _ => {
-                self.source.warn_at(
-                    start,
-                    &format!("unknown escape sequence '\\{}'", first as char),
-                );
+                self.source.warn_at(start, "unknown escape sequence");
                 first
             },
         };
