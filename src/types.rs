@@ -29,6 +29,7 @@ struct TypeInner {
 /// The specific type form carried by [`Type`].
 #[derive(Debug)]
 enum TypeKind {
+    Void,
     Char,
     Short,
     Int,
@@ -55,7 +56,12 @@ impl Type {
 
     /// Construct a dummy type for parser-only use. This is **NOT** a real type!
     pub fn dummy() -> Self {
-        Self::char()
+        Self::void()
+    }
+
+    /// Construct a void type.
+    pub fn void() -> Self {
+        Self::new(TypeKind::Void, 1, 1)
     }
 
     /// Construct a character type.
@@ -153,7 +159,12 @@ impl Type {
         self.0.align
     }
 
-    /// Return whether the type is an integer data type.
+    /// Return whether the type is a void type.
+    pub fn is_void(&self) -> bool {
+        matches!(self.0.kind, TypeKind::Void)
+    }
+
+    /// Return whether the type is an integer type.
     pub fn is_int(&self) -> bool {
         matches!(
             self.0.kind,

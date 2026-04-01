@@ -448,6 +448,8 @@ fn test_variable() {
     f.assert(3, "({ char *x[3]; char y; x[0]=&y; y=3; x[0][0]; })");
     f.assert(4, "({ char x[3]; char (*y)[3]=x; y[0][0]=4; y[0][0]; })");
 
+    f.line("{ void *x; }");
+
     f.finish();
     f.run("variable");
 }

@@ -161,13 +161,19 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <declspec> ::=
-    ///   "char"
+    ///   "void"
+    ///   | "char"
     ///   | "short"
     ///   | "int"
     ///   | "long"
     ///   | <struct-or-union-decl>
     /// ```
     fn parse_declspec(&mut self) -> Result<Type> {
+        if self.current().is_keyword(Keyword::Void) {
+            self.advance();
+            return Ok(Type::void());
+        }
+
         if self.current().is_keyword(Keyword::Char) {
             self.advance();
             return Ok(Type::char());
@@ -286,6 +292,12 @@ impl<'a> Parser<'a> {
             let base_ty = self.parse_declspec()?;
             let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty)?;
+            if declarator.ty.is_void() {
+                return Err(self.source.error_at(
+                    offset,
+                    &format!("parameter '{}' has incomplete type", declarator.name),
+                ));
+            }
 
             if !param_names.insert(declarator.name.clone()) {
                 return Err(self.source.error_at(
@@ -366,6 +378,11 @@ impl<'a> Parser<'a> {
                 first = false;
 
                 let declarator = self.parse_declarator(base_ty.clone())?;
+                if declarator.ty.is_void() {
+                    return Err(self
+                        .source
+                        .error_at(declarator.offset, "field declared void"));
+                }
                 members.push(Member {
                     name: declarator.name,
                     ty: declarator.ty,
@@ -636,6 +653,9 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
+            if declarator.ty.is_void() {
+                return Err(self.source.error_at(offset, "variable declared void"));
+            }
             let local_id = self.create_local(declarator.name, declarator.ty, offset)?;
 
             if !self.current().is_punct("=") {
@@ -1240,6 +1260,11 @@ impl<'a> Parser<'a> {
                         .source
                         .error_at(node.offset, "invalid pointer dereference"));
                 };
+                if base.is_void() {
+                    return Err(self
+                        .source
+                        .error_at(node.offset, "dereferencing a void pointer"));
+                }
                 base.clone()
             },
             NodeKind::Assign { lhs, rhs } => {
