@@ -160,7 +160,8 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declspec> ::=
+    /// <declspec> ::= <single-declspec>+
+    /// <single-declspec> ::=
     ///   "void"
     ///   | "char"
     ///   | "short"
@@ -168,48 +169,81 @@ impl<'a> Parser<'a> {
     ///   | "long"
     ///   | <struct-or-union-decl>
     /// ```
+    ///
+    /// As per C language specification, type specifiers are order-insensitive,
+    /// but only certain combinations are legal.
     fn parse_declspec(&mut self) -> Result<Type> {
-        if self.current().is_keyword(Keyword::Void) {
-            self.advance();
-            return Ok(Type::void());
+        enum BaseType {
+            Void,
+            Char,
+            Short,
+            Int,
+            Long,
+            Other(Type),
         }
 
-        if self.current().is_keyword(Keyword::Char) {
+        let mut ty = None;
+        let mut long_count = 0;
+
+        while self.current().is_typename_keyword() {
+            let offset = self.current().offset;
+            let keyword = self.current().as_keyword().unwrap();
             self.advance();
-            return Ok(Type::char());
+
+            macro_rules! bail_multiple_types {
+                () => {
+                    return Err(self
+                        .source
+                        .error_at(offset, "multiple types in declaration specifiers"))
+                };
+            }
+
+            match keyword {
+                Keyword::Void => match ty {
+                    None => ty = Some(BaseType::Void),
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Char => match ty {
+                    None => ty = Some(BaseType::Char),
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Short => match ty {
+                    None | Some(BaseType::Int) => ty = Some(BaseType::Short),
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Int => match ty {
+                    None => ty = Some(BaseType::Int),
+                    Some(BaseType::Short | BaseType::Long) => {},
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Long => match ty {
+                    None | Some(BaseType::Int) | Some(BaseType::Long) if long_count < 2 => {
+                        ty = Some(BaseType::Long);
+                        long_count += 1;
+                    },
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Struct | Keyword::Union => match ty {
+                    None => {
+                        let decl_ty =
+                            self.parse_struct_or_union_decl(keyword == Keyword::Struct)?;
+                        ty = Some(BaseType::Other(decl_ty));
+                    },
+                    _ => bail_multiple_types!(),
+                },
+                _ => unreachable!("all typename keywords should have been handled"),
+            }
         }
 
-        if self.current().is_keyword(Keyword::Short) {
-            self.advance();
-            return Ok(Type::short());
-        }
-
-        if self.current().is_keyword(Keyword::Int) {
-            self.advance();
-            return Ok(Type::int());
-        }
-
-        if self.current().is_keyword(Keyword::Long) {
-            self.advance();
-            return Ok(Type::long());
-        }
-
-        if self.current().is_keyword(Keyword::Struct) {
-            self.advance();
-            return self.parse_struct_or_union_decl(true);
-        }
-
-        if self.current().is_keyword(Keyword::Union) {
-            self.advance();
-            return self.parse_struct_or_union_decl(false);
-        }
-
-        debug_assert!(
-            !self.current().is_typename_keyword(),
-            "all typenames should have been handled, but {:?} is not",
-            self.current()
-        );
-        Err(self.error_current("expected a typename"))
+        Ok(match ty {
+            Some(BaseType::Void) => Type::void(),
+            Some(BaseType::Char) => Type::char(),
+            Some(BaseType::Short) => Type::short(),
+            Some(BaseType::Int) => Type::int(),
+            Some(BaseType::Long) => Type::long(),
+            Some(BaseType::Other(ty)) => ty,
+            None => return Err(self.error_current("expected a typename")),
+        })
     }
 
     /// ```bnf

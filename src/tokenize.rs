@@ -169,6 +169,14 @@ impl<'a> Token<'a> {
         )
     }
 
+    /// Return the keyword if this is a keyword token.
+    pub fn as_keyword(&self) -> Option<Keyword> {
+        match self.kind {
+            TokenKind::Keyword(keyword) => Some(keyword),
+            _ => None,
+        }
+    }
+
     /// Return the lexeme if this is an identifier token.
     pub fn as_ident(&self) -> Option<&'a str> {
         match self.kind {

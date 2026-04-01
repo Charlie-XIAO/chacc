@@ -184,6 +184,25 @@ fn test_control() {
 
 #[rustfmt::skip]
 #[test]
+fn test_decl() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(1, "({ char x; sizeof(x); })");
+    f.assert(2, "({ short int x; sizeof(x); })");
+    f.assert(2, "({ int short x; sizeof(x); })");
+    f.assert(4, "({ int x; sizeof(x); })");
+    f.assert(8, "({ long int x; sizeof(x); })");
+    f.assert(8, "({ int long x; sizeof(x); })");
+
+    f.assert(8, "({ long long x; sizeof(x); })");
+
+    f.finish();
+    f.run("decl");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_function() {
     let mut f = Fixture::new();
     f.line("int ret3() { return 3; return 5; }");
