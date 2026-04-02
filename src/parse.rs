@@ -36,10 +36,27 @@ struct Declarator {
     params: Vec<Parameter>,
 }
 
-/// A stack of variable scopes.
+/// A declaration specifier.
+struct Declspec {
+    ty: Type,
+    is_typedef: bool,
+}
+
+/// A local/global variable or typedef.
+///
+/// Note that these are in the same namespace as per C specification, e.g., a
+/// typedef and a local variable with the same name in the same scope frame will
+/// be considered as a redeclaration error.
+#[derive(Debug, Clone)]
+enum VarScopeEntry {
+    Var(VarRef),
+    Typedef(Type),
+}
+
+/// A scope frame.
 #[derive(Debug, Default)]
 struct ScopeFrame {
-    vars: FxHashMap<SmolStr, VarRef>,
+    vars: FxHashMap<SmolStr, VarScopeEntry>,
     /// Struct or union tags.
     tags: FxHashMap<SmolStr, Type>,
 }
@@ -87,7 +104,7 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos + offset)
     }
 
-    /// Return an error diagnostic at the current token,
+    /// Return an error diagnostic at the current token.
     fn error_current(&self, message: impl Into<SmolStr>) -> Error {
         self.source.error_at(self.current().offset, message)
     }
@@ -99,6 +116,17 @@ impl<'a> Parser<'a> {
         }
         self.advance();
         Ok(())
+    }
+
+    /// Return whether the current token can be interpreted as a typename.
+    fn at_typename(&self) -> bool {
+        if self.current().is_typename_keyword() {
+            return true;
+        }
+        let Some(name) = self.current().as_ident() else {
+            return false;
+        };
+        self.find_typedef(name).is_some()
     }
 
     /// Run a parser operation speculatively.
@@ -160,20 +188,22 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declspec> ::= <single-declspec>+
-    /// <single-declspec> ::=
-    ///   "void"
+    /// <declspec> ::= <declspec-atom>+
+    /// <declspec-atom> ::=
+    ///   "typedef"
+    ///   | "void"
     ///   | "char"
     ///   | "short"
     ///   | "int"
     ///   | "long"
     ///   | <struct-or-union-decl>
+    ///   | <typedef-name>
     /// ```
     ///
     /// As per C language specification, type specifiers are order-insensitive,
     /// but only certain combinations are legal.
-    fn parse_declspec(&mut self) -> Result<Type> {
-        enum BaseType {
+    fn parse_declspec(&mut self) -> Result<Declspec> {
+        enum TypeSpec {
             Void,
             Char,
             Short,
@@ -182,12 +212,23 @@ impl<'a> Parser<'a> {
             Other(Type),
         }
 
-        let mut ty = None;
+        let mut spec = None;
         let mut long_count = 0;
-
-        while self.current().is_typename_keyword() {
+        let mut is_typedef = false;
+        while self.at_typename() {
             let offset = self.current().offset;
-            let keyword = self.current().as_keyword().unwrap();
+            let keyword = self.current().as_keyword();
+            let ident = self.current().as_ident();
+            let typedef_ty = ident.and_then(|ident| self.find_typedef(ident));
+
+            if spec.is_some() && typedef_ty.is_some() {
+                // There is already a type specifier, so another ident, even if
+                // it can be interpreted as a typedef name, we should not treat
+                // it as part of the declspec but rather break before advance to
+                // let other parsing logic handle it
+                break;
+            }
+
             self.advance();
 
             macro_rules! bail_multiple_types {
@@ -199,51 +240,61 @@ impl<'a> Parser<'a> {
             }
 
             match keyword {
-                Keyword::Void => match ty {
-                    None => ty = Some(BaseType::Void),
+                Some(Keyword::Typedef) => is_typedef = true,
+                Some(Keyword::Void) => match spec {
+                    None => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
                 },
-                Keyword::Char => match ty {
-                    None => ty = Some(BaseType::Char),
+                Some(Keyword::Char) => match spec {
+                    None => spec = Some(TypeSpec::Char),
                     _ => bail_multiple_types!(),
                 },
-                Keyword::Short => match ty {
-                    None | Some(BaseType::Int) => ty = Some(BaseType::Short),
+                Some(Keyword::Short) => match spec {
+                    None | Some(TypeSpec::Int) => spec = Some(TypeSpec::Short),
                     _ => bail_multiple_types!(),
                 },
-                Keyword::Int => match ty {
-                    None => ty = Some(BaseType::Int),
-                    Some(BaseType::Short | BaseType::Long) => {},
+                Some(Keyword::Int) => match spec {
+                    None => spec = Some(TypeSpec::Int),
+                    Some(TypeSpec::Short | TypeSpec::Long) => {},
                     _ => bail_multiple_types!(),
                 },
-                Keyword::Long => match ty {
-                    None | Some(BaseType::Int) | Some(BaseType::Long) if long_count < 2 => {
-                        ty = Some(BaseType::Long);
+                Some(Keyword::Long) => match spec {
+                    None | Some(TypeSpec::Int) | Some(TypeSpec::Long) if long_count < 2 => {
+                        spec = Some(TypeSpec::Long);
                         long_count += 1;
                     },
                     _ => bail_multiple_types!(),
                 },
-                Keyword::Struct | Keyword::Union => match ty {
-                    None => {
-                        let decl_ty =
-                            self.parse_struct_or_union_decl(keyword == Keyword::Struct)?;
-                        ty = Some(BaseType::Other(decl_ty));
-                    },
+                Some(Keyword::Struct) => match spec {
+                    None => spec = Some(TypeSpec::Other(self.parse_struct_or_union_decl(true)?)),
                     _ => bail_multiple_types!(),
                 },
-                _ => unreachable!("all typename keywords should have been handled"),
+                Some(Keyword::Union) => match spec {
+                    None => spec = Some(TypeSpec::Other(self.parse_struct_or_union_decl(false)?)),
+                    _ => bail_multiple_types!(),
+                },
+                _ => match typedef_ty {
+                    Some(ty) if spec.is_none() => spec = Some(TypeSpec::Other(ty)),
+                    Some(_) => unreachable!(), // Early breaked
+                    None => unreachable!("all typename tokens should have been handled"),
+                },
             }
         }
 
-        Ok(match ty {
-            Some(BaseType::Void) => Type::void(),
-            Some(BaseType::Char) => Type::char(),
-            Some(BaseType::Short) => Type::short(),
-            Some(BaseType::Int) => Type::int(),
-            Some(BaseType::Long) => Type::long(),
-            Some(BaseType::Other(ty)) => ty,
+        let ty = match spec {
+            Some(TypeSpec::Void) => Type::void(),
+            Some(TypeSpec::Char) => Type::char(),
+            Some(TypeSpec::Short) => Type::short(),
+            Some(TypeSpec::Int) => Type::int(),
+            Some(TypeSpec::Long) => Type::long(),
+            Some(TypeSpec::Other(ty)) => ty,
+            None if is_typedef => {
+                return Err(self.error_current("missing type specifier in typedef"));
+            },
             None => return Err(self.error_current("expected a typename")),
-        })
+        };
+
+        Ok(Declspec { ty, is_typedef })
     }
 
     /// ```bnf
@@ -323,9 +374,16 @@ impl<'a> Parser<'a> {
                 self.skip_punct(",")?;
             }
 
-            let base_ty = self.parse_declspec()?;
             let offset = self.current().offset;
-            let declarator = self.parse_declarator(base_ty)?;
+            let declspec = self.parse_declspec()?;
+            if declspec.is_typedef {
+                return Err(self
+                    .source
+                    .error_at(offset, "typedef is not allowed in parameter declaration"));
+            }
+
+            let offset = self.current().offset;
+            let declarator = self.parse_declarator(declspec.ty)?;
             if declarator.ty.is_void() {
                 return Err(self
                     .source
@@ -379,17 +437,14 @@ impl<'a> Parser<'a> {
         let offset = self.current().offset;
         let tag = self.current().as_ident();
 
+        let repr = || if is_struct { "struct" } else { "union" };
+
         if let Some(tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
                 return self.find_tag(tag).ok_or_else(|| {
-                    self.source.error_at(
-                        offset,
-                        format_smolstr!(
-                            "unknown {} type",
-                            if is_struct { "struct" } else { "union" }
-                        ),
-                    )
+                    self.source
+                        .error_at(offset, format_smolstr!("unknown {} type", repr()))
                 });
             }
         }
@@ -398,7 +453,14 @@ impl<'a> Parser<'a> {
 
         let mut members = Vec::new();
         while !self.current().is_punct("}") {
-            let base_ty = self.parse_declspec()?;
+            let offset = self.current().offset;
+            let declspec = self.parse_declspec()?;
+            if declspec.is_typedef {
+                return Err(self.source.error_at(
+                    offset,
+                    format_smolstr!("typedef is not allowed in {} member declaration", repr()),
+                ));
+            }
 
             let mut first = true;
             while !self.current().is_punct(";") {
@@ -407,7 +469,7 @@ impl<'a> Parser<'a> {
                 }
                 first = false;
 
-                let declarator = self.parse_declarator(base_ty.clone())?;
+                let declarator = self.parse_declarator(declspec.ty.clone())?;
                 if declarator.ty.is_void() {
                     return Err(self
                         .source
@@ -448,21 +510,25 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <program> ::= (<function> | <global-variable>)* <eof>
+    /// <program> ::= (<typedef> | <function> | <global-variable>)* <eof>
     /// ```
     pub fn parse_program(&mut self) -> Result<Program> {
         self.disallow_speculation();
         let mut functions = Vec::new();
 
         while !self.current().is_eof() {
-            let base_ty = self.parse_declspec()?;
-
-            if self.is_function()? {
-                functions.push(self.parse_function(base_ty)?);
+            let declspec = self.parse_declspec()?;
+            if declspec.is_typedef {
+                self.parse_typedef_tail(&declspec.ty)?;
                 continue;
             }
 
-            self.parse_global_variable(base_ty)?;
+            if self.is_function()? {
+                functions.push(self.parse_function(declspec.ty)?);
+                continue;
+            }
+
+            self.parse_global_variable(declspec.ty)?;
         }
 
         Ok(Program {
@@ -634,8 +700,13 @@ impl<'a> Parser<'a> {
         self.enter_scope();
 
         while !self.current().is_punct("}") {
-            let mut stmt = if self.current().is_typename_keyword() {
-                self.parse_declaration()?
+            let mut stmt = if self.at_typename() {
+                let declspec = self.parse_declspec()?;
+                if declspec.is_typedef {
+                    self.parse_typedef_tail(&declspec.ty)?;
+                    continue;
+                }
+                self.parse_declaration(&declspec.ty)?
             } else {
                 self.parse_stmt()?
             };
@@ -669,9 +740,8 @@ impl<'a> Parser<'a> {
     ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
     /// <declarator-init> ::= <declarator> ("=" <assign>)?
     /// ```
-    fn parse_declaration(&mut self) -> Result<Stmt> {
+    fn parse_declaration(&mut self, base_ty: &Type) -> Result<Stmt> {
         let offset = self.current().offset;
-        let base_ty = self.parse_declspec()?;
         let mut stmts = Vec::new();
         let mut first = true;
 
@@ -988,6 +1058,28 @@ impl<'a> Parser<'a> {
         Ok(Node::func_call(name, args, offset))
     }
 
+    /// ```bnf
+    /// <typedef-tail> ::= <declarator> ("," <declarator>)* ";"
+    /// ```
+    fn parse_typedef_tail(&mut self, base_ty: &Type) -> Result<()> {
+        let mut first = true;
+
+        while !self.current().is_punct(";") {
+            if !first {
+                self.skip_punct(",")?;
+            }
+            first = false;
+
+            let offset = self.current().offset;
+            let declarator = self.parse_declarator(base_ty.clone())?;
+            let typedef = VarScopeEntry::Typedef(declarator.ty);
+            self.push_scope_var(declarator.name, typedef, offset)?;
+        }
+
+        self.skip_punct(";")?;
+        Ok(())
+    }
+
     /// Enter a new variable scope.
     fn enter_scope(&mut self) {
         self.scopes.push(ScopeFrame::default());
@@ -1000,16 +1092,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Push a variable into the current scope.
-    fn push_scope_var(&mut self, name: SmolStr, var: VarRef, offset: usize) -> Result<()> {
+    fn push_scope_var(&mut self, name: SmolStr, var: VarScopeEntry, offset: usize) -> Result<()> {
         if self
             .scopes
             .last_mut()
             .expect("no scope to push variable into")
             .vars
-            .insert(name.clone(), var)
+            .insert(name, var)
             .is_some()
         {
-            return Err(self.source.error_at(offset, "redefinition of variable"));
+            return Err(self.source.error_at(offset, "redeclaration of variable"));
         }
         Ok(())
     }
@@ -1021,7 +1113,7 @@ impl<'a> Parser<'a> {
             .last_mut()
             .expect("no scope to push struct or union tag into")
             .tags
-            .insert(name.clone(), ty)
+            .insert(name, ty)
             .is_some()
         {
             return Err(self.source.error_at(offset, "redefinition of tag"));
@@ -1032,8 +1124,24 @@ impl<'a> Parser<'a> {
     /// Find a variable by name.
     fn find_var(&self, name: &str) -> Option<VarRef> {
         for frame in self.scopes.iter().rev() {
-            if let Some(var) = frame.vars.get(name) {
-                return Some(*var);
+            if let Some(entry) = frame.vars.get(name) {
+                return match entry {
+                    VarScopeEntry::Var(var) => Some(*var),
+                    VarScopeEntry::Typedef(_) => None,
+                };
+            }
+        }
+        None
+    }
+
+    /// Find a typedef by name.
+    fn find_typedef(&self, name: &str) -> Option<Type> {
+        for frame in self.scopes.iter().rev() {
+            if let Some(entry) = frame.vars.get(name) {
+                return match entry {
+                    VarScopeEntry::Var(_) => None,
+                    VarScopeEntry::Typedef(ty) => Some(ty.clone()),
+                };
             }
         }
         None
@@ -1061,7 +1169,7 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.locals.len() - 1;
-        let var = VarRef::Local(id);
+        let var = VarScopeEntry::Var(VarRef::Local(id));
         self.push_scope_var(name, var, offset)?;
         Ok(id)
     }
@@ -1102,7 +1210,7 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.globals.len() - 1;
-        let var = VarRef::Global(id);
+        let var = VarScopeEntry::Var(VarRef::Global(id));
         self.push_scope_var(name, var, offset)?;
         Ok(id)
     }

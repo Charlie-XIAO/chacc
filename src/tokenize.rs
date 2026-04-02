@@ -23,6 +23,7 @@ pub enum Keyword {
     Sizeof,
     Struct,
     Union,
+    Typedef,
 }
 
 impl std::fmt::Display for Keyword {
@@ -41,6 +42,7 @@ impl std::fmt::Display for Keyword {
             Self::Sizeof => "sizeof",
             Self::Struct => "struct",
             Self::Union => "union",
+            Self::Typedef => "typedef",
         };
         write!(f, "{s}")
     }
@@ -64,6 +66,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "sizeof" => Ok(Self::Sizeof),
             "struct" => Ok(Self::Struct),
             "union" => Ok(Self::Union),
+            "typedef" => Ok(Self::Typedef),
             _ => Err(()),
         }
     }
@@ -165,6 +168,7 @@ impl<'a> Token<'a> {
                     | Keyword::Long
                     | Keyword::Struct
                     | Keyword::Union
+                    | Keyword::Typedef
             )
         )
     }

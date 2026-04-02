@@ -384,6 +384,24 @@ fn test_struct() {
 
 #[rustfmt::skip]
 #[test]
+fn test_typedef() {
+    let mut f = Fixture::new();
+    f.line("typedef int MyInt, MyInt2[4];");
+    f.line("typedef int;");
+    f.main();
+
+    f.assert(1, "({ typedef int t; t x=1; x; })");
+    f.assert(1, "({ typedef struct {int a;} t; t x; x.a=1; x.a; })");
+    f.assert(2, "({ typedef struct {int a;} t; { typedef int t; } t x; x.a=2; x.a; })");
+    f.assert(3, "({ MyInt x=3; x; })");
+    f.assert(16," ({ MyInt2 x; sizeof(x); })");
+
+    f.finish();
+    f.run("typedef");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_union() {
     let mut f = Fixture::new();
     f.main();
