@@ -283,6 +283,33 @@ fn test_pointer() {
     f.run("pointer");
 }
 
+#[test]
+fn test_sizeof() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(1, "sizeof(char)");
+    f.assert(2, "sizeof(short)");
+    f.assert(2, "sizeof(short int)");
+    f.assert(2, "sizeof(int short)");
+    f.assert(4, "sizeof(int)");
+    f.assert(8, "sizeof(long)");
+    f.assert(8, "sizeof(long int)");
+    f.assert(8, "sizeof(long int)");
+    f.assert(8, "sizeof(char *)");
+    f.assert(8, "sizeof(int *)");
+    f.assert(8, "sizeof(long *)");
+    f.assert(8, "sizeof(int **)");
+    f.assert(8, "sizeof(int(*)[4])");
+    f.assert(32, "sizeof(int*[4])");
+    f.assert(16, "sizeof(int[4])");
+    f.assert(48, "sizeof(int[3][4])");
+    f.assert(8, "sizeof(struct {int a; int b;})");
+
+    f.finish();
+    f.run("sizeof");
+}
+
 #[rustfmt::skip]
 #[test]
 fn test_string() {

@@ -349,6 +349,55 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
+    /// <abstract-declarator> ::=
+    ///   "*"* ("(" <abstract-declarator> ")")? <type-suffix>
+    /// ```
+    fn parse_abstract_declarator(&mut self, mut ty: Type) -> Result<Type> {
+        while self.current().is_punct("*") {
+            self.advance();
+            ty = Type::ptr(ty);
+        }
+
+        // The following part of logic is analogous to "parse_declarator"
+        if self.current().is_punct("(") {
+            self.advance();
+            let inner_pos = self.pos;
+
+            let (_, next_pos) = self.speculate(|parser| {
+                parser.parse_abstract_declarator(Type::dummy())?;
+                parser.skip_punct(")")?;
+                Ok(())
+            })?;
+
+            self.pos = next_pos;
+            let (ty, _) = self.parse_type_suffix(ty)?;
+            let next_pos = self.pos;
+
+            self.pos = inner_pos;
+            let ty = self.parse_abstract_declarator(ty)?;
+            self.pos = next_pos;
+            return Ok(ty);
+        }
+
+        let (ty, _) = self.parse_type_suffix(ty)?;
+        Ok(ty)
+    }
+
+    /// ```bnf
+    /// <typename> ::= <declspec> <abstract-declarator>
+    /// ```
+    fn parse_typename(&mut self) -> Result<Type> {
+        let offset = self.current().offset;
+        let declspec = self.parse_declspec()?;
+        if declspec.is_typedef {
+            return Err(self
+                .source
+                .error_at(offset, "typedef is not allowed as typename"));
+        }
+        self.parse_abstract_declarator(declspec.ty)
+    }
+
+    /// ```bnf
     /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
     /// ```
     fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>)> {
@@ -979,6 +1028,7 @@ impl<'a> Parser<'a> {
     /// <primary> ::=
     ///   "(" "{" <compound-stmt> ")"
     ///   | "(" <expr> ")"
+    ///   | "sizeof" "(" <typename> ")"
     ///   | "sizeof" <unary>
     ///   | <func-call>
     ///   | <ident>
@@ -1005,6 +1055,20 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Sizeof) {
             self.advance();
+
+            if self.current().is_punct("(") {
+                let pos = self.pos;
+                self.advance();
+
+                if self.at_typename() {
+                    let ty = self.parse_typename()?;
+                    self.skip_punct(")")?;
+                    return Ok(Node::num(ty.size(), offset));
+                } else {
+                    self.pos = pos;
+                }
+            }
+
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = operand.expect_ty().size();
