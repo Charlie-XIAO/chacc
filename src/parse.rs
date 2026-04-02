@@ -489,7 +489,7 @@ impl<'a> Parser<'a> {
 
         let ty = Type::struct_or_union(is_struct, members);
         if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty.clone(), offset)?;
+            self.push_scope_tag(tag.to_smolstr(), ty.clone());
         }
         Ok(ty)
     }
@@ -602,7 +602,6 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
             if declarator.ty.is_func() {
                 return Err(self
@@ -610,7 +609,7 @@ impl<'a> Parser<'a> {
                     .error_at(declarator.offset, "expected a global variable"));
             }
 
-            self.create_global(declarator.name, declarator.ty, None, offset)?;
+            self.create_global(declarator.name, declarator.ty, None)?;
         }
 
         self.skip_punct(";")?;
@@ -756,7 +755,7 @@ impl<'a> Parser<'a> {
             if declarator.ty.is_void() {
                 return Err(self.source.error_at(offset, "variable declared void"));
             }
-            let local_id = self.create_local(declarator.name, declarator.ty, offset)?;
+            let local_id = self.create_local(declarator.name, declarator.ty)?;
 
             if !self.current().is_punct("=") {
                 continue;
@@ -1070,10 +1069,9 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
             let typedef = VarScopeEntry::Typedef(declarator.ty);
-            self.push_scope_var(declarator.name, typedef, offset)?;
+            self.push_scope_var(declarator.name, typedef);
         }
 
         self.skip_punct(";")?;
@@ -1092,33 +1090,21 @@ impl<'a> Parser<'a> {
     }
 
     /// Push a variable into the current scope.
-    fn push_scope_var(&mut self, name: SmolStr, var: VarScopeEntry, offset: usize) -> Result<()> {
-        if self
-            .scopes
+    fn push_scope_var(&mut self, name: SmolStr, var: VarScopeEntry) {
+        self.scopes
             .last_mut()
             .expect("no scope to push variable into")
             .vars
-            .insert(name, var)
-            .is_some()
-        {
-            return Err(self.source.error_at(offset, "redeclaration of variable"));
-        }
-        Ok(())
+            .insert(name, var);
     }
 
     /// Push a struct or union tag into the current scope.
-    fn push_scope_tag(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<()> {
-        if self
-            .scopes
+    fn push_scope_tag(&mut self, name: SmolStr, ty: Type) {
+        self.scopes
             .last_mut()
             .expect("no scope to push struct or union tag into")
             .tags
-            .insert(name, ty)
-            .is_some()
-        {
-            return Err(self.source.error_at(offset, "redefinition of tag"));
-        }
-        Ok(())
+            .insert(name, ty);
     }
 
     /// Find a variable by name.
@@ -1158,7 +1144,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, offset: usize) -> Result<usize> {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> Result<usize> {
         self.disallow_speculation();
 
         let name = name.into();
@@ -1170,7 +1156,7 @@ impl<'a> Parser<'a> {
 
         let id = self.locals.len() - 1;
         let var = VarScopeEntry::Var(VarRef::Local(id));
-        self.push_scope_var(name, var, offset)?;
+        self.push_scope_var(name, var);
         Ok(id)
     }
 
@@ -1183,7 +1169,7 @@ impl<'a> Parser<'a> {
 
         for param in params.into_iter().rev() {
             param_ids.push(
-                self.create_local(param.name, param.ty, usize::MAX)
+                self.create_local(param.name, param.ty)
                     .expect("parameter names are not unique"),
             );
         }
@@ -1198,7 +1184,6 @@ impl<'a> Parser<'a> {
         name: impl Into<SmolStr>,
         ty: Type,
         init_data: Option<Rc<[u8]>>,
-        offset: usize,
     ) -> Result<usize> {
         self.disallow_speculation();
 
@@ -1211,7 +1196,7 @@ impl<'a> Parser<'a> {
 
         let id = self.globals.len() - 1;
         let var = VarScopeEntry::Var(VarRef::Global(id));
-        self.push_scope_var(name, var, offset)?;
+        self.push_scope_var(name, var);
         Ok(id)
     }
 
@@ -1221,7 +1206,7 @@ impl<'a> Parser<'a> {
 
         let name = format_smolstr!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
-        self.create_global(name, ty, Some(init_data), usize::MAX)
+        self.create_global(name, ty, Some(init_data))
     }
 
     /// Build an addition node with pointer scaling.
