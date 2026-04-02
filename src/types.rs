@@ -15,6 +15,14 @@ pub struct Member {
     pub offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeId {
+    I8,
+    I16,
+    I32,
+    I64,
+}
+
 /// Expression types used for semantic analysis.
 #[derive(Clone, Debug)]
 pub struct Type(Rc<TypeInner>);
@@ -196,6 +204,20 @@ impl Type {
         match &self.0.kind {
             TypeKind::StructOrUnion { members, .. } => Some(members),
             _ => None,
+        }
+    }
+}
+
+impl TryFrom<&Type> for TypeId {
+    type Error = ();
+
+    fn try_from(ty: &Type) -> Result<Self, Self::Error> {
+        match ty.0.kind {
+            TypeKind::Char => Ok(TypeId::I8),
+            TypeKind::Short => Ok(TypeId::I16),
+            TypeKind::Int => Ok(TypeId::I32),
+            TypeKind::Long => Ok(TypeId::I64),
+            _ => Err(()),
         }
     }
 }

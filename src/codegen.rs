@@ -11,7 +11,7 @@ use crate::ast::{
 };
 use crate::error::Result;
 use crate::source::Source;
-use crate::types::Type;
+use crate::types::{Type, TypeId};
 use crate::utils::{MAX_FUNC_PARAMS, align_to};
 
 const GP_ARG_REGS_8: [&str; MAX_FUNC_PARAMS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
@@ -288,7 +288,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Emit the address of an lvalue expression into `%rax`.
+    /// Generate the address of an lvalue expression into `%rax`.
     fn gen_addr(&mut self, node: &Node) -> Result<()> {
         match &node.kind {
             NodeKind::Var(var) => match var {
@@ -318,7 +318,35 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Emit assembly for the given expression node.
+    /// Generate assembly for a type cast.
+    fn gen_cast(&mut self, from: &Type, to: &Type) -> Result<()> {
+        if to.is_void() {
+            return Ok(());
+        }
+        let Ok(from) = TypeId::try_from(from) else {
+            return Ok(());
+        };
+        let Ok(to) = TypeId::try_from(to) else {
+            return Ok(());
+        };
+
+        use TypeId::*;
+
+        match (from, to) {
+            (I8, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
+            (I16, I8) => writeln!(self.out, "movsbl %al, %eax")?,
+            (I16, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
+            (I32, I8) => writeln!(self.out, "movsbl %al, %eax")?,
+            (I32, I16) => writeln!(self.out, "movswl %ax, %eax")?,
+            (I32, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
+            (I64, I8) => writeln!(self.out, "movsbl %al, %eax")?,
+            (I64, I16) => writeln!(self.out, "movswl %ax, %eax")?,
+            _ => {},
+        }
+        Ok(())
+    }
+
+    /// Generate assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
         writeln!(self.out, "  .loc 1 {}", self.source.line_no(node.offset))?;
 
@@ -414,6 +442,10 @@ impl<'a> Codegen<'a> {
                 for stmt in body {
                     self.gen_stmt(stmt)?;
                 }
+            },
+            NodeKind::Cast(expr) => {
+                self.gen_expr(expr)?;
+                self.gen_cast(expr.expect_ty(), node.expect_ty())?;
             },
         }
 

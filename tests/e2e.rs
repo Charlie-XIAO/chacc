@@ -156,6 +156,26 @@ fn test_arith() {
 
 #[rustfmt::skip]
 #[test]
+fn test_cast() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(131585, "(int)8590066177");
+    f.assert(513, "(short)8590066177");
+    f.assert(1, "(char)8590066177");
+    f.assert(1, "(long)1");
+    f.assert(0, "(long)&*(int *)0");
+    f.assert(513, "({ int x=512; *(char *)&x=1; x; })");
+    f.assert(5, "({ int x=5; long y=(long)&x; *(int*)y; })");
+
+    f.line("(void)1;");
+
+    f.finish();
+    f.run("cast");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_control() {
     let mut f = Fixture::new();
     f.line("/*");

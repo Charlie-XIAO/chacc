@@ -932,23 +932,23 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <mul> ::= <unary> ("*" <unary> | "/" <unary>)*
+    /// <mul> ::= <cast> ("*" <cast> | "/" <cast>)*
     /// ```
     fn parse_mul(&mut self) -> Result<Node> {
-        let mut node = self.parse_unary()?;
+        let mut node = self.parse_cast()?;
 
         loop {
             if self.current().is_punct("*") {
                 let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Mul, node, self.parse_unary()?, offset);
+                node = Node::binary(BinaryOp::Mul, node, self.parse_cast()?, offset);
                 continue;
             }
 
             if self.current().is_punct("/") {
                 let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Div, node, self.parse_unary()?, offset);
+                node = Node::binary(BinaryOp::Div, node, self.parse_cast()?, offset);
                 continue;
             }
 
@@ -957,30 +957,56 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <unary> ::= ("+" | "-" | "*" | "&") <unary> | <postfix>
+    /// <cast> ::= "(" <typename> ")" <cast> | <unary>
+    /// ```
+    fn parse_cast(&mut self) -> Result<Node> {
+        let offset = self.current().offset;
+
+        if self.current().is_punct("(") {
+            let pos = self.pos;
+            self.advance();
+
+            if self.at_typename() {
+                let ty = self.parse_typename()?;
+                self.skip_punct(")")?;
+                let mut expr = self.parse_cast()?;
+                self.infer_type(&mut expr)?;
+                let mut node = Node::cast(expr, offset);
+                node.ty = Some(ty);
+                return Ok(node);
+            }
+
+            self.pos = pos;
+        }
+
+        self.parse_unary()
+    }
+
+    /// ```bnf
+    /// <unary> ::= ("+" | "-" | "*" | "&") <cast> | <postfix>
     /// ```
     fn parse_unary(&mut self) -> Result<Node> {
         if self.current().is_punct("+") {
             self.advance();
-            return self.parse_unary();
+            return self.parse_cast();
         }
 
         if self.current().is_punct("-") {
             let offset = self.current().offset;
             self.advance();
-            return Ok(Node::neg(self.parse_unary()?, offset));
+            return Ok(Node::neg(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("&") {
             let offset = self.current().offset;
             self.advance();
-            return Ok(Node::addr(self.parse_unary()?, offset));
+            return Ok(Node::addr(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("*") {
             let offset = self.current().offset;
             self.advance();
-            return Ok(Node::deref(self.parse_unary()?, offset));
+            return Ok(Node::deref(self.parse_cast()?, offset));
         }
 
         self.parse_postfix()
@@ -1064,9 +1090,9 @@ impl<'a> Parser<'a> {
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
                     return Ok(Node::num(ty.size(), offset));
-                } else {
-                    self.pos = pos;
                 }
+
+                self.pos = pos;
             }
 
             let mut operand = self.parse_unary()?;
@@ -1483,6 +1509,11 @@ impl<'a> Parser<'a> {
                         "statement expression returning void is not supported",
                     ));
                 }
+            },
+            NodeKind::Cast(expr) => {
+                self.infer_type(expr)?;
+                // Cast node's type is set at creation and cannot be inferred
+                return Ok(());
             },
         });
 

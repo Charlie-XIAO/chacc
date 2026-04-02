@@ -119,6 +119,8 @@ pub enum NodeKind {
     ///
     /// [1]: https://gcc.gnu.org/onlinedocs/gcc/Statement-Exprs.html
     StmtExpr(Vec<Stmt>),
+    /// A type cast.
+    Cast(Box<Node>),
 }
 
 impl Node {
@@ -234,6 +236,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::StmtExpr(stmts),
+        }
+    }
+
+    /// Construct a type cast node.
+    pub fn cast(expr: Node, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::Cast(Box::new(expr)),
         }
     }
 
