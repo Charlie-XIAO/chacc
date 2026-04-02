@@ -40,6 +40,18 @@ impl ScalarWidth {
         }
     }
 
+    /// Return the register width used for binary integer operations.
+    ///
+    /// char, short, and int are computed in 32-bit registers. long and pointers
+    /// are computed in 64-bit registers.
+    fn from_promoted_binary_type(ty: &Type) -> Self {
+        if ty.base().is_some() || ty.size() == 8 {
+            Self::Qword
+        } else {
+            Self::Dword
+        }
+    }
+
     /// Return the general-purpose argument register for this width at `index`.
     fn gp_arg_reg(&self, index: usize) -> &'static str {
         match self {
@@ -60,6 +72,16 @@ impl ScalarWidth {
         }
     }
 
+    /// Return the `%rdi`-family register for this width.
+    fn rdi_reg(&self) -> &'static str {
+        match self {
+            Self::Byte => "%dil",
+            Self::Word => "%di",
+            Self::Dword => "%edi",
+            Self::Qword => "%rdi",
+        }
+    }
+
     /// Return the mnemonic used to load a signed scalar of this width.
     fn signed_load_mnemonic(&self) -> &'static str {
         match self {
@@ -67,6 +89,16 @@ impl ScalarWidth {
             Self::Word => "movswq",
             Self::Dword => "movsxd",
             Self::Qword => "mov",
+        }
+    }
+
+    /// Return the sign-extension mnemonic used before signed division.
+    fn signed_div_extend_mnemonic(&self) -> &'static str {
+        match self {
+            Self::Byte => "cbw",
+            Self::Word => "cwd",
+            Self::Dword => "cdq",
+            Self::Qword => "cqo",
         }
     }
 }
@@ -344,31 +376,35 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(lhs)?;
                 self.pop("%rdi")?;
 
+                let width = ScalarWidth::from_promoted_binary_type(lhs.expect_ty());
+                let acc = width.acc_reg();
+                let rdi = width.rdi_reg();
+
                 match op {
-                    BinaryOp::Add => writeln!(self.out, "  add %rdi, %rax")?,
-                    BinaryOp::Sub => writeln!(self.out, "  sub %rdi, %rax")?,
-                    BinaryOp::Mul => writeln!(self.out, "  imul %rdi, %rax")?,
+                    BinaryOp::Add => writeln!(self.out, "  add {rdi}, {acc}")?,
+                    BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
+                    BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
                     BinaryOp::Div => {
-                        writeln!(self.out, "  cqo")?;
-                        writeln!(self.out, "  idiv %rdi")?;
+                        writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
+                        writeln!(self.out, "  idiv {rdi}")?;
                     },
                     BinaryOp::Eq => {
-                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  sete %al")?;
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Ne => {
-                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  setne %al")?;
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Lt => {
-                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  setl %al")?;
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Le => {
-                        writeln!(self.out, "  cmp %rdi, %rax")?;
+                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  setle %al")?;
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },

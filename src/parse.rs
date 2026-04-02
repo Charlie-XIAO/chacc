@@ -1296,11 +1296,9 @@ impl<'a> Parser<'a> {
         }
 
         // ptr + num
-        let ptr_ty = lhs.ty.clone();
         let base_size = lhs.expect_ty().base().unwrap().size();
         let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
-        let mut node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
-        node.ty = ptr_ty;
+        let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
         Ok(node)
     }
 
@@ -1321,17 +1319,16 @@ impl<'a> Parser<'a> {
         if lhs_ty.base().is_some() && rhs_ty.is_int() {
             let base_size = lhs_ty.base().unwrap().size();
             let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
-            let mut node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
-            node.ty = Some(lhs_ty);
+            let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
             return Ok(node);
         }
 
         // ptr - ptr
         if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
             let base_size = lhs_ty.base().unwrap().size();
-            let diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            let mut node = Node::binary(BinaryOp::Div, diff, Node::num(base_size, offset), offset);
-            node.ty = Some(Type::int());
+            let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
+            diff.ty = Some(Type::int());
+            let node = Node::binary(BinaryOp::Div, diff, Node::num(base_size, offset), offset);
             return Ok(node);
         }
 
