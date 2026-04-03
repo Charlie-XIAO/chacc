@@ -1,6 +1,7 @@
 set windows-shell := ["powershell"]
 set shell := ["bash", "-cu"]
 
+alias b := build
 alias f := fmt
 alias l := lint
 alias t := test
@@ -8,6 +9,9 @@ alias d := doc
 
 _default:
     just --list -u
+
+build:
+    cargo build --release
 
 fmt:
     cargo +nightly fmt

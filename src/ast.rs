@@ -221,10 +221,20 @@ impl Node {
     }
 
     /// Construct a function call node.
-    pub fn func_call(name: impl Into<SmolStr>, args: Vec<Node>, offset: usize) -> Self {
+    pub fn func_call(
+        name: impl Into<SmolStr>,
+        args: Vec<Node>,
+        return_ty: Type,
+        offset: usize,
+    ) -> Self {
+        debug_assert!(
+            args.iter().all(|arg| arg.ty.is_some()),
+            "not all children node types are set",
+        );
+
         Self {
             offset,
-            ty: None,
+            ty: Some(return_ty),
             kind: NodeKind::FuncCall {
                 name: name.into(),
                 args,
@@ -264,16 +274,19 @@ impl Node {
 
     /// Construct a type cast node.
     pub fn cast(expr: impl Into<Box<Node>>, ty: Type, offset: usize) -> Self {
+        let expr = expr.into();
+        debug_assert!(expr.ty.is_some(), "child node type is not set");
+
         Self {
             offset,
             ty: Some(ty),
-            kind: NodeKind::Cast(expr.into()),
+            kind: NodeKind::Cast(expr),
         }
     }
 
     /// Get the type of this node, expecting it to be set.
     pub fn expect_ty(&self) -> &Type {
-        self.ty.as_ref().expect("node data type is not set")
+        self.ty.as_ref().expect("node type is not set")
     }
 }
 

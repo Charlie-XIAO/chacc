@@ -1156,16 +1156,37 @@ impl<'a> Parser<'a> {
         self.advance();
         self.skip_punct("(")?;
 
+        let entity = self
+            .find_ident(name)
+            .and_then(OrdinaryIdent::as_entity)
+            .ok_or_else(|| {
+                self.source
+                    .error_at(offset, "implicit declaration of a function")
+            })?;
+
+        let EntityRef::Function(func_id) = entity else {
+            return Err(self.source.error_at(offset, "not a function"));
+        };
+
+        let return_ty = self.functions[*func_id]
+            .ty
+            .as_func()
+            .unwrap()
+            .return_ty
+            .clone();
+
         let mut args = Vec::new();
         while !self.current().is_punct(")") {
             if !args.is_empty() {
                 self.skip_punct(",")?;
             }
-            args.push(self.parse_assign()?);
+            let mut arg = self.parse_assign()?;
+            self.infer_type(&mut arg)?;
+            args.push(arg);
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(name, args, offset))
+        Ok(Node::func_call(name, args, return_ty, offset))
     }
 
     /// ```bnf
@@ -1404,7 +1425,7 @@ impl<'a> Parser<'a> {
     fn new_member_access(&self, mut node: Node) -> Result<Node> {
         self.infer_type(&mut node)?;
 
-        let members = match node.expect_ty().members() {
+        let sou = match node.expect_ty().as_struct_or_union() {
             Some(members) => members,
             None => return Err(self.error_current("not a struct or union")),
         };
@@ -1414,7 +1435,7 @@ impl<'a> Parser<'a> {
             None => return Err(self.error_current("not an ident")),
         };
 
-        let member = match members.iter().find(|member| member.name == ident) {
+        let member = match sou.members.iter().find(|member| member.name == ident) {
             Some(member) => member.clone(),
             None => return Err(self.error_current("no such member")),
         };
@@ -1539,7 +1560,7 @@ impl<'a> Parser<'a> {
                 if lhs.expect_ty().is_array() {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
-                if lhs.expect_ty().members().is_none() {
+                if lhs.expect_ty().as_struct_or_union().is_none() {
                     self.apply_cast(rhs, lhs.expect_ty().clone())?;
                 }
                 lhs.expect_ty().clone()

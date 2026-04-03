@@ -43,19 +43,28 @@ enum TypeKind {
     Short,
     Int,
     Long,
-    Ptr(Box<Type>),
-    Array {
-        base: Box<Type>,
-        _len: usize,
-    },
-    Func {
-        _return_ty: Box<Type>,
-        _params: Vec<Type>,
-    },
-    StructOrUnion {
-        _is_struct: bool,
-        members: Vec<Member>,
-    },
+    Ptr(Type),
+    Array(ArrayType),
+    Func(FuncType),
+    StructOrUnion(StructOrUnionType),
+}
+
+#[derive(Debug)]
+pub struct ArrayType {
+    pub base: Type,
+    _len: usize,
+}
+
+#[derive(Debug)]
+pub struct FuncType {
+    pub return_ty: Type,
+    _params: Vec<Type>,
+}
+
+#[derive(Debug)]
+pub struct StructOrUnionType {
+    _is_struct: bool,
+    pub members: Vec<Member>,
 }
 
 impl Type {
@@ -90,16 +99,16 @@ impl Type {
 
     /// Construct a pointer type to the given base type.
     pub fn ptr(base: Type) -> Self {
-        Self::new(TypeKind::Ptr(Box::new(base)), 8, 8)
+        Self::new(TypeKind::Ptr(base), 8, 8)
     }
 
     /// Construct a function type with the given return type and parameters.
     pub fn func(return_ty: Type, params: Vec<Type>) -> Self {
         Self::new(
-            TypeKind::Func {
-                _return_ty: Box::new(return_ty),
+            TypeKind::Func(FuncType {
+                return_ty,
                 _params: params,
-            },
+            }),
             0, // Not applicable
             0, // Not applicable
         )
@@ -109,14 +118,7 @@ impl Type {
     pub fn array(base: Type, len: usize) -> Self {
         let size = base.size() * (len as i64);
         let align = base.align();
-        Self::new(
-            TypeKind::Array {
-                base: Box::new(base),
-                _len: len,
-            },
-            size,
-            align,
-        )
+        Self::new(TypeKind::Array(ArrayType { base, _len: len }), size, align)
     }
 
     /// Construct a struct or union type with the given members.
@@ -144,10 +146,10 @@ impl Type {
 
         let size = align_to(offset, align); // Trailing padding
         Self::new(
-            TypeKind::StructOrUnion {
+            TypeKind::StructOrUnion(StructOrUnionType {
                 _is_struct: is_struct,
                 members,
-            },
+            }),
             size,
             align,
         )
@@ -186,19 +188,27 @@ impl Type {
         matches!(self.0.kind, TypeKind::Array { .. })
     }
 
-    /// Return the base type for arrays and pointers.
-    pub fn base(&self) -> Option<&Type> {
+    /// Return the function type if it is one.
+    pub fn as_func(&self) -> Option<&FuncType> {
         match &self.0.kind {
-            TypeKind::Ptr(base) => Some(base),
-            TypeKind::Array { base, .. } => Some(base),
+            TypeKind::Func(func) => Some(func),
             _ => None,
         }
     }
 
-    /// Return the members of the struct type.
-    pub fn members(&self) -> Option<&[Member]> {
+    /// Return the struct or union type if it is one.
+    pub fn as_struct_or_union(&self) -> Option<&StructOrUnionType> {
         match &self.0.kind {
-            TypeKind::StructOrUnion { members, .. } => Some(members),
+            TypeKind::StructOrUnion(sou) => Some(sou),
+            _ => None,
+        }
+    }
+
+    /// Return the base type for arrays and pointers.
+    pub fn base(&self) -> Option<&Type> {
+        match &self.0.kind {
+            TypeKind::Ptr(base) => Some(base),
+            TypeKind::Array(ArrayType { base, .. }) => Some(base),
             _ => None,
         }
     }
