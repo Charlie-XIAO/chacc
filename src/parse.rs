@@ -79,9 +79,12 @@ pub struct Parser<'a> {
     source: &'a Source,
     tokens: Vec<Token<'a>>,
     pos: usize,
+
     // Mutable states
     locals: Vec<LocalVar>,
     functions: Vec<Function>,
+    /// The index of the function currently being parsed.
+    active_function: Option<usize>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_anon_global: usize,
@@ -97,6 +100,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             locals: Vec::new(),
             functions: Vec::new(),
+            active_function: None,
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_anon_global: 0,
@@ -167,6 +171,7 @@ impl<'a> Parser<'a> {
         let saved_scope_depth = self.scopes.len();
         let saved_locals_len = self.locals.len();
         let saved_functions_len = self.functions.len();
+        let saved_active_function = self.active_function;
         let saved_globals_len = self.globals.len();
         let saved_next_anon_global = self.next_anon_global;
         self.speculate_depth += 1;
@@ -187,6 +192,10 @@ impl<'a> Parser<'a> {
             "cannot remove pre-existing functions during speculation",
         );
         debug_assert!(
+            self.active_function == saved_active_function,
+            "cannot change active function during speculation",
+        );
+        debug_assert!(
             self.globals.len() >= saved_globals_len,
             "cannot remove pre-existing globals during speculation",
         );
@@ -195,6 +204,7 @@ impl<'a> Parser<'a> {
         self.scopes.truncate(saved_scope_depth);
         self.locals.truncate(saved_locals_len);
         self.functions.truncate(saved_functions_len);
+        self.active_function = saved_active_function;
         self.globals.truncate(saved_globals_len);
         self.next_anon_global = saved_next_anon_global;
         self.speculate_depth -= 1;
@@ -638,11 +648,12 @@ impl<'a> Parser<'a> {
         }
 
         let func_id = self.create_function_decl(declarator.name.clone(), declarator.ty.clone());
-
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
         }
+
+        self.active_function = Some(func_id);
 
         let body_offset = self.current().offset;
         self.locals.clear();
@@ -657,6 +668,7 @@ impl<'a> Parser<'a> {
         function.param_locals = param_locals;
         function.locals = std::mem::take(&mut self.locals);
 
+        self.active_function = None;
         Ok(())
     }
 
@@ -700,8 +712,16 @@ impl<'a> Parser<'a> {
         if self.current().is_keyword(Keyword::Return) {
             let offset = self.current().offset;
             self.advance();
-            let expr = self.parse_expr()?;
+            let mut expr = self.parse_expr()?;
             self.skip_punct(";")?;
+
+            let return_ty = self.functions[self.active_function.unwrap()]
+                .ty
+                .as_func()
+                .unwrap()
+                .return_ty
+                .clone();
+            self.apply_cast(&mut expr, return_ty)?;
             return Ok(Stmt::return_(expr, offset));
         }
 
