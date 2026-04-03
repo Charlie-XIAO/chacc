@@ -13,7 +13,7 @@ pub struct Program {
     pub globals: Vec<GlobalVar>,
 }
 
-/// A function defined in [`Program`].
+/// A function declaration or definition in [`Program`].
 #[derive(Debug)]
 pub struct Function {
     pub name: SmolStr,

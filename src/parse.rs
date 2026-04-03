@@ -42,22 +42,35 @@ struct Declspec {
     is_typedef: bool,
 }
 
-/// A local/global variable or typedef.
-///
-/// Note that these are in the same namespace as per C specification, e.g., a
-/// typedef and a local variable with the same name in the same scope frame will
-/// be considered as a redeclaration error.
+/// An ordinary identifier.
 #[derive(Debug, Clone)]
-enum VarScopeEntry {
+enum OrdinaryIdent {
     Var(VarRef),
     Typedef(Type),
+}
+
+impl OrdinaryIdent {
+    fn as_var(&self) -> Option<&VarRef> {
+        match self {
+            OrdinaryIdent::Var(var) => Some(var),
+            _ => None,
+        }
+    }
+
+    fn as_typedef(&self) -> Option<&Type> {
+        match self {
+            OrdinaryIdent::Typedef(ty) => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 /// A scope frame.
 #[derive(Debug, Default)]
 struct ScopeFrame {
-    vars: FxHashMap<SmolStr, VarScopeEntry>,
-    /// Struct or union tags.
+    /// The namespace of ordinary identifiers.
+    idents: FxHashMap<SmolStr, OrdinaryIdent>,
+    /// The namespace of struct and union tags.
     tags: FxHashMap<SmolStr, Type>,
 }
 
@@ -126,7 +139,9 @@ impl<'a> Parser<'a> {
         let Some(name) = self.current().as_ident() else {
             return false;
         };
-        self.find_typedef(name).is_some()
+        self.find_ident(name)
+            .and_then(OrdinaryIdent::as_typedef)
+            .is_some()
     }
 
     /// Run a parser operation speculatively.
@@ -219,7 +234,10 @@ impl<'a> Parser<'a> {
             let offset = self.current().offset;
             let keyword = self.current().as_keyword();
             let ident = self.current().as_ident();
-            let typedef_ty = ident.and_then(|ident| self.find_typedef(ident));
+            let typedef_ty = ident
+                .and_then(|ident| self.find_ident(ident))
+                .and_then(OrdinaryIdent::as_typedef)
+                .cloned();
 
             if spec.is_some() && typedef_ty.is_some() {
                 // There is already a type specifier, so another ident, even if
@@ -491,7 +509,7 @@ impl<'a> Parser<'a> {
         if let Some(tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
-                return self.find_tag(tag).ok_or_else(|| {
+                return self.find_tag(tag).cloned().ok_or_else(|| {
                     self.source
                         .error_at(offset, format_smolstr!("unknown {} type", repr()))
                 });
@@ -602,7 +620,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <function> ::= <declspec> <declarator> "{" <compound-stmt>
+    /// <function> ::= <declarator> "{" <compound-stmt>
     /// ```
     fn parse_function(&mut self, return_ty: Type) -> Result<Function> {
         self.disallow_speculation();
@@ -1101,14 +1119,14 @@ impl<'a> Parser<'a> {
 
         if let Some(name) = self.current().as_ident() {
             if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
-                return self.parse_func_call(name, offset);
+                return self.parse_func_call(name);
             }
 
             self.advance();
-            let Some(var) = self.find_var(name) else {
+            let Some(var) = self.find_ident(name).and_then(OrdinaryIdent::as_var) else {
                 return Err(self.source.error_at(offset, "undefined variable"));
             };
-            return Ok(Node::var(var, offset));
+            return Ok(Node::var(*var, offset));
         }
 
         if let Some(content) = self.current().as_str() {
@@ -1129,7 +1147,8 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <func-call> ::= <ident> "(" (<assign> ("," <assign>)*)? ")"
     /// ```
-    fn parse_func_call(&mut self, name: &str, offset: usize) -> Result<Node> {
+    fn parse_func_call(&mut self, name: &str) -> Result<Node> {
+        let offset = self.current().offset;
         self.advance();
         self.skip_punct("(")?;
 
@@ -1158,8 +1177,8 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(base_ty.clone())?;
-            let typedef = VarScopeEntry::Typedef(declarator.ty);
-            self.push_scope_var(declarator.name, typedef);
+            let typedef = OrdinaryIdent::Typedef(declarator.ty);
+            self.push_scope_ident(declarator.name, typedef);
         }
 
         self.skip_punct(";")?;
@@ -1177,13 +1196,13 @@ impl<'a> Parser<'a> {
         self.scopes.pop();
     }
 
-    /// Push a variable into the current scope.
-    fn push_scope_var(&mut self, name: SmolStr, var: VarScopeEntry) {
+    /// Push an ordinary identifier into the current scope.
+    fn push_scope_ident(&mut self, name: SmolStr, ident: OrdinaryIdent) {
         self.scopes
             .last_mut()
-            .expect("no scope to push variable into")
-            .vars
-            .insert(name, var);
+            .expect("no scope to push ordinary identifier into")
+            .idents
+            .insert(name, ident);
     }
 
     /// Push a struct or union tag into the current scope.
@@ -1195,37 +1214,21 @@ impl<'a> Parser<'a> {
             .insert(name, ty);
     }
 
-    /// Find a variable by name.
-    fn find_var(&self, name: &str) -> Option<VarRef> {
+    /// Find an ordinary identifier by name.
+    fn find_ident(&self, name: &str) -> Option<&OrdinaryIdent> {
         for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.vars.get(name) {
-                return match entry {
-                    VarScopeEntry::Var(var) => Some(*var),
-                    VarScopeEntry::Typedef(_) => None,
-                };
-            }
-        }
-        None
-    }
-
-    /// Find a typedef by name.
-    fn find_typedef(&self, name: &str) -> Option<Type> {
-        for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.vars.get(name) {
-                return match entry {
-                    VarScopeEntry::Var(_) => None,
-                    VarScopeEntry::Typedef(ty) => Some(ty.clone()),
-                };
+            if let Some(entry) = frame.idents.get(name) {
+                return Some(entry);
             }
         }
         None
     }
 
     /// Find a struct or union tag by name.
-    fn find_tag(&self, tag: &str) -> Option<Type> {
+    fn find_tag(&self, tag: &str) -> Option<&Type> {
         for frame in self.scopes.iter().rev() {
             if let Some(ty) = frame.tags.get(tag) {
-                return Some(ty.clone());
+                return Some(ty);
             }
         }
         None
@@ -1243,8 +1246,8 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.locals.len() - 1;
-        let var = VarScopeEntry::Var(VarRef::Local(id));
-        self.push_scope_var(name, var);
+        let var = OrdinaryIdent::Var(VarRef::Local(id));
+        self.push_scope_ident(name, var);
         Ok(id)
     }
 
@@ -1283,8 +1286,8 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.globals.len() - 1;
-        let var = VarScopeEntry::Var(VarRef::Global(id));
-        self.push_scope_var(name, var);
+        let var = OrdinaryIdent::Var(VarRef::Global(id));
+        self.push_scope_ident(name, var);
         Ok(id)
     }
 
