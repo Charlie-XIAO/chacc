@@ -17,6 +17,7 @@ pub struct Program {
 #[derive(Debug)]
 pub struct Function {
     pub name: SmolStr,
+    pub ty: Type,
     /// The function body.
     ///
     /// If this is `Some`, then this is a function definition. Otherwise, this
@@ -46,15 +47,18 @@ pub struct LocalVar {
     pub offset: i64,
 }
 
-/// Reference to a variable expression.
+/// Reference to a named entity expression.
 #[derive(Clone, Copy, Debug)]
-pub enum VarRef {
+pub enum EntityRef {
     /// A local variable, identified by its index in the function's local
     /// variable table [`Function::locals`].
     Local(usize),
     /// A global variable, identified by its index in the program's global
     /// variable table [`Program::globals`].
     Global(usize),
+    /// A function, identified by its index in the program's function table
+    /// [`Program::functions`].
+    Function(usize),
 }
 
 /// Binary operators.
@@ -99,11 +103,12 @@ pub enum NodeKind {
     Deref(Box<Node>),
     /// A unary negation.
     Neg(Box<Node>),
-    /// A reference to a local or global variable.
+    /// A reference to a named entity.
     ///
-    /// They are represented separately in [`Program`], but expression
-    /// resolution can refer to either through this enum.
-    Var(VarRef),
+    /// Locals, globals, and functions are represented separately in
+    /// [`Program`], but expression resolution can refer to any of them through
+    /// this enum.
+    Entity(EntityRef),
     /// An assignment.
     Assign { lhs: Box<Node>, rhs: Box<Node> },
     /// A comma operator for [generalized lvalues][1] as in GNU C Extension.
@@ -227,12 +232,12 @@ impl Node {
         }
     }
 
-    /// Construct a variable-reference node.
-    pub fn var(var: VarRef, offset: usize) -> Self {
+    /// Construct an entity-reference node.
+    pub fn entity(entity: EntityRef, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Var(var),
+            kind: NodeKind::Entity(entity),
         }
     }
 

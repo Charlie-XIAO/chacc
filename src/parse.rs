@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
+    BinaryOp, EntityRef, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind,
 };
 use crate::error::{Error, Result};
 use crate::source::Source;
@@ -45,14 +45,14 @@ struct Declspec {
 /// An ordinary identifier.
 #[derive(Debug, Clone)]
 enum OrdinaryIdent {
-    Var(VarRef),
+    Entity(EntityRef),
     Typedef(Type),
 }
 
 impl OrdinaryIdent {
-    fn as_var(&self) -> Option<&VarRef> {
+    fn as_entity(&self) -> Option<&EntityRef> {
         match self {
-            OrdinaryIdent::Var(var) => Some(var),
+            OrdinaryIdent::Entity(entity) => Some(entity),
             _ => None,
         }
     }
@@ -81,6 +81,7 @@ pub struct Parser<'a> {
     pos: usize,
     // Mutable states
     locals: Vec<LocalVar>,
+    functions: Vec<Function>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_anon_global: usize,
@@ -95,6 +96,7 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             locals: Vec::new(),
+            functions: Vec::new(),
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_anon_global: 0,
@@ -164,6 +166,7 @@ impl<'a> Parser<'a> {
         let saved_pos = self.pos;
         let saved_scope_depth = self.scopes.len();
         let saved_locals_len = self.locals.len();
+        let saved_functions_len = self.functions.len();
         let saved_globals_len = self.globals.len();
         let saved_next_anon_global = self.next_anon_global;
         self.speculate_depth += 1;
@@ -180,6 +183,10 @@ impl<'a> Parser<'a> {
             "cannot remove pre-existing locals during speculation",
         );
         debug_assert!(
+            self.functions.len() >= saved_functions_len,
+            "cannot remove pre-existing functions during speculation",
+        );
+        debug_assert!(
             self.globals.len() >= saved_globals_len,
             "cannot remove pre-existing globals during speculation",
         );
@@ -187,6 +194,7 @@ impl<'a> Parser<'a> {
         self.pos = saved_pos;
         self.scopes.truncate(saved_scope_depth);
         self.locals.truncate(saved_locals_len);
+        self.functions.truncate(saved_functions_len);
         self.globals.truncate(saved_globals_len);
         self.next_anon_global = saved_next_anon_global;
         self.speculate_depth -= 1;
@@ -581,7 +589,6 @@ impl<'a> Parser<'a> {
     /// ```
     pub fn parse_program(&mut self) -> Result<Program> {
         self.disallow_speculation();
-        let mut functions = Vec::new();
 
         while !self.current().is_eof() {
             let declspec = self.parse_declspec()?;
@@ -591,7 +598,7 @@ impl<'a> Parser<'a> {
             }
 
             if self.is_function()? {
-                functions.push(self.parse_function(declspec.ty)?);
+                self.parse_function(declspec.ty)?;
                 continue;
             }
 
@@ -599,7 +606,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Program {
-            functions,
+            functions: std::mem::take(&mut self.functions),
             globals: std::mem::take(&mut self.globals),
         })
     }
@@ -620,9 +627,9 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <function> ::= <declarator> "{" <compound-stmt>
+    /// <function> ::= <declarator> (";" | "{" <compound-stmt>)
     /// ```
-    fn parse_function(&mut self, return_ty: Type) -> Result<Function> {
+    fn parse_function(&mut self, return_ty: Type) -> Result<()> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty)?;
@@ -630,30 +637,27 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("expected a function"));
         }
 
+        let func_id = self.create_function_decl(declarator.name.clone(), declarator.ty.clone());
+
         if self.current().is_punct(";") {
             self.advance();
-            return Ok(Function {
-                name: declarator.name,
-                body: None,
-                param_locals: Default::default(),
-                locals: Default::default(),
-            });
+            return Ok(());
         }
 
         let body_offset = self.current().offset;
         self.locals.clear();
         self.enter_scope();
-        let param_locals = self.create_param_locals(declarator.params)?;
+        let param_locals = self.create_param_locals(declarator.params);
         self.skip_punct("{")?;
         let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
         self.leave_scope();
 
-        Ok(Function {
-            name: declarator.name,
-            body: Some(body),
-            param_locals,
-            locals: std::mem::take(&mut self.locals),
-        })
+        let function = &mut self.functions[func_id];
+        function.body = Some(body);
+        function.param_locals = param_locals;
+        function.locals = std::mem::take(&mut self.locals);
+
+        Ok(())
     }
 
     /// ```bnf
@@ -676,7 +680,7 @@ impl<'a> Parser<'a> {
                     .error_at(declarator.offset, "expected a global variable"));
             }
 
-            self.create_global(declarator.name, declarator.ty, None)?;
+            self.create_global(declarator.name, declarator.ty, None);
         }
 
         self.skip_punct(";")?;
@@ -822,7 +826,7 @@ impl<'a> Parser<'a> {
             if declarator.ty.is_void() {
                 return Err(self.source.error_at(offset, "variable declared void"));
             }
-            let local_id = self.create_local(declarator.name, declarator.ty)?;
+            let local_id = self.create_local(declarator.name, declarator.ty);
 
             if !self.current().is_punct("=") {
                 continue;
@@ -831,7 +835,7 @@ impl<'a> Parser<'a> {
             // If there is an initializer, treat it as an assignment to the
             // just-created variable
             self.advance();
-            let lhs = Node::var(VarRef::Local(local_id), declarator.offset);
+            let lhs = Node::entity(EntityRef::Local(local_id), declarator.offset);
             let rhs = self.parse_assign()?;
             let expr = Node::assign(lhs, rhs, declarator.offset);
             stmts.push(Stmt::expr(expr, declarator.offset));
@@ -1123,17 +1127,17 @@ impl<'a> Parser<'a> {
             }
 
             self.advance();
-            let Some(var) = self.find_ident(name).and_then(OrdinaryIdent::as_var) else {
+            let Some(entity) = self.find_ident(name).and_then(OrdinaryIdent::as_entity) else {
                 return Err(self.source.error_at(offset, "undefined variable"));
             };
-            return Ok(Node::var(*var, offset));
+            return Ok(Node::entity(*entity, offset));
         }
 
         if let Some(content) = self.current().as_str() {
             let ty = Type::array(Type::char(), content.len());
-            let global_id = self.create_anon_global(ty, content)?;
+            let global_id = self.create_anon_global(ty, content);
             self.advance();
-            return Ok(Node::var(VarRef::Global(global_id), offset));
+            return Ok(Node::entity(EntityRef::Global(global_id), offset));
         }
 
         if let Some(value) = self.current().as_num() {
@@ -1235,7 +1239,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> Result<usize> {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
@@ -1246,27 +1250,24 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.locals.len() - 1;
-        let var = OrdinaryIdent::Var(VarRef::Local(id));
-        self.push_scope_ident(name, var);
-        Ok(id)
+        let entity = OrdinaryIdent::Entity(EntityRef::Local(id));
+        self.push_scope_ident(name, entity);
+        id
     }
 
     /// Create local variables for function parameters.
     ///
     /// Parameters are pushed in reverse order to ensure the first parameter
     /// gets the lowest local ID.
-    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Result<Vec<usize>> {
+    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Vec<usize> {
         let mut param_ids = Vec::with_capacity(params.len());
 
         for param in params.into_iter().rev() {
-            param_ids.push(
-                self.create_local(param.name, param.ty)
-                    .expect("parameter names are not unique"),
-            );
+            param_ids.push(self.create_local(param.name, param.ty));
         }
 
         param_ids.reverse();
-        Ok(param_ids)
+        param_ids
     }
 
     /// Create a new global variable.
@@ -1275,7 +1276,7 @@ impl<'a> Parser<'a> {
         name: impl Into<SmolStr>,
         ty: Type,
         init_data: Option<Rc<[u8]>>,
-    ) -> Result<usize> {
+    ) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
@@ -1286,18 +1287,40 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.globals.len() - 1;
-        let var = OrdinaryIdent::Var(VarRef::Global(id));
-        self.push_scope_ident(name, var);
-        Ok(id)
+        let entity = OrdinaryIdent::Entity(EntityRef::Global(id));
+        self.push_scope_ident(name, entity);
+        id
     }
 
     /// Create a new anonymous global variable.
-    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> Result<usize> {
+    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
         self.disallow_speculation();
 
         let name = format_smolstr!(".L..{}", self.next_anon_global);
         self.next_anon_global += 1;
         self.create_global(name, ty, Some(init_data))
+    }
+
+    /// Create a new function declaration.
+    ///
+    /// If the function is also defined (i.e., has a body), it needs to be
+    /// filled in later, looked up via the returned ID.
+    fn create_function_decl(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+        self.disallow_speculation();
+
+        let name = name.into();
+        self.functions.push(Function {
+            name: name.clone(),
+            ty,
+            body: None,
+            param_locals: Default::default(),
+            locals: Default::default(),
+        });
+
+        let id = self.functions.len() - 1;
+        let entity = OrdinaryIdent::Entity(EntityRef::Function(id));
+        self.push_scope_ident(name, entity);
+        id
     }
 
     /// Build an addition node with pointer scaling.
@@ -1479,9 +1502,10 @@ impl<'a> Parser<'a> {
                 self.apply_cast(expr, ty.clone())?;
                 ty
             },
-            NodeKind::Var(var) => match *var {
-                VarRef::Local(local_id) => self.locals[local_id].ty.clone(),
-                VarRef::Global(global_id) => self.globals[global_id].ty.clone(),
+            NodeKind::Entity(entity) => match *entity {
+                EntityRef::Local(local_id) => self.locals[local_id].ty.clone(),
+                EntityRef::Global(global_id) => self.globals[global_id].ty.clone(),
+                EntityRef::Function(function_id) => self.functions[function_id].ty.clone(),
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;

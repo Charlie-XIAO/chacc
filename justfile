@@ -16,7 +16,7 @@ lint:
     cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
 
 test *flags:
-    cargo test --test e2e {{ flags }}
+    cargo nextest run {{ flags }}
 
 doc *flags:
     cargo +nightly doc --no-deps --document-private-items -Z rustdoc-map {{ flags }}

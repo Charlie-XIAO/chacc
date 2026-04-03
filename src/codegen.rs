@@ -7,7 +7,7 @@ use std::path::Path;
 use smol_str::{SmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind, VarRef,
+    BinaryOp, EntityRef, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind,
 };
 use crate::error::Result;
 use crate::source::Source;
@@ -122,6 +122,7 @@ struct FunctionState {
 pub struct Codegen<'a> {
     source: &'a Source,
     out: BufWriter<File>,
+    function_names: Vec<SmolStr>,
     globals: Vec<GlobalVar>,
     next_label: usize,
     function: Option<FunctionState>,
@@ -136,6 +137,7 @@ impl<'a> Codegen<'a> {
         Ok(Self {
             source,
             out,
+            function_names: Vec::new(),
             globals: Vec::new(),
             next_label: 1,
             function: None,
@@ -162,7 +164,12 @@ impl<'a> Codegen<'a> {
 
         writeln!(self.out, ".file 1 \"{}\"", self.source.file())?;
 
+        self.function_names = functions
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
         self.globals = globals;
+
         self.gen_globals()?;
 
         for function in functions {
@@ -197,6 +204,7 @@ impl<'a> Codegen<'a> {
             body,
             param_locals,
             mut locals,
+            ..
         } = function;
 
         let Some(body) = body else {
@@ -296,17 +304,22 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Generate the address of an lvalue expression into `%rax`.
+    /// Generate the address of an addressable expression into `%rax`.
     fn gen_addr(&mut self, node: &Node) -> Result<()> {
         match &node.kind {
-            NodeKind::Var(var) => match var {
-                VarRef::Local(local_id) => {
+            NodeKind::Entity(entity) => match entity {
+                EntityRef::Local(local_id) => {
                     let offset = self.function().locals[*local_id].offset;
                     writeln!(self.out, "  lea {offset}(%rbp), %rax")?;
                     Ok(())
                 },
-                VarRef::Global(global_id) => {
+                EntityRef::Global(global_id) => {
                     let name = &self.globals[*global_id].name;
+                    writeln!(self.out, "  lea {name}(%rip), %rax")?;
+                    Ok(())
+                },
+                EntityRef::Function(function_id) => {
+                    let name = &self.function_names[*function_id];
                     writeln!(self.out, "  lea {name}(%rip), %rax")?;
                     Ok(())
                 },
@@ -392,7 +405,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(expr)?;
                 writeln!(self.out, "  neg %rax")?;
             },
-            NodeKind::Var(_) | NodeKind::Member { .. } => {
+            NodeKind::Entity(_) | NodeKind::Member { .. } => {
                 self.gen_addr(node)?;
                 self.load(node.expect_ty())?;
             },
@@ -476,7 +489,7 @@ impl<'a> Codegen<'a> {
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
     fn load(&mut self, ty: &Type) -> Result<()> {
-        if ty.is_array() || ty.members().is_some() {
+        if ty.is_array() || ty.is_func() || ty.members().is_some() {
             return Ok(());
         }
 
