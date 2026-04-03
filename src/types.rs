@@ -39,6 +39,7 @@ struct TypeInner {
 enum TypeKind {
     #[default] // For ergonomics
     Void,
+    Bool,
     Char,
     Short,
     Int,
@@ -75,6 +76,11 @@ impl Type {
     /// Construct a void type.
     pub fn void() -> Self {
         Self::new(TypeKind::Void, 1, 1)
+    }
+
+    /// Construct a boolean type.
+    pub fn bool() -> Self {
+        Self::new(TypeKind::Bool, 1, 1)
     }
 
     /// Construct a character type.
@@ -167,11 +173,16 @@ impl Type {
         matches!(self.0.kind, TypeKind::Void)
     }
 
+    /// Return whether the type is a boolean type.
+    pub fn is_bool(&self) -> bool {
+        matches!(self.0.kind, TypeKind::Bool)
+    }
+
     /// Return whether the type is an integer type.
-    pub fn is_int(&self) -> bool {
+    pub fn is_integer(&self) -> bool {
         matches!(
             self.0.kind,
-            TypeKind::Char | TypeKind::Short | TypeKind::Int | TypeKind::Long
+            TypeKind::Bool | TypeKind::Char | TypeKind::Short | TypeKind::Int | TypeKind::Long
         )
     }
 

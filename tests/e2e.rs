@@ -223,6 +223,13 @@ fn test_decl() {
 
     f.assert(8, "({ long long x; sizeof(x); })");
 
+    f.assert(0, "({ _Bool x=0; x; })");
+    f.assert(1, "({ _Bool x=1; x; })");
+    f.assert(1, "({ _Bool x=2; x; })");
+    f.assert(1, "(_Bool)1");
+    f.assert(1, "(_Bool)2");
+    f.assert(0, "(_Bool)(char)256");
+
     f.finish();
     f.run("decl");
 }
@@ -245,6 +252,8 @@ fn test_function() {
     f.line("char int_to_char(int x) { return x; }");
     f.line("long first_long(long a, char b) { return a; }");
     f.line("int div_long(long a, long b) { return a / b; }");
+    f.line("_Bool bool_fn_add(_Bool x) { return x + 1; }");
+    f.line("_Bool bool_fn_sub(_Bool x) { return x - 1; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -268,6 +277,13 @@ fn test_function() {
     f.assert(5, "int_to_char(261)");
     f.assert(261, "first_long(261, 0)");
     f.assert(-5, "div_long(-10, 2)");
+
+     f.assert(1, "bool_fn_add(3)");
+     f.assert(0, "bool_fn_sub(3)");
+     f.assert(1, "bool_fn_add(-3)");
+     f.assert(0, "bool_fn_sub(-3)");
+     f.assert(1, "bool_fn_add(0)");
+     f.assert(1, "bool_fn_sub(0)");
 
     f.finish();
     f.run("function");

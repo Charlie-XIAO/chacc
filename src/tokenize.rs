@@ -16,6 +16,7 @@ pub enum Keyword {
     For,
     While,
     Void,
+    Bool,
     Char,
     Short,
     Int,
@@ -35,6 +36,7 @@ impl std::fmt::Display for Keyword {
             Self::For => "for",
             Self::While => "while",
             Self::Void => "void",
+            Self::Bool => "_Bool",
             Self::Char => "char",
             Self::Short => "short",
             Self::Int => "int",
@@ -59,6 +61,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "for" => Ok(Self::For),
             "while" => Ok(Self::While),
             "void" => Ok(Self::Void),
+            "_Bool" => Ok(Self::Bool),
             "char" => Ok(Self::Char),
             "short" => Ok(Self::Short),
             "int" => Ok(Self::Int),
@@ -162,6 +165,7 @@ impl<'a> Token<'a> {
             self.kind,
             TokenKind::Keyword(
                 Keyword::Void
+                    | Keyword::Bool
                     | Keyword::Char
                     | Keyword::Short
                     | Keyword::Int

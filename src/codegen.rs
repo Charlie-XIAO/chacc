@@ -344,6 +344,14 @@ impl<'a> Codegen<'a> {
         if to.is_void() {
             return Ok(());
         }
+
+        if to.is_bool() {
+            self.cmp_zero(from)?;
+            writeln!(self.out, "  setne %al")?;
+            writeln!(self.out, "  movzx %al, %eax")?;
+            return Ok(());
+        }
+
         let Ok(from) = TypeId::try_from(from) else {
             return Ok(());
         };
@@ -531,6 +539,16 @@ impl<'a> Codegen<'a> {
     fn store_gp(&mut self, r: usize, offset: i64, size: i64) -> Result<()> {
         let register = ScalarWidth::from_size(size).gp_arg_reg(r);
         writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
+        Ok(())
+    }
+
+    /// Compare a scalar value against zero.
+    fn cmp_zero(&mut self, ty: &Type) -> Result<()> {
+        if ty.is_integer() && ty.size() <= 4 {
+            writeln!(self.out, "  cmp $0, %eax")?;
+        } else {
+            writeln!(self.out, "  cmp $0, %rax")?;
+        }
         Ok(())
     }
 

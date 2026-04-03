@@ -225,6 +225,7 @@ impl<'a> Parser<'a> {
     /// <declspec-atom> ::=
     ///   "typedef"
     ///   | "void"
+    ///   | "_Bool"
     ///   | "char"
     ///   | "short"
     ///   | "int"
@@ -238,6 +239,7 @@ impl<'a> Parser<'a> {
     fn parse_declspec(&mut self) -> Result<Declspec> {
         enum TypeSpec {
             Void,
+            Bool,
             Char,
             Short,
             Int,
@@ -281,6 +283,10 @@ impl<'a> Parser<'a> {
                     None => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
                 },
+                Some(Keyword::Bool) => match spec {
+                    None => spec = Some(TypeSpec::Bool),
+                    _ => bail_multiple_types!(),
+                },
                 Some(Keyword::Char) => match spec {
                     None => spec = Some(TypeSpec::Char),
                     _ => bail_multiple_types!(),
@@ -319,6 +325,7 @@ impl<'a> Parser<'a> {
 
         let ty = match spec {
             Some(TypeSpec::Void) => Type::void(),
+            Some(TypeSpec::Bool) => Type::bool(),
             Some(TypeSpec::Char) => Type::char(),
             Some(TypeSpec::Short) => Type::short(),
             Some(TypeSpec::Int) => Type::int(),
@@ -1384,7 +1391,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.ty.clone().unwrap();
 
         // num + num
-        if lhs_ty.is_int() && rhs_ty.is_int() {
+        if lhs_ty.is_integer() && rhs_ty.is_integer() {
             return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
@@ -1418,12 +1425,12 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.ty.clone().unwrap();
 
         // num - num
-        if lhs_ty.is_int() && rhs_ty.is_int() {
+        if lhs_ty.is_integer() && rhs_ty.is_integer() {
             return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
         // ptr - num
-        if lhs_ty.base().is_some() && rhs_ty.is_int() {
+        if lhs_ty.base().is_some() && rhs_ty.is_integer() {
             let base_size = lhs_ty.base().unwrap().size();
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
