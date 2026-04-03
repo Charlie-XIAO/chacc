@@ -1188,25 +1188,36 @@ impl<'a> Parser<'a> {
             return Err(self.source.error_at(offset, "not a function"));
         };
 
-        let return_ty = self.functions[*func_id]
-            .ty
-            .as_func()
-            .unwrap()
-            .return_ty
-            .clone();
+        let ty = self.functions[*func_id].ty.clone();
+        let func_ty = ty.as_func().unwrap();
+        let mut param_tys = func_ty.params.iter();
 
         let mut args = Vec::new();
         while !self.current().is_punct(")") {
             if !args.is_empty() {
                 self.skip_punct(",")?;
             }
+
             let mut arg = self.parse_assign()?;
-            self.infer_type(&mut arg)?;
+            if let Some(param_ty) = param_tys.next() {
+                if param_ty.as_struct_or_union().is_some() {
+                    return Err(self.source.error_at(
+                        arg.offset,
+                        "passing struct or union by value is not supported yet",
+                    ));
+                }
+                self.apply_cast(&mut arg, param_ty.clone())?;
+            }
             args.push(arg);
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(name, args, return_ty, offset))
+        Ok(Node::func_call(
+            name,
+            args,
+            func_ty.return_ty.clone(),
+            offset,
+        ))
     }
 
     /// ```bnf

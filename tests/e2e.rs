@@ -231,7 +231,6 @@ fn test_decl() {
 #[test]
 fn test_function() {
     let mut f = Fixture::new();
-
     f.line("int ret3() { return 3; return 5; }");
     f.line("int add2(int x, int y) { return x + y; }");
     f.line("int sub2(int x, int y) { return x - y; }");
@@ -241,11 +240,11 @@ fn test_function() {
     f.line("int fib(int x) { if (x<=1) return 1; return fib(x-1) + fib(x-2); }");
     f.line("int sub_long(long a, long b, long c) { return a - b - c; }");
     f.line("int sub_short(short a, short b, short c) { return a - b - c; }");
-
     f.line("int g1;");
     f.line("int *g1_ptr() { return &g1; }");
     f.line("char int_to_char(int x) { return x; }");
-
+    f.line("long first_long(long a, char b) { return a; }");
+    f.line("int div_long(long a, long b) { return a / b; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -267,6 +266,8 @@ fn test_function() {
     f.line("g1 = 3;");
     f.assert(3, "*g1_ptr()");
     f.assert(5, "int_to_char(261)");
+    f.assert(261, "first_long(261, 0)");
+    f.assert(-5, "div_long(-10, 2)");
 
     f.finish();
     f.run("function");

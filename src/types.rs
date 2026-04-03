@@ -58,7 +58,7 @@ pub struct ArrayType {
 #[derive(Debug)]
 pub struct FuncType {
     pub return_ty: Type,
-    _params: Vec<Type>,
+    pub params: Vec<Type>,
 }
 
 #[derive(Debug)]
@@ -105,10 +105,7 @@ impl Type {
     /// Construct a function type with the given return type and parameters.
     pub fn func(return_ty: Type, params: Vec<Type>) -> Self {
         Self::new(
-            TypeKind::Func(FuncType {
-                return_ty,
-                _params: params,
-            }),
+            TypeKind::Func(FuncType { return_ty, params }),
             0, // Not applicable
             0, // Not applicable
         )
