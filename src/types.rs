@@ -24,10 +24,10 @@ pub enum TypeId {
 }
 
 /// Expression types used for semantic analysis.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Type(Rc<TypeInner>);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct TypeInner {
     kind: TypeKind,
     size: i64,
@@ -35,8 +35,9 @@ struct TypeInner {
 }
 
 /// The specific type form carried by [`Type`].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum TypeKind {
+    #[default] // For ergonomics
     Void,
     Char,
     Short,
@@ -60,11 +61,6 @@ enum TypeKind {
 impl Type {
     fn new(kind: TypeKind, size: i64, align: i64) -> Self {
         Self(Rc::new(TypeInner { kind, size, align }))
-    }
-
-    /// Construct a dummy type for parser-only use. This is **NOT** a real type!
-    pub fn dummy() -> Self {
-        Self::void()
     }
 
     /// Construct a void type.
@@ -205,6 +201,27 @@ impl Type {
             TypeKind::StructOrUnion { members, .. } => Some(members),
             _ => None,
         }
+    }
+
+    /// Coerce with another operand type for a validated binary operation.
+    ///
+    /// This helper is intentionally lhs-biased. If exactly one operand is a
+    /// pointer, it must already have been canonicalized to `self` (lhs) by the
+    /// caller. This method also does not perform pointer legality checks and
+    /// the caller is responsible for those beforehand.
+    pub fn coerce(&self, other: &Type) -> Type {
+        debug_assert!(
+            self.base().is_some() || other.base().is_none(),
+            "pointer coercion expects any lone pointer operand to be lhs",
+        );
+
+        if let Some(base) = self.base() {
+            return Type::ptr(base.clone());
+        }
+        if self.size() == 8 || other.size() == 8 {
+            return Type::long();
+        }
+        Type::int()
     }
 }
 

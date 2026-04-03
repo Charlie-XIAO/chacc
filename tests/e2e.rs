@@ -62,7 +62,11 @@ impl Fixture {
         self.line("int main() {");
     }
 
-    fn assert(&mut self, expected: i32, actual: &str) {
+    fn assert<E, A>(&mut self, expected: E, actual: A)
+    where
+        E: std::fmt::Display,
+        A: std::fmt::Display,
+    {
         self.line(&format!("  ASSERT({expected}, {actual});"));
     }
 
@@ -149,6 +153,8 @@ fn test_arith() {
     f.assert(1, "1>=0");
     f.assert(1, "1>=1");
     f.assert(0, "1>=2");
+
+    f.assert(0, "1073741824 * 100 / 100");
 
     f.finish();
     f.run("arith");
@@ -326,6 +332,15 @@ fn test_sizeof() {
     f.assert(48, "sizeof(int[3][4])");
     f.assert(8, "sizeof(struct {int a; int b;})");
 
+    f.assert(8, "sizeof(-10 + (long)5)");
+    f.assert(8, "sizeof(-10 - (long)5)");
+    f.assert(8, "sizeof(-10 * (long)5)");
+    f.assert(8, "sizeof(-10 / (long)5)");
+    f.assert(8, "sizeof((long)-10 + 5)");
+    f.assert(8, "sizeof((long)-10 - 5)");
+    f.assert(8, "sizeof((long)-10 * 5)");
+    f.assert(8, "sizeof((long)-10 / 5)");
+
     f.finish();
     f.run("sizeof");
 }
@@ -464,6 +479,38 @@ fn test_union() {
 
     f.finish();
     f.run("union");
+}
+
+#[rustfmt::skip]
+#[test]
+fn test_usualconv() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert("(long)-5", "-10 + (long)5");
+    f.assert("(long)-15", "-10 - (long)5");
+    f.assert("(long)-50", "-10 * (long)5");
+    f.assert("(long)-2", "-10 / (long)5");
+
+    f.assert(1, "-2 < (long)-1");
+    f.assert(1, "-2 <= (long)-1");
+    f.assert(0, "-2 > (long)-1");
+    f.assert(0, "-2 >= (long)-1");
+
+    f.assert(1, "(long)-2 < -1");
+    f.assert(1, "(long)-2 <= -1");
+    f.assert(0, "(long)-2 > -1");
+    f.assert(0, "(long)-2 >= -1");
+
+    f.assert(0, "2147483647 + 2147483647 + 2");
+    f.assert("(long)-1", "({ long x; x=-1; x; })");
+
+    f.assert(1, "({ char x[3]; x[0]=0; x[1]=1; x[2]=2; char *y=x+1; y[0]; })");
+    f.assert(0, "({ char x[3]; x[0]=0; x[1]=1; x[2]=2; char *y=x+1; y[-1]; })");
+    f.assert(5, "({ struct t {char a;} x, y; x.a=5; y=x; y.a; })");
+
+    f.finish();
+    f.run("usualconv");
 }
 
 #[rustfmt::skip]

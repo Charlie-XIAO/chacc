@@ -71,7 +71,7 @@ pub enum BinaryOp {
 }
 
 /// An AST node representing an expression.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Node {
     pub kind: NodeKind,
     /// The offset from the start of the source code in bytes.
@@ -84,8 +84,11 @@ pub struct Node {
 }
 
 /// The specific expression form carried by [`Node`].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum NodeKind {
+    /// A dummy node, used as temporary placeholders.
+    #[default] // For ergonomics
+    Dummy,
     /// A numeric literal.
     Num(i64),
     /// A function call.
@@ -125,74 +128,89 @@ pub enum NodeKind {
 
 impl Node {
     /// Construct an address-of node.
-    pub fn addr(node: Node, offset: usize) -> Self {
+    pub fn addr(node: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Addr(Box::new(node)),
+            kind: NodeKind::Addr(node.into()),
         }
     }
 
     /// Construct a dereference node.
-    pub fn deref(node: Node, offset: usize) -> Self {
+    pub fn deref(node: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Deref(Box::new(node)),
+            kind: NodeKind::Deref(node.into()),
         }
     }
 
     /// Construct a binary AST node.
-    pub fn binary(op: BinaryOp, lhs: Node, rhs: Node, offset: usize) -> Self {
+    pub fn binary(
+        op: BinaryOp,
+        lhs: impl Into<Box<Node>>,
+        rhs: impl Into<Box<Node>>,
+        offset: usize,
+    ) -> Self {
         Self {
             offset,
             ty: None,
             kind: NodeKind::Binary {
                 op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
+                lhs: lhs.into(),
+                rhs: rhs.into(),
             },
         }
     }
 
     /// Construct a unary negation node.
-    pub fn neg(node: Node, offset: usize) -> Self {
+    pub fn neg(node: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Neg(Box::new(node)),
+            kind: NodeKind::Neg(node.into()),
         }
     }
 
     /// Construct an assignment node.
-    pub fn assign(lhs: Node, rhs: Node, offset: usize) -> Self {
+    pub fn assign(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
             kind: NodeKind::Assign {
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
+                lhs: lhs.into(),
+                rhs: rhs.into(),
             },
         }
     }
 
     /// Construct a comma operator node.
-    pub fn comma(lhs: Node, rhs: Node, offset: usize) -> Self {
+    pub fn comma(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
             kind: NodeKind::Comma {
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
+                lhs: lhs.into(),
+                rhs: rhs.into(),
             },
         }
     }
 
     /// Construct a numeric literal node.
-    pub fn num(value: i64, offset: usize) -> Self {
+    ///
+    /// This will automatically infer the node type. If `force_long` is true,
+    /// the type of the node will always be `long`. Otherwise, it will be `int`
+    /// if the value fits in an [`i32`] and otherwise `long`.
+    pub fn num(value: i64, offset: usize, force_long: bool) -> Self {
+        let ty = if !force_long && i32::try_from(value).is_ok() {
+            Type::int()
+        } else {
+            Type::long()
+        };
+
         Self {
             offset,
-            ty: None,
+            ty: Some(ty),
             kind: NodeKind::Num(value),
         }
     }
@@ -219,12 +237,12 @@ impl Node {
     }
 
     /// Construct a struct member access node.
-    pub fn member(parent: Node, member: Member, offset: usize) -> Self {
+    pub fn member(parent: impl Into<Box<Node>>, member: Member, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
             kind: NodeKind::Member {
-                parent: Box::new(parent),
+                parent: parent.into(),
                 member,
             },
         }
@@ -240,11 +258,11 @@ impl Node {
     }
 
     /// Construct a type cast node.
-    pub fn cast(expr: Node, offset: usize) -> Self {
+    pub fn cast(expr: impl Into<Box<Node>>, ty: Type, offset: usize) -> Self {
         Self {
             offset,
-            ty: None,
-            kind: NodeKind::Cast(Box::new(expr)),
+            ty: Some(ty),
+            kind: NodeKind::Cast(expr.into()),
         }
     }
 

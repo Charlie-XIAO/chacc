@@ -85,10 +85,18 @@ impl ScalarWidth {
     /// Return the mnemonic used to load a signed scalar of this width.
     fn signed_load_mnemonic(&self) -> &'static str {
         match self {
-            Self::Byte => "movsbq",
-            Self::Word => "movswq",
+            Self::Byte => "movsbl",
+            Self::Word => "movswl",
             Self::Dword => "movsxd",
             Self::Qword => "mov",
+        }
+    }
+
+    /// Return the destination register used by a signed load of this width.
+    fn signed_load_dest_reg(&self) -> &'static str {
+        match self {
+            Self::Byte | Self::Word => "%eax",
+            Self::Dword | Self::Qword => "%rax",
         }
     }
 
@@ -447,6 +455,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(expr)?;
                 self.gen_cast(expr.expect_ty(), node.expect_ty())?;
             },
+            NodeKind::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -472,7 +481,12 @@ impl<'a> Codegen<'a> {
         }
 
         let width = ScalarWidth::from_size(ty.size());
-        writeln!(self.out, "  {} (%rax), %rax", width.signed_load_mnemonic())?;
+        writeln!(
+            self.out,
+            "  {} (%rax), {}",
+            width.signed_load_mnemonic(),
+            width.signed_load_dest_reg()
+        )?;
         Ok(())
     }
 

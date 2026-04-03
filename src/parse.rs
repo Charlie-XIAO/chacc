@@ -313,7 +313,7 @@ impl<'a> Parser<'a> {
             // Try to parse the inner declarator to find where it ends, i.e.,
             // the matching ")"
             let (_, next_pos) = self.speculate(|parser| {
-                parser.parse_declarator(Type::dummy())?;
+                parser.parse_declarator(Default::default())?;
                 parser.skip_punct(")")?;
                 Ok(())
             })?;
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
             let inner_pos = self.pos;
 
             let (_, next_pos) = self.speculate(|parser| {
-                parser.parse_abstract_declarator(Type::dummy())?;
+                parser.parse_abstract_declarator(Default::default())?;
                 parser.skip_punct(")")?;
                 Ok(())
             })?;
@@ -595,7 +595,7 @@ impl<'a> Parser<'a> {
         }
 
         let (ty, _) = self.speculate(|parser| {
-            let declarator = parser.parse_declarator(Type::dummy())?;
+            let declarator = parser.parse_declarator(Default::default())?;
             Ok(declarator.ty)
         })?;
         Ok(ty.is_func())
@@ -971,9 +971,7 @@ impl<'a> Parser<'a> {
                 self.skip_punct(")")?;
                 let mut expr = self.parse_cast()?;
                 self.infer_type(&mut expr)?;
-                let mut node = Node::cast(expr, offset);
-                node.ty = Some(ty);
-                return Ok(node);
+                return Ok(Node::cast(expr, ty, offset));
             }
 
             self.pos = pos;
@@ -1089,7 +1087,7 @@ impl<'a> Parser<'a> {
                 if self.at_typename() {
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
-                    return Ok(Node::num(ty.size(), offset));
+                    return Ok(Node::num(ty.size(), offset, false));
                 }
 
                 self.pos = pos;
@@ -1098,7 +1096,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = operand.expect_ty().size();
-            return Ok(Node::num(size, offset));
+            return Ok(Node::num(size, offset, false));
         }
 
         if let Some(name) = self.current().as_ident() {
@@ -1122,7 +1120,7 @@ impl<'a> Parser<'a> {
 
         if let Some(value) = self.current().as_num() {
             self.advance();
-            return Ok(Node::num(value, offset));
+            return Ok(Node::num(value, offset, false));
         }
 
         Err(self.error_current("expected an expression"))
@@ -1323,7 +1321,12 @@ impl<'a> Parser<'a> {
 
         // ptr + num
         let base_size = lhs.expect_ty().base().unwrap().size();
-        let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
+        let scaled_rhs = Node::binary(
+            BinaryOp::Mul,
+            rhs,
+            Node::num(base_size, offset, true),
+            offset,
+        );
         let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
         Ok(node)
     }
@@ -1344,7 +1347,12 @@ impl<'a> Parser<'a> {
         // ptr - num
         if lhs_ty.base().is_some() && rhs_ty.is_int() {
             let base_size = lhs_ty.base().unwrap().size();
-            let scaled_rhs = Node::binary(BinaryOp::Mul, rhs, Node::num(base_size, offset), offset);
+            let scaled_rhs = Node::binary(
+                BinaryOp::Mul,
+                rhs,
+                Node::num(base_size, offset, true),
+                offset,
+            );
             let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
             return Ok(node);
         }
@@ -1354,7 +1362,12 @@ impl<'a> Parser<'a> {
             let base_size = lhs_ty.base().unwrap().size();
             let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
             diff.ty = Some(Type::int());
-            let node = Node::binary(BinaryOp::Div, diff, Node::num(base_size, offset), offset);
+            let node = Node::binary(
+                BinaryOp::Div,
+                diff,
+                Node::num(base_size, offset, true),
+                offset,
+            );
             return Ok(node);
         }
 
@@ -1381,6 +1394,25 @@ impl<'a> Parser<'a> {
         };
 
         Ok(Node::member(node, member, self.current().offset))
+    }
+
+    /// Apply a cast on the given node to the given type.
+    fn apply_cast(&self, node: &mut Node, ty: Type) -> Result<()> {
+        let offset = node.offset;
+        let mut old = std::mem::take(node);
+        self.infer_type(&mut old)?;
+        *node = Node::cast(old, ty, offset);
+        Ok(())
+    }
+
+    /// Apply a usual arithmetic conversion on the given operands.
+    ///
+    /// Returns the coerced common type.
+    fn apply_usual_arith_conv(&self, lhs: &mut Node, rhs: &mut Node) -> Result<Type> {
+        let ty = lhs.expect_ty().coerce(rhs.expect_ty());
+        self.apply_cast(lhs, ty.clone())?;
+        self.apply_cast(rhs, ty.clone())?;
+        Ok(ty)
     }
 
     /// Infer types for a statement subtree.
@@ -1432,7 +1464,6 @@ impl<'a> Parser<'a> {
         }
 
         node.ty = Some(match &mut node.kind {
-            NodeKind::Num(_) => Type::long(),
             NodeKind::FuncCall { args, .. } => {
                 for arg in args {
                     self.infer_type(arg)?;
@@ -1441,7 +1472,9 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Neg(expr) => {
                 self.infer_type(expr)?;
-                expr.expect_ty().clone()
+                let ty = Type::int().coerce(expr.expect_ty());
+                self.apply_cast(expr, ty.clone())?;
+                ty
             },
             NodeKind::Var(var) => match *var {
                 VarRef::Local(local_id) => self.locals[local_id].ty.clone(),
@@ -1479,6 +1512,9 @@ impl<'a> Parser<'a> {
                 if lhs.expect_ty().is_array() {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
+                if lhs.expect_ty().members().is_none() {
+                    self.apply_cast(rhs, lhs.expect_ty().clone())?;
+                }
                 lhs.expect_ty().clone()
             },
             NodeKind::Comma { lhs, rhs } => {
@@ -1489,11 +1525,10 @@ impl<'a> Parser<'a> {
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
+                let ty = self.apply_usual_arith_conv(lhs, rhs)?;
                 match op {
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                        lhs.expect_ty().clone()
-                    },
-                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::long(),
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => ty,
+                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::int(),
                 }
             },
             NodeKind::Member { member, .. } => member.ty.clone(),
@@ -1510,11 +1545,10 @@ impl<'a> Parser<'a> {
                     ));
                 }
             },
-            NodeKind::Cast(expr) => {
-                self.infer_type(expr)?;
-                // Cast node's type is set at creation and cannot be inferred
-                return Ok(());
+            NodeKind::Num(_) | NodeKind::Cast(_) => {
+                unreachable!("node type should have been set upon creation")
             },
+            NodeKind::Dummy => unreachable!(),
         });
 
         Ok(())
