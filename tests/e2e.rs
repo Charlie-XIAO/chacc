@@ -278,15 +278,29 @@ fn test_function() {
     f.assert(261, "first_long(261, 0)");
     f.assert(-5, "div_long(-10, 2)");
 
-     f.assert(1, "bool_fn_add(3)");
-     f.assert(0, "bool_fn_sub(3)");
-     f.assert(1, "bool_fn_add(-3)");
-     f.assert(0, "bool_fn_sub(-3)");
-     f.assert(1, "bool_fn_add(0)");
-     f.assert(1, "bool_fn_sub(0)");
+    f.assert(1, "bool_fn_add(3)");
+    f.assert(0, "bool_fn_sub(3)");
+    f.assert(1, "bool_fn_add(-3)");
+    f.assert(0, "bool_fn_sub(-3)");
+    f.assert(1, "bool_fn_add(0)");
+    f.assert(1, "bool_fn_sub(0)");
 
     f.finish();
     f.run("function");
+}
+
+#[rustfmt::skip]
+#[test]
+fn test_literal() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(97, r#"'a'"#);
+    f.assert(10, r#"'\n'"#);
+    f.assert(-128, r#"'\x80'"#);
+
+    f.finish();
+    f.run("literal");
 }
 
 #[test]

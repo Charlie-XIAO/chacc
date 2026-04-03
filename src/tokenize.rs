@@ -262,6 +262,11 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
+            if ch == b'\'' {
+                self.read_char_literal()?;
+                continue;
+            }
+
             if is_ident1(&ch) {
                 self.read_ident_or_keyword();
                 continue;
@@ -360,6 +365,47 @@ impl<'a> Tokenizer<'a> {
         Err(self.error_current("unclosed string literal"))
     }
 
+    /// Read a character literal token.
+    fn read_char_literal(&mut self) -> Result<()> {
+        let bytes = self.source.content().as_bytes();
+        let mut i = self.pos + 1; // Skip opening quote
+
+        let byte = *bytes
+            .get(i)
+            .ok_or_else(|| self.error_current("unclosed char literal"))?;
+
+        if matches!(byte, b'\n' | b'\0') {
+            return Err(self.error_current("unclosed char literal"));
+        }
+
+        let ch = if byte == b'\\' {
+            let (escaped, len) = self.read_escape_char(i + 1)?;
+            i += 1 + len;
+            escaped
+        } else {
+            i += 1;
+            byte
+        };
+
+        // Interpret one-byte character constant using signed-char semantics,
+        // e.g., '\x80' becomes -128 (wrapped around)
+        let ch = ch as i8;
+
+        match bytes[i..]
+            .iter()
+            .position(|&b| matches!(b, b'\'' | b'\n' | b'\0'))
+            .filter(|&pos| bytes[i + pos] == b'\'')
+        {
+            Some(0) => {
+                self.tokens.push(Token::num(self.pos, ch as _));
+                self.pos = i + 1; // Skip past closing quote
+                Ok(())
+            },
+            Some(_) => Err(self.error_current("multi-charcter char constant")),
+            None => Err(self.error_current("unclosed char literal")),
+        }
+    }
+
     /// Read an escape sequence starting at the first byte after the backslash.
     ///
     /// Returns the decoded byte and the number of bytes consumed.
@@ -422,6 +468,7 @@ impl<'a> Tokenizer<'a> {
             b'f' => b'\x0c',
             b'r' => b'\r',
             b'e' => 27, // GNU C extension for the ASCII escape character
+            b'"' | b'\'' | b'\\' | b'?' => first,
             _ => {
                 self.source.warn_at(start, "unknown escape sequence");
                 first
