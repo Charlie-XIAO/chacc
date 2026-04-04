@@ -44,6 +44,7 @@ enum TypeKind {
     Short,
     Int,
     Long,
+    Enum,
     Ptr(Type),
     Array(ArrayType),
     Func(FuncType),
@@ -64,7 +65,7 @@ pub struct FuncType {
 
 #[derive(Debug)]
 pub struct StructOrUnionType {
-    _is_struct: bool,
+    pub is_struct: bool,
     pub members: Vec<Member>,
 }
 
@@ -101,6 +102,11 @@ impl Type {
     /// Construct a long integer type.
     pub fn long() -> Self {
         Self::new(TypeKind::Long, 8, 8)
+    }
+
+    /// Construct an enum type.
+    pub fn enum_() -> Self {
+        Self::new(TypeKind::Enum, 4, 4)
     }
 
     /// Construct a pointer type to the given base type.
@@ -149,10 +155,7 @@ impl Type {
 
         let size = align_to(offset, align); // Trailing padding
         Self::new(
-            TypeKind::StructOrUnion(StructOrUnionType {
-                _is_struct: is_struct,
-                members,
-            }),
+            TypeKind::StructOrUnion(StructOrUnionType { is_struct, members }),
             size,
             align,
         )
@@ -178,11 +181,21 @@ impl Type {
         matches!(self.0.kind, TypeKind::Bool)
     }
 
+    /// Return whether the type is an enum type.
+    pub fn is_enum(&self) -> bool {
+        matches!(self.0.kind, TypeKind::Enum)
+    }
+
     /// Return whether the type is an integer type.
     pub fn is_integer(&self) -> bool {
         matches!(
             self.0.kind,
-            TypeKind::Bool | TypeKind::Char | TypeKind::Short | TypeKind::Int | TypeKind::Long
+            TypeKind::Bool
+                | TypeKind::Char
+                | TypeKind::Short
+                | TypeKind::Int
+                | TypeKind::Long
+                | TypeKind::Enum
         )
     }
 

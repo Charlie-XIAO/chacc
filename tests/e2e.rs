@@ -236,6 +236,28 @@ fn test_decl() {
 
 #[rustfmt::skip]
 #[test]
+fn test_enum() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(0, "({ enum { zero, one, two }; zero; })");
+    f.assert(1, "({ enum { zero, one, two }; one; })");
+    f.assert(2, "({ enum { zero, one, two }; two; })");
+    f.assert(5, "({ enum { five=5, six, seven }; five; })");
+    f.assert(6, "({ enum { five=5, six, seven }; six; })");
+    f.assert(0, "({ enum { zero, five=5, three=3, four }; zero; })");
+    f.assert(5, "({ enum { zero, five=5, three=3, four }; five; })");
+    f.assert(3, "({ enum { zero, five=5, three=3, four }; three; })");
+    f.assert(4, "({ enum { zero, five=5, three=3, four }; four; })");
+    f.assert(4, "({ enum { zero, one, two } x; sizeof(x); })");
+    f.assert(4, "({ enum t { zero, one, two }; enum t y; sizeof(y); })");
+
+    f.finish();
+    f.run("enum");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_function() {
     let mut f = Fixture::new();
     f.line("int ret3() { return 3; return 5; }");

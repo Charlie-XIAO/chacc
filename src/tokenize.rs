@@ -21,6 +21,7 @@ pub enum Keyword {
     Short,
     Int,
     Long,
+    Enum,
     Sizeof,
     Struct,
     Union,
@@ -41,6 +42,7 @@ impl std::fmt::Display for Keyword {
             Self::Short => "short",
             Self::Int => "int",
             Self::Long => "long",
+            Self::Enum => "enum",
             Self::Sizeof => "sizeof",
             Self::Struct => "struct",
             Self::Union => "union",
@@ -66,6 +68,7 @@ impl std::convert::TryFrom<&str> for Keyword {
             "short" => Ok(Self::Short),
             "int" => Ok(Self::Int),
             "long" => Ok(Self::Long),
+            "enum" => Ok(Self::Enum),
             "sizeof" => Ok(Self::Sizeof),
             "struct" => Ok(Self::Struct),
             "union" => Ok(Self::Union),
@@ -170,6 +173,7 @@ impl<'a> Token<'a> {
                     | Keyword::Short
                     | Keyword::Int
                     | Keyword::Long
+                    | Keyword::Enum
                     | Keyword::Struct
                     | Keyword::Union
                     | Keyword::Typedef

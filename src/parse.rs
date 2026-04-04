@@ -47,6 +47,7 @@ struct Declspec {
 enum OrdinaryIdent {
     Entity(EntityRef),
     Typedef(Type),
+    EnumConst(i64),
 }
 
 impl OrdinaryIdent {
@@ -70,7 +71,7 @@ impl OrdinaryIdent {
 struct ScopeFrame {
     /// The namespace of ordinary identifiers.
     idents: FxHashMap<SmolStr, OrdinaryIdent>,
-    /// The namespace of struct and union tags.
+    /// The namespace of struct, union, and enum tags.
     tags: FxHashMap<SmolStr, Type>,
 }
 
@@ -232,6 +233,7 @@ impl<'a> Parser<'a> {
     ///   | "long"
     ///   | <struct-or-union-decl>
     ///   | <typedef-name>
+    ///   | <enum-specifier>
     /// ```
     ///
     /// As per C language specification, type specifiers are order-insensitive,
@@ -313,6 +315,10 @@ impl<'a> Parser<'a> {
                 },
                 Some(Keyword::Union) => match spec {
                     None => spec = Some(TypeSpec::Other(self.parse_struct_or_union_decl(false)?)),
+                    _ => bail_multiple_types!(),
+                },
+                Some(Keyword::Enum) => match spec {
+                    None => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
                     _ => bail_multiple_types!(),
                 },
                 _ => match typedef_ty {
@@ -534,10 +540,21 @@ impl<'a> Parser<'a> {
         if let Some(tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
-                return self.find_tag(tag).cloned().ok_or_else(|| {
+                let ty = self.find_tag(tag).cloned().ok_or_else(|| {
                     self.source
                         .error_at(offset, format_smolstr!("unknown {} type", repr()))
-                });
+                })?;
+
+                let sou = ty.as_struct_or_union().ok_or_else(|| {
+                    self.source
+                        .error_at(offset, format_smolstr!("not a {} tag", repr()))
+                })?;
+                if sou.is_struct != is_struct {
+                    return Err(self
+                        .source
+                        .error_at(offset, format_smolstr!("not a {} tag", repr())));
+                }
+                return Ok(ty);
             }
         }
 
@@ -580,6 +597,66 @@ impl<'a> Parser<'a> {
         self.advance();
 
         let ty = Type::struct_or_union(is_struct, members);
+        if let Some(tag) = tag {
+            self.push_scope_tag(tag.to_smolstr(), ty.clone());
+        }
+        Ok(ty)
+    }
+
+    /// ```bnf
+    /// <enum-specifier> ::= <ident>? "{" <enum-list>? "}" | <ident>
+    /// <enum-list> ::= <ident> ("=" <num>)? ("," <ident> ("=" <num>)?)*
+    /// ```
+    fn parse_enum_specifier(&mut self) -> Result<Type> {
+        let offset = self.current().offset;
+        let tag = self.current().as_ident();
+
+        if let Some(tag) = tag {
+            self.advance();
+            if !self.current().is_punct("{") {
+                let ty = self
+                    .find_tag(tag)
+                    .cloned()
+                    .ok_or_else(|| self.source.error_at(offset, "unknown enum type"))?;
+                if !ty.is_enum() {
+                    return Err(self.source.error_at(offset, "not an enum tag"));
+                }
+                return Ok(ty);
+            }
+        }
+
+        self.skip_punct("{")?;
+
+        let mut first = true;
+        let mut val = 0;
+        while !self.current().is_punct("}") {
+            if !first {
+                self.skip_punct(",")?;
+            }
+            first = false;
+
+            let name = self
+                .current()
+                .as_ident()
+                .ok_or_else(|| self.error_current("expected an identifier"))?;
+            self.advance();
+
+            if self.current().is_punct("=") {
+                self.advance();
+                val = self
+                    .current()
+                    .as_num()
+                    .ok_or_else(|| self.error_current("expected a number"))?;
+                self.advance();
+            }
+
+            self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::EnumConst(val));
+            val += 1;
+        }
+
+        self.advance();
+
+        let ty = Type::enum_();
         if let Some(tag) = tag {
             self.push_scope_tag(tag.to_smolstr(), ty.clone());
         }
@@ -1154,10 +1231,13 @@ impl<'a> Parser<'a> {
             }
 
             self.advance();
-            let Some(entity) = self.find_ident(name).and_then(OrdinaryIdent::as_entity) else {
-                return Err(self.source.error_at(offset, "undefined variable"));
+
+            let node = match self.find_ident(name) {
+                Some(OrdinaryIdent::Entity(entity)) => Node::entity(*entity, offset),
+                Some(OrdinaryIdent::EnumConst(val)) => Node::num(*val, offset, false),
+                _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
-            return Ok(Node::entity(*entity, offset));
+            return Ok(node);
         }
 
         if let Some(content) = self.current().as_str() {
