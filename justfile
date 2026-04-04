@@ -26,3 +26,7 @@ doc *flags:
     cargo +nightly doc --no-deps --document-private-items -Z rustdoc-map {{ flags }}
 
 ci: fmt lint test
+
+compile code:
+    printf "{{ code }}" | cargo run --quiet -- - && cc -x assembler -o tmp a.out && ./tmp
+    echo $?

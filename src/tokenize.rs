@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 
 use crate::error::{Error, Result};
 use crate::source::Source;
@@ -211,7 +211,7 @@ impl<'a> Tokenizer<'a> {
             }
 
             if ch.is_ascii_digit() {
-                self.read_number();
+                self.read_numeric_literal()?;
                 continue;
             }
 
@@ -272,21 +272,39 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Read a numeric literal token.
-    fn read_number(&mut self) {
-        let offset = self.pos;
+    fn read_numeric_literal(&mut self) -> Result<()> {
         let content = self.source.content();
+        let bytes = content.as_bytes();
 
-        let len = content[self.pos..]
-            .bytes()
-            .take_while(u8::is_ascii_digit)
+        let (radix, prefix_len) = match bytes.get(self.pos..) {
+            Some([b'0', b'x' | b'X', ..]) => (16, 2),
+            Some([b'0', b'b' | b'B', ..]) => (2, 2),
+            // A leading 0 followed by more digits is an octal literal, e.g.,
+            // "08" is an invalid octal rather than a valid decimal; also we do
+            // not strip the leading 0 because it does not affect the parsed
+            // value, and that we want to accept a single "0"
+            Some([b'0', ..]) => (8, 0),
+            _ => (10, 0),
+        };
+
+        let start = self.pos + prefix_len;
+        let len = bytes[start..]
+            .iter()
+            .take_while(|&&b| (b as char).is_digit(radix))
             .count();
+        let end = start + len;
 
-        let num = content[offset..offset + len]
-            .parse()
-            .expect("failed to parse number");
+        let num = i64::from_str_radix(&content[start..end], radix).map_err(|e| {
+            self.error_current(format_smolstr!("invalid numeric literal: {:?}", e.kind()))
+        })?;
 
-        self.tokens.push(Token::num(offset, num));
-        self.pos += len;
+        if bytes.get(end).is_some_and(|&b| b.is_ascii_alphanumeric()) {
+            return Err(self.source.error_at(end, "invalid digit"));
+        }
+
+        self.tokens.push(Token::num(self.pos, num));
+        self.pos = end;
+        Ok(())
     }
 
     /// Read a string literal token.

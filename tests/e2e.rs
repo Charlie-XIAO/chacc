@@ -27,14 +27,14 @@ impl CommandExt for Command {
             .output()
             .unwrap_or_else(|err| panic!("{what} failed to start: {err}"));
 
-        let context = format!(
+        eprintln!(
             "command: {self:?}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
 
-        assert!(output.status.success(), "{what} failed\n{context}",);
+        assert!(output.status.success(), "{what} failed");
         output
     }
 }
@@ -353,9 +353,21 @@ fn test_literal() {
     let mut f = Fixture::new();
     f.main();
 
-    f.assert(97, r#"'a'"#);
-    f.assert(10, r#"'\n'"#);
-    f.assert(-128, r#"'\x80'"#);
+    f.assert(97, "'a'");
+    f.assert(10, "'\\n'");
+    f.assert(-128, "'\\x80'");
+
+    f.assert(511, "0777");
+    f.assert(0, "0x0");
+    f.assert(10, "0xa");
+    f.assert(10, "0XA");
+    f.assert(48879, "0xbeef");
+    f.assert(48879, "0xBEEF");
+    f.assert(48879, "0XBEEF");
+    f.assert(0, "0b0");
+    f.assert(1, "0b1");
+    f.assert(47, "0b101111");
+    f.assert(47, "0B101111");
 
     f.finish();
     f.run("literal");
