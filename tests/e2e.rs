@@ -204,6 +204,9 @@ fn test_control() {
     f.assert(5, "({ int i=2, j=3; (i=5,j)=6; i; })");
     f.assert(6, "({ int i=2, j=3; (i=5,j)=6; j; })");
 
+    f.assert(55, "({ int j=0; for (int i=0; i<=10; i=i+1) j=j+i; j; })");
+    f.assert(3, "({ int i=3; int j=0; for (int i=0; i<=10; i=i+1) j=j+i; i; })");
+
     f.finish();
     f.run("control");
 }

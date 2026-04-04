@@ -864,20 +864,40 @@ impl<'a> Parser<'a> {
             let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
-            let init = Box::new(self.parse_expr_stmt()?);
+
+            self.enter_scope();
+
+            let init = Box::new(if self.at_typename() {
+                let offset = self.current().offset;
+                let declspec = self.parse_declspec()?;
+                if declspec.storage_class.is_some() {
+                    return Err(self.source.error_at(
+                        offset,
+                        "storage class specifier is not allowed in for loop initializer",
+                    ));
+                }
+                self.parse_declaration(&declspec.ty)?
+            } else {
+                self.parse_expr_stmt()?
+            });
+
             let cond = if self.current().is_punct(";") {
                 None
             } else {
                 Some(self.parse_expr()?)
             };
             self.skip_punct(";")?;
+
             let inc = if self.current().is_punct(")") {
                 None
             } else {
                 Some(self.parse_expr()?)
             };
             self.skip_punct(")")?;
+
             let body = Box::new(self.parse_stmt()?);
+
+            self.leave_scope();
             return Ok(Stmt::for_(init, cond, inc, body, offset));
         }
 
