@@ -44,6 +44,29 @@ enum StorageClass {
     Static,
 }
 
+/// The parsing context for declaration specifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+enum DeclspecContext {
+    #[strum(serialize = "file-scope declaration")]
+    FileScopeDecl,
+    #[strum(serialize = "block-scope declaration")]
+    BlockScopeDecl,
+    #[strum(serialize = "typename")]
+    Typename,
+    #[strum(serialize = "parameter declaration")]
+    ParameterDecl,
+    #[strum(serialize = "for loop initializer")]
+    ForLoopInitializer,
+    #[strum(serialize = "{0} member declaration")]
+    MemberDecl(&'static str),
+}
+
+impl DeclspecContext {
+    fn allows_storage_class(self) -> bool {
+        matches!(self, Self::FileScopeDecl | Self::BlockScopeDecl)
+    }
+}
+
 /// A declaration specifier.
 struct Declspec {
     ty: Type,
@@ -247,7 +270,7 @@ impl<'a> Parser<'a> {
     ///
     /// As per C language specification, type specifiers are order-insensitive,
     /// but only certain combinations are legal.
-    fn parse_declspec(&mut self) -> Result<Declspec> {
+    fn parse_declspec(&mut self, context: DeclspecContext) -> Result<Declspec> {
         enum TypeSpec {
             Void,
             Bool,
@@ -331,6 +354,12 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Typedef | Keyword::Static) => {
+                    if !context.allows_storage_class() {
+                        return Err(self.source.error_at(
+                            offset,
+                            format_smolstr!("storage class specifier is not allowed in {context}"),
+                        ));
+                    }
                     if storage_class.is_some() {
                         return Err(self.source.error_at(
                             offset,
@@ -462,13 +491,7 @@ impl<'a> Parser<'a> {
     /// <typename> ::= <declspec> <abstract-declarator>
     /// ```
     fn parse_typename(&mut self) -> Result<Type> {
-        let offset = self.current().offset;
-        let declspec = self.parse_declspec()?;
-        if declspec.storage_class.is_some() {
-            return Err(self
-                .source
-                .error_at(offset, "storage class specifier is not allowed as typename"));
-        }
+        let declspec = self.parse_declspec(DeclspecContext::Typename)?;
         self.parse_abstract_declarator(declspec.ty)
     }
 
@@ -498,14 +521,7 @@ impl<'a> Parser<'a> {
                 self.skip_punct(",")?;
             }
 
-            let offset = self.current().offset;
-            let declspec = self.parse_declspec()?;
-            if declspec.storage_class.is_some() {
-                return Err(self.source.error_at(
-                    offset,
-                    "storage class specifier is not allowed in parameter declaration",
-                ));
-            }
+            let declspec = self.parse_declspec(DeclspecContext::ParameterDecl)?;
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
@@ -588,18 +604,9 @@ impl<'a> Parser<'a> {
         self.skip_punct("{")?;
 
         let mut members = Vec::new();
+        let context = DeclspecContext::MemberDecl(repr());
         while !self.current().is_punct("}") {
-            let offset = self.current().offset;
-            let declspec = self.parse_declspec()?;
-            if declspec.storage_class.is_some() {
-                return Err(self.source.error_at(
-                    offset,
-                    format_smolstr!(
-                        "storage class specifier is not allowed in {} member declaration",
-                        repr()
-                    ),
-                ));
-            }
+            let declspec = self.parse_declspec(context)?;
 
             let mut first = true;
             while !self.current().is_punct(";") {
@@ -715,7 +722,7 @@ impl<'a> Parser<'a> {
         self.disallow_speculation();
 
         while !self.current().is_eof() {
-            let declspec = self.parse_declspec()?;
+            let declspec = self.parse_declspec(DeclspecContext::FileScopeDecl)?;
             if declspec.storage_class == Some(StorageClass::Typedef) {
                 self.parse_typedef_tail(&declspec.ty)?;
                 continue;
@@ -868,14 +875,7 @@ impl<'a> Parser<'a> {
             self.enter_scope();
 
             let init = Box::new(if self.at_typename() {
-                let offset = self.current().offset;
-                let declspec = self.parse_declspec()?;
-                if declspec.storage_class.is_some() {
-                    return Err(self.source.error_at(
-                        offset,
-                        "storage class specifier is not allowed in for loop initializer",
-                    ));
-                }
+                let declspec = self.parse_declspec(DeclspecContext::ForLoopInitializer)?;
                 self.parse_declaration(&declspec.ty)?
             } else {
                 self.parse_expr_stmt()?
@@ -930,7 +930,7 @@ impl<'a> Parser<'a> {
 
         while !self.current().is_punct("}") {
             let mut stmt = if self.at_typename() {
-                let declspec = self.parse_declspec()?;
+                let declspec = self.parse_declspec(DeclspecContext::BlockScopeDecl)?;
                 if declspec.storage_class == Some(StorageClass::Typedef) {
                     self.parse_typedef_tail(&declspec.ty)?;
                     continue;
