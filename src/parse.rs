@@ -1007,7 +1007,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <assign> ::= <equality> (<assign-op> <assign>)?
-    /// <assign-op> ::= "=" | "+=" | "-=" | "*=" | "/="
+    /// <assign-op> ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
         let node = self.parse_equality()?;
@@ -1044,6 +1044,13 @@ impl<'a> Parser<'a> {
             self.advance();
             let assign = self.parse_assign()?;
             let binary = Node::binary(BinaryOp::Div, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("%=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::Mod, node, assign, offset);
             return self.new_compound_assign(binary, offset);
         }
 
@@ -1144,23 +1151,29 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <mul> ::= <cast> ("*" <cast> | "/" <cast>)*
+    /// <mul> ::= <cast> (("*" | "/" | "%") <cast>)*
     /// ```
     fn parse_mul(&mut self) -> Result<Node> {
         let mut node = self.parse_cast()?;
 
         loop {
+            let offset = self.current().offset;
+
             if self.current().is_punct("*") {
-                let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Mul, node, self.parse_cast()?, offset);
                 continue;
             }
 
             if self.current().is_punct("/") {
-                let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Div, node, self.parse_cast()?, offset);
+                continue;
+            }
+
+            if self.current().is_punct("%") {
+                self.advance();
+                node = Node::binary(BinaryOp::Mod, node, self.parse_cast()?, offset);
                 continue;
             }
 
@@ -1884,7 +1897,11 @@ impl<'a> Parser<'a> {
                 self.infer_type(rhs)?;
                 let ty = self.apply_usual_arith_conv(lhs, rhs)?;
                 match op {
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => ty,
+                    BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mul
+                    | BinaryOp::Div
+                    | BinaryOp::Mod => ty,
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::int(),
                 }
             },

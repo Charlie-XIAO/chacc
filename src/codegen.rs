@@ -462,6 +462,11 @@ impl<'a> Codegen<'a> {
                         writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
                         writeln!(self.out, "  idiv {rdi}")?;
                     },
+                    BinaryOp::Mod => {
+                        writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
+                        writeln!(self.out, "  idiv {rdi}")?;
+                        writeln!(self.out, "  mov %rdx, %rax")?;
+                    },
                     BinaryOp::Eq => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  sete %al")?;
