@@ -1194,7 +1194,9 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <unary> ::=
-    ///   ("+" | "-" | "*" | "&") <cast> | ("++" | "--") <unary> | <postfix>
+    ///   ("+" | "-" | "*" | "&" | "!") <cast>
+    ///   | ("++" | "--") <unary>
+    ///   | <postfix>
     /// ```
     fn parse_unary(&mut self) -> Result<Node> {
         let offset = self.current().offset;
@@ -1217,6 +1219,11 @@ impl<'a> Parser<'a> {
         if self.current().is_punct("*") {
             self.advance();
             return Ok(Node::deref(self.parse_cast()?, offset));
+        }
+
+        if self.current().is_punct("!") {
+            self.advance();
+            return Ok(Node::not(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("++") {
@@ -1810,17 +1817,6 @@ impl<'a> Parser<'a> {
                 }
                 Type::long()
             },
-            NodeKind::Neg(expr) => {
-                self.infer_type(expr)?;
-                let ty = Type::int().coerce(expr.expect_ty());
-                self.apply_cast(expr, ty.clone())?;
-                ty
-            },
-            NodeKind::Entity(entity) => match *entity {
-                EntityRef::Local(local_id) => self.locals[local_id].ty.clone(),
-                EntityRef::Global(global_id) => self.globals[global_id].ty.clone(),
-                EntityRef::Function(function_id) => self.functions[function_id].ty.clone(),
-            },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
                 let pointee = expr.expect_ty();
@@ -1846,6 +1842,21 @@ impl<'a> Parser<'a> {
                         .error_at(node.offset, "dereferencing a void pointer"));
                 }
                 base.clone()
+            },
+            NodeKind::Neg(expr) => {
+                self.infer_type(expr)?;
+                let ty = Type::int().coerce(expr.expect_ty());
+                self.apply_cast(expr, ty.clone())?;
+                ty
+            },
+            NodeKind::Not(expr) => {
+                self.infer_type(expr)?;
+                Type::int() // In C, logical NOT is int 0/1 not bool
+            },
+            NodeKind::Entity(entity) => match *entity {
+                EntityRef::Local(local_id) => self.locals[local_id].ty.clone(),
+                EntityRef::Global(global_id) => self.globals[global_id].ty.clone(),
+                EntityRef::Function(function_id) => self.functions[function_id].ty.clone(),
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;

@@ -186,6 +186,14 @@ fn test_arith() {
     f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; a[2]; })");
     f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; *p; })");
 
+    f.assert(0, "!1");
+    f.assert(0, "!2");
+    f.assert(1, "!0");
+    f.assert(1, "!(char)0");
+    f.assert(0, "!(long)3");
+    f.assert(4, "sizeof(!(char)0)");
+    f.assert(4, "sizeof(!(long)0)");
+
     f.finish();
     f.run("arith");
 }

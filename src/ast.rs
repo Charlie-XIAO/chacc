@@ -98,12 +98,14 @@ pub enum NodeKind {
     Num(i64),
     /// A function call.
     FuncCall { name: SmolStr, args: Vec<Node> },
-    /// An address-of expression.
+    /// An address-of expression "&".
     Addr(Box<Node>),
-    /// A pointer dereference.
+    /// A pointer dereference "*".
     Deref(Box<Node>),
-    /// A unary negation.
+    /// A unary negation "-".
     Neg(Box<Node>),
+    /// A unary not "!".
+    Not(Box<Node>),
     /// A reference to a named entity.
     ///
     /// Locals, globals, and functions are represented separately in
@@ -175,6 +177,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Neg(node.into()),
+        }
+    }
+
+    /// Construct a unary not node.
+    pub fn not(node: impl Into<Box<Node>>, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::Not(node.into()),
         }
     }
 

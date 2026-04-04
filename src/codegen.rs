@@ -273,7 +273,7 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, ".L.begin.{label}:")?;
                 if let Some(cond) = cond {
                     self.gen_expr(cond)?;
-                    writeln!(self.out, "  cmp $0, %rax")?;
+                    self.cmp_zero(cond.expect_ty())?;
                     writeln!(self.out, "  je  .L.end.{label}")?;
                 }
                 self.gen_stmt(body)?;
@@ -291,7 +291,7 @@ impl<'a> Codegen<'a> {
             } => {
                 let label = self.take_label();
                 self.gen_expr(cond)?;
-                writeln!(self.out, "  cmp $0, %rax")?;
+                self.cmp_zero(cond.expect_ty())?;
                 writeln!(self.out, "  je  .L.else.{label}")?;
                 self.gen_stmt(then_branch)?;
                 writeln!(self.out, "  jmp .L.end.{label}")?;
@@ -419,6 +419,12 @@ impl<'a> Codegen<'a> {
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
                 writeln!(self.out, "  neg %rax")?;
+            },
+            NodeKind::Not(expr) => {
+                self.gen_expr(expr)?;
+                self.cmp_zero(expr.expect_ty())?;
+                writeln!(self.out, "  sete %al")?;
+                writeln!(self.out, "  movzx %al, %rax")?;
             },
             NodeKind::Entity(_) | NodeKind::Member { .. } => {
                 self.gen_addr(node)?;
