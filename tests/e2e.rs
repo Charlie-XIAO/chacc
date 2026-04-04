@@ -194,6 +194,9 @@ fn test_arith() {
     f.assert(4, "sizeof(!(char)0)");
     f.assert(4, "sizeof(!(long)0)");
 
+    f.assert(-1, "~0");
+    f.assert(0, "~-1");
+
     f.finish();
     f.run("arith");
 }

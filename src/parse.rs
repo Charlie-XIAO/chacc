@@ -1194,7 +1194,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <unary> ::=
-    ///   ("+" | "-" | "*" | "&" | "!") <cast>
+    ///   ("+" | "-" | "*" | "&" | "!" | "~") <cast>
     ///   | ("++" | "--") <unary>
     ///   | <postfix>
     /// ```
@@ -1224,6 +1224,11 @@ impl<'a> Parser<'a> {
         if self.current().is_punct("!") {
             self.advance();
             return Ok(Node::not(self.parse_cast()?, offset));
+        }
+
+        if self.current().is_punct("~") {
+            self.advance();
+            return Ok(Node::bit_not(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("++") {
@@ -1843,7 +1848,7 @@ impl<'a> Parser<'a> {
                 }
                 base.clone()
             },
-            NodeKind::Neg(expr) => {
+            NodeKind::Neg(expr) | NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
                 let ty = Type::int().coerce(expr.expect_ty());
                 self.apply_cast(expr, ty.clone())?;

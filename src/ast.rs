@@ -106,6 +106,8 @@ pub enum NodeKind {
     Neg(Box<Node>),
     /// A unary not "!".
     Not(Box<Node>),
+    /// A unary bit-not "~".
+    BitNot(Box<Node>),
     /// A reference to a named entity.
     ///
     /// Locals, globals, and functions are represented separately in
@@ -186,6 +188,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Not(node.into()),
+        }
+    }
+
+    /// Construct a unary bit-not node.
+    pub fn bit_not(node: impl Into<Box<Node>>, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::BitNot(node.into()),
         }
     }
 

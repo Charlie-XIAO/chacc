@@ -426,6 +426,10 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  sete %al")?;
                 writeln!(self.out, "  movzx %al, %rax")?;
             },
+            NodeKind::BitNot(expr) => {
+                self.gen_expr(expr)?;
+                writeln!(self.out, "  not %rax")?;
+            },
             NodeKind::Entity(_) | NodeKind::Member { .. } => {
                 self.gen_addr(node)?;
                 self.load(node.expect_ty())?;
