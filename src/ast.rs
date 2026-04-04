@@ -27,6 +27,7 @@ pub struct Function {
     pub param_locals: Vec<usize>,
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
+    pub is_static: bool,
 }
 
 /// A global variable defined in [`Program`].

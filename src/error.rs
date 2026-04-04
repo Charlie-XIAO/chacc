@@ -3,19 +3,10 @@
 use smol_str::SmolStr;
 
 /// The severity level of a diagnostic message.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, strum::Display)]
 pub enum DiagnosticLevel {
     Warning,
     Error,
-}
-
-impl std::fmt::Display for DiagnosticLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Warning => write!(f, "warning"),
-            Self::Error => write!(f, "error"),
-        }
-    }
 }
 
 /// A compiler diagnostic message.

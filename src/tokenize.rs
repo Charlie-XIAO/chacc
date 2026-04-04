@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 use crate::source::Source;
 
 /// Reserved keywords recognized by the tokenizer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum Keyword {
     Return,
     If,
@@ -16,6 +17,7 @@ pub enum Keyword {
     For,
     While,
     Void,
+    #[strum(serialize = "_Bool")]
     Bool,
     Char,
     Short,
@@ -26,56 +28,7 @@ pub enum Keyword {
     Struct,
     Union,
     Typedef,
-}
-
-impl std::fmt::Display for Keyword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::Return => "return",
-            Self::If => "if",
-            Self::Else => "else",
-            Self::For => "for",
-            Self::While => "while",
-            Self::Void => "void",
-            Self::Bool => "_Bool",
-            Self::Char => "char",
-            Self::Short => "short",
-            Self::Int => "int",
-            Self::Long => "long",
-            Self::Enum => "enum",
-            Self::Sizeof => "sizeof",
-            Self::Struct => "struct",
-            Self::Union => "union",
-            Self::Typedef => "typedef",
-        };
-        write!(f, "{s}")
-    }
-}
-
-impl std::convert::TryFrom<&str> for Keyword {
-    type Error = ();
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "return" => Ok(Self::Return),
-            "if" => Ok(Self::If),
-            "else" => Ok(Self::Else),
-            "for" => Ok(Self::For),
-            "while" => Ok(Self::While),
-            "void" => Ok(Self::Void),
-            "_Bool" => Ok(Self::Bool),
-            "char" => Ok(Self::Char),
-            "short" => Ok(Self::Short),
-            "int" => Ok(Self::Int),
-            "long" => Ok(Self::Long),
-            "enum" => Ok(Self::Enum),
-            "sizeof" => Ok(Self::Sizeof),
-            "struct" => Ok(Self::Struct),
-            "union" => Ok(Self::Union),
-            "typedef" => Ok(Self::Typedef),
-            _ => Err(()),
-        }
-    }
+    Static,
 }
 
 /// Token kinds recognized by the tokenizer.
@@ -162,7 +115,7 @@ impl<'a> Token<'a> {
         self.kind == TokenKind::Keyword(expected)
     }
 
-    /// Return whether this token is a type name keyword.
+    /// Return whether this token is a typename keyword.
     pub fn is_typename_keyword(&self) -> bool {
         matches!(
             self.kind,
@@ -177,6 +130,7 @@ impl<'a> Token<'a> {
                     | Keyword::Struct
                     | Keyword::Union
                     | Keyword::Typedef
+                    | Keyword::Static
             )
         )
     }

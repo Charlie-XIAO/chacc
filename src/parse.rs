@@ -36,10 +36,18 @@ struct Declarator {
     params: Vec<Parameter>,
 }
 
+/// A storage class specifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[strum(serialize_all = "snake_case")]
+enum StorageClass {
+    Typedef,
+    Static,
+}
+
 /// A declaration specifier.
 struct Declspec {
     ty: Type,
-    is_typedef: bool,
+    storage_class: Option<StorageClass>,
 }
 
 /// An ordinary identifier.
@@ -225,6 +233,7 @@ impl<'a> Parser<'a> {
     /// <declspec> ::= <declspec-atom>+
     /// <declspec-atom> ::=
     ///   "typedef"
+    ///   | "static"
     ///   | "void"
     ///   | "_Bool"
     ///   | "char"
@@ -251,7 +260,8 @@ impl<'a> Parser<'a> {
 
         let mut spec = None;
         let mut long_count = 0;
-        let mut is_typedef = false;
+        let mut storage_class = None;
+
         while self.at_typename() {
             let offset = self.current().offset;
             let keyword = self.current().as_keyword();
@@ -280,7 +290,6 @@ impl<'a> Parser<'a> {
             }
 
             match keyword {
-                Some(Keyword::Typedef) => is_typedef = true,
                 Some(Keyword::Void) => match spec {
                     None => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
@@ -321,29 +330,46 @@ impl<'a> Parser<'a> {
                     None => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
                     _ => bail_multiple_types!(),
                 },
+                Some(Keyword::Typedef | Keyword::Static) => {
+                    if storage_class.is_some() {
+                        return Err(self.source.error_at(
+                            offset,
+                            "multiple storage classes in declaration specifiers",
+                        ));
+                    }
+                    storage_class = Some(match keyword.unwrap() {
+                        Keyword::Typedef => StorageClass::Typedef,
+                        Keyword::Static => StorageClass::Static,
+                        _ => unreachable!(),
+                    });
+                },
                 _ => match typedef_ty {
                     Some(ty) if spec.is_none() => spec = Some(TypeSpec::Other(ty)),
-                    Some(_) => unreachable!(), // Early breaked
+                    Some(_) => unreachable!(), // Early break'ed
                     None => unreachable!("all typename tokens should have been handled"),
                 },
             }
         }
 
-        let ty = match spec {
-            Some(TypeSpec::Void) => Type::void(),
-            Some(TypeSpec::Bool) => Type::bool(),
-            Some(TypeSpec::Char) => Type::char(),
-            Some(TypeSpec::Short) => Type::short(),
-            Some(TypeSpec::Int) => Type::int(),
-            Some(TypeSpec::Long) => Type::long(),
-            Some(TypeSpec::Other(ty)) => ty,
-            None if is_typedef => {
-                return Err(self.error_current("missing type specifier in typedef"));
-            },
-            None => return Err(self.error_current("expected a typename")),
+        if spec.is_none() {
+            if let Some(storage_class) = storage_class {
+                return Err(self
+                    .error_current(format_smolstr!("missing type specifier in {storage_class}")));
+            }
+            return Err(self.error_current("expected a typename"));
+        }
+
+        let ty = match spec.unwrap() {
+            TypeSpec::Void => Type::void(),
+            TypeSpec::Bool => Type::bool(),
+            TypeSpec::Char => Type::char(),
+            TypeSpec::Short => Type::short(),
+            TypeSpec::Int => Type::int(),
+            TypeSpec::Long => Type::long(),
+            TypeSpec::Other(ty) => ty,
         };
 
-        Ok(Declspec { ty, is_typedef })
+        Ok(Declspec { ty, storage_class })
     }
 
     /// ```bnf
@@ -438,10 +464,10 @@ impl<'a> Parser<'a> {
     fn parse_typename(&mut self) -> Result<Type> {
         let offset = self.current().offset;
         let declspec = self.parse_declspec()?;
-        if declspec.is_typedef {
+        if declspec.storage_class.is_some() {
             return Err(self
                 .source
-                .error_at(offset, "typedef is not allowed as typename"));
+                .error_at(offset, "storage class specifier is not allowed as typename"));
         }
         self.parse_abstract_declarator(declspec.ty)
     }
@@ -474,10 +500,11 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declspec = self.parse_declspec()?;
-            if declspec.is_typedef {
-                return Err(self
-                    .source
-                    .error_at(offset, "typedef is not allowed in parameter declaration"));
+            if declspec.storage_class.is_some() {
+                return Err(self.source.error_at(
+                    offset,
+                    "storage class specifier is not allowed in parameter declaration",
+                ));
             }
 
             let offset = self.current().offset;
@@ -564,10 +591,13 @@ impl<'a> Parser<'a> {
         while !self.current().is_punct("}") {
             let offset = self.current().offset;
             let declspec = self.parse_declspec()?;
-            if declspec.is_typedef {
+            if declspec.storage_class.is_some() {
                 return Err(self.source.error_at(
                     offset,
-                    format_smolstr!("typedef is not allowed in {} member declaration", repr()),
+                    format_smolstr!(
+                        "storage class specifier is not allowed in {} member declaration",
+                        repr()
+                    ),
                 ));
             }
 
@@ -686,16 +716,20 @@ impl<'a> Parser<'a> {
 
         while !self.current().is_eof() {
             let declspec = self.parse_declspec()?;
-            if declspec.is_typedef {
+            if declspec.storage_class == Some(StorageClass::Typedef) {
                 self.parse_typedef_tail(&declspec.ty)?;
                 continue;
             }
 
             if self.is_function()? {
-                self.parse_function(declspec.ty)?;
+                self.parse_function(
+                    declspec.ty,
+                    declspec.storage_class == Some(StorageClass::Static),
+                )?;
                 continue;
             }
 
+            // TODO: Fix static global variables being treated as non-static
             self.parse_global_variable(declspec.ty)?;
         }
 
@@ -723,7 +757,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <function> ::= <declarator> (";" | "{" <compound-stmt>)
     /// ```
-    fn parse_function(&mut self, return_ty: Type) -> Result<()> {
+    fn parse_function(&mut self, return_ty: Type, is_static: bool) -> Result<()> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty)?;
@@ -751,6 +785,7 @@ impl<'a> Parser<'a> {
         function.body = Some(body);
         function.param_locals = param_locals;
         function.locals = std::mem::take(&mut self.locals);
+        function.is_static = is_static;
 
         self.active_function = None;
         Ok(())
@@ -876,10 +911,11 @@ impl<'a> Parser<'a> {
         while !self.current().is_punct("}") {
             let mut stmt = if self.at_typename() {
                 let declspec = self.parse_declspec()?;
-                if declspec.is_typedef {
+                if declspec.storage_class == Some(StorageClass::Typedef) {
                     self.parse_typedef_tail(&declspec.ty)?;
                     continue;
                 }
+                // TODO: Fix static local variables being treated as non-static
                 self.parse_declaration(&declspec.ty)?
             } else {
                 self.parse_stmt()?
@@ -1454,6 +1490,7 @@ impl<'a> Parser<'a> {
             body: None,
             param_locals: Default::default(),
             locals: Default::default(),
+            is_static: false,
         });
 
         let id = self.functions.len() - 1;

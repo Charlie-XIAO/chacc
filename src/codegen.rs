@@ -204,6 +204,7 @@ impl<'a> Codegen<'a> {
             body,
             param_locals,
             mut locals,
+            is_static,
             ..
         } = function;
 
@@ -212,7 +213,13 @@ impl<'a> Codegen<'a> {
         };
 
         let stack_size = assign_lvar_offsets(&mut locals);
-        writeln!(self.out, "  .globl {name}")?;
+
+        if is_static {
+            writeln!(self.out, "  .local {name}")?;
+        } else {
+            writeln!(self.out, "  .globl {name}")?;
+        }
+
         writeln!(self.out, "  .text")?;
         writeln!(self.out, "{name}:")?;
         writeln!(self.out, "  push %rbp")?;

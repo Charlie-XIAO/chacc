@@ -276,6 +276,7 @@ fn test_function() {
     f.line("int div_long(long a, long b) { return a / b; }");
     f.line("_Bool bool_fn_add(_Bool x) { return x + 1; }");
     f.line("_Bool bool_fn_sub(_Bool x) { return x - 1; }");
+    f.line("static int static_fn() { return 3; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -306,6 +307,8 @@ fn test_function() {
     f.assert(0, "bool_fn_sub(-3)");
     f.assert(1, "bool_fn_add(0)");
     f.assert(1, "bool_fn_sub(0)");
+
+    f.assert(3, "static_fn()");
 
     f.finish();
     f.run("function");
