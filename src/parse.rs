@@ -1006,15 +1006,45 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <assign> ::= <equality> ("=" <assign>)?
+    /// <assign> ::= <equality> (<assign-op> <assign>)?
+    /// <assign-op> ::= "=" | "+=" | "-=" | "*=" | "/="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
         let node = self.parse_equality()?;
+        let offset = self.current().offset;
 
         if self.current().is_punct("=") {
-            let offset = self.current().offset;
             self.advance();
-            return Ok(Node::assign(node, self.parse_assign()?, offset));
+            let assign = self.parse_assign()?;
+            return Ok(Node::assign(node, assign, offset));
+        }
+
+        if self.current().is_punct("+=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = self.new_add(node, assign, offset)?;
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("-=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = self.new_sub(node, assign, offset)?;
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("*=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::Mul, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("/=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::Div, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
         }
 
         Ok(node)
@@ -1594,6 +1624,44 @@ impl<'a> Parser<'a> {
         }
 
         Err(self.source.error_at(offset, "invalid operands"))
+    }
+
+    /// Build a compound assignment operation node.
+    ///
+    /// This is desugared into making a temporary pointer to `lhs`, performing
+    /// the binary operation, and assigning the result back to `lhs`.
+    fn new_compound_assign(&mut self, binary: Node, offset: usize) -> Result<Node> {
+        let NodeKind::Binary {
+            op,
+            mut lhs,
+            mut rhs,
+        } = binary.kind
+        else {
+            unreachable!();
+        };
+
+        self.infer_type(&mut lhs)?;
+        self.infer_type(&mut rhs)?;
+
+        let tmp = self.create_local("", Type::ptr(lhs.expect_ty().clone()));
+        let tmp = EntityRef::Local(tmp);
+
+        // tmp = &lhs;
+        let assign1 = Node::assign(Node::entity(tmp, offset), Node::addr(lhs, offset), offset);
+
+        // *tmp = *tmp op rhs;
+        let assign2 = Node::assign(
+            Node::deref(Node::entity(tmp, offset), offset),
+            Node::binary(
+                op,
+                Node::deref(Node::entity(tmp, offset), offset),
+                rhs,
+                offset,
+            ),
+            offset,
+        );
+
+        Ok(Node::comma(assign1, assign2, offset))
     }
 
     /// Build a member access node for the given node.
