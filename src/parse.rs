@@ -1237,14 +1237,16 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <postfix> ::= <primary> ("[" <expr> "]" | "." <ident> | "->" <ident>)*
+    /// <postfix> ::=
+    ///   <primary> ("[" <expr> "]" | "." <ident> | "->" <ident> | "++" | "--")*
     /// ```
     fn parse_postfix(&mut self) -> Result<Node> {
         let mut node = self.parse_primary()?;
 
         loop {
+            let offset = self.current().offset;
+
             if self.current().is_punct("[") {
-                let offset = self.current().offset;
                 self.advance();
                 let index = self.parse_expr()?;
                 self.skip_punct("]")?;
@@ -1261,12 +1263,23 @@ impl<'a> Parser<'a> {
             }
 
             if self.current().is_punct("->") {
-                let offset = self.current().offset;
                 self.advance();
                 // Canonicalize a->b to (*a).b
                 node = Node::deref(node, offset);
                 node = self.new_member_access(node)?;
                 self.advance();
+                continue;
+            }
+
+            if self.current().is_punct("++") {
+                self.advance();
+                node = self.new_post_inc_dec(node, true, offset)?;
+                continue;
+            }
+
+            if self.current().is_punct("--") {
+                self.advance();
+                node = self.new_post_inc_dec(node, false, offset)?;
                 continue;
             }
 
@@ -1675,7 +1688,30 @@ impl<'a> Parser<'a> {
             offset,
         );
 
+        // (tmp = &lhs, *tmp = *tmp op rhs)
         Ok(Node::comma(assign1, assign2, offset))
+    }
+
+    /// Build a post increment/decrement node.
+    ///
+    /// Post increment is desugared into `(typeof node)((node += 1) - 1)`, and
+    /// post decrement is desugared into `(typeof node)((node -= 1) + 1)`.
+    fn new_post_inc_dec(&mut self, mut node: Node, is_inc: bool, offset: usize) -> Result<Node> {
+        self.infer_type(&mut node)?;
+        let ty = node.expect_ty().clone();
+
+        let addend = if is_inc { 1 } else { -1 };
+
+        // node += addend
+        let binary = self.new_add(node, Node::num(addend, offset, false), offset)?;
+        let assign = self.new_compound_assign(binary, offset)?;
+
+        // (node += addend) - addend
+        let mut post = self.new_add(assign, Node::num(-addend, offset, false), offset)?;
+        self.infer_type(&mut post)?;
+
+        // (typeof node)((node += addend) - addend)
+        Ok(Node::cast(post, ty, offset))
     }
 
     /// Build a member access node for the given node.

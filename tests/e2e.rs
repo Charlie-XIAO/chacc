@@ -169,6 +169,23 @@ fn test_arith() {
     f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; ++*p; })");
     f.assert(0, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; --*p; })");
 
+    f.assert(2, "({ int i=2; i++; })");
+    f.assert(2, "({ int i=2; i--; })");
+    f.assert(3, "({ int i=2; i++; i; })");
+    f.assert(1, "({ int i=2; i--; i; })");
+    f.assert(1, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; *p++; })");
+    f.assert(1, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; *p--; })");
+
+    f.assert(0, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; a[0]; })");
+    f.assert(0, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*(p--))--; a[1]; })");
+    f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p)--; a[2]; })");
+    f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p)--; p++; *p; })");
+
+    f.assert(0, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; a[0]; })");
+    f.assert(0, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; a[1]; })");
+    f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; a[2]; })");
+    f.assert(2, "({ int a[3]; a[0]=0; a[1]=1; a[2]=2; int *p=a+1; (*p++)--; *p; })");
+
     f.finish();
     f.run("arith");
 }
@@ -424,6 +441,7 @@ fn test_sizeof() {
     f.assert(8, "sizeof((long)-10 / 5)");
 
     f.assert(1, "({ char i; sizeof(++i); })");
+    f.assert(1, "({ char i; sizeof(i++); })");
 
     f.finish();
     f.run("sizeof");
