@@ -1193,30 +1193,44 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <unary> ::= ("+" | "-" | "*" | "&") <cast> | <postfix>
+    /// <unary> ::=
+    ///   ("+" | "-" | "*" | "&") <cast> | ("++" | "--") <unary> | <postfix>
     /// ```
     fn parse_unary(&mut self) -> Result<Node> {
+        let offset = self.current().offset;
+
         if self.current().is_punct("+") {
             self.advance();
             return self.parse_cast();
         }
 
         if self.current().is_punct("-") {
-            let offset = self.current().offset;
             self.advance();
             return Ok(Node::neg(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("&") {
-            let offset = self.current().offset;
             self.advance();
             return Ok(Node::addr(self.parse_cast()?, offset));
         }
 
         if self.current().is_punct("*") {
-            let offset = self.current().offset;
             self.advance();
             return Ok(Node::deref(self.parse_cast()?, offset));
+        }
+
+        if self.current().is_punct("++") {
+            self.advance();
+            let unary = self.parse_unary()?;
+            let binary = self.new_add(unary, Node::num(1, offset, false), offset)?;
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("--") {
+            self.advance();
+            let unary = self.parse_unary()?;
+            let binary = self.new_sub(unary, Node::num(1, offset, false), offset)?;
+            return self.new_compound_assign(binary, offset);
         }
 
         self.parse_postfix()
