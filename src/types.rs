@@ -54,7 +54,7 @@ enum TypeKind {
 #[derive(Debug)]
 pub struct ArrayType {
     pub base: Type,
-    _len: usize,
+    _len: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -124,8 +124,13 @@ impl Type {
     }
 
     /// Construct an array type with the given element type and length.
-    pub fn array(base: Type, len: usize) -> Self {
-        let size = base.size() * (len as i64);
+    ///
+    /// If `len` is `None`, this represents an incomplete array type.
+    pub fn array(base: Type, len: Option<usize>) -> Self {
+        let size = match len {
+            Some(len) => base.size() * (len as i64),
+            None => -1,
+        };
         let align = base.align();
         Self::new(TypeKind::Array(ArrayType { base, _len: len }), size, align)
     }
@@ -186,19 +191,6 @@ impl Type {
         matches!(self.0.kind, TypeKind::Enum)
     }
 
-    /// Return whether the type is an integer type.
-    pub fn is_integer(&self) -> bool {
-        matches!(
-            self.0.kind,
-            TypeKind::Bool
-                | TypeKind::Char
-                | TypeKind::Short
-                | TypeKind::Int
-                | TypeKind::Long
-                | TypeKind::Enum
-        )
-    }
-
     /// Return whether the type is a function.
     pub fn is_func(&self) -> bool {
         matches!(self.0.kind, TypeKind::Func { .. })
@@ -223,6 +215,27 @@ impl Type {
             TypeKind::StructOrUnion(sou) => Some(sou),
             _ => None,
         }
+    }
+
+    /// Return whether the type is incomplete.
+    pub fn is_incomplete(&self) -> bool {
+        matches!(
+            self.0.kind,
+            TypeKind::Void | TypeKind::Array(ArrayType { _len: None, .. })
+        )
+    }
+
+    /// Return whether the type is an integer type.
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self.0.kind,
+            TypeKind::Bool
+                | TypeKind::Char
+                | TypeKind::Short
+                | TypeKind::Int
+                | TypeKind::Long
+                | TypeKind::Enum
+        )
     }
 
     /// Return the base type for arrays and pointers.

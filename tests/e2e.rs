@@ -496,6 +496,9 @@ fn test_sizeof() {
     f.assert(1, "({ char i; sizeof(++i); })");
     f.assert(1, "({ char i; sizeof(i++); })");
 
+    f.assert(8, "sizeof(int(*)[10])");
+    f.assert(8, "sizeof(int(*)[][10])");
+
     f.finish();
     f.run("sizeof");
 }

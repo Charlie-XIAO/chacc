@@ -525,7 +525,7 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
-            if declarator.ty.is_void() {
+            if declarator.ty.is_incomplete() {
                 return Err(self
                     .source
                     .error_at(offset, "parameter has incomplete type"));
@@ -553,19 +553,31 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-dimensions> ::= ("[" <num> "]")*
+    /// <array-dimensions> ::= ("[" <num>? "]")*
     /// ```
     fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type> {
         if self.current().is_punct("[") {
             self.advance();
+
+            if self.current().is_punct("]") {
+                self.advance();
+                ty = self.parse_array_dimensions(ty)?;
+                return Ok(Type::array(ty, None));
+            }
+
             let Some(len) = self.current().as_num() else {
                 return Err(self.error_current("expected a number"));
             };
+            let Ok(len) = usize::try_from(len) else {
+                return Err(self.error_current("array size is negative or out of range"));
+            };
+
             self.advance();
             self.skip_punct("]")?;
             ty = self.parse_array_dimensions(ty)?;
-            return Ok(Type::array(ty, len as _));
+            return Ok(Type::array(ty, Some(len)));
         }
+
         Ok(ty)
     }
 
@@ -616,10 +628,10 @@ impl<'a> Parser<'a> {
                 first = false;
 
                 let declarator = self.parse_declarator(declspec.ty.clone())?;
-                if declarator.ty.is_void() {
+                if declarator.ty.is_incomplete() {
                     return Err(self
                         .source
-                        .error_at(declarator.offset, "field declared void"));
+                        .error_at(declarator.offset, "field has incomplete type"));
                 }
                 members.push(Member {
                     name: declarator.name,
@@ -817,6 +829,11 @@ impl<'a> Parser<'a> {
                     .source
                     .error_at(declarator.offset, "expected a global variable"));
             }
+            if declarator.ty.is_incomplete() {
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "variable has incomplete type"));
+            }
 
             self.create_global(declarator.name, declarator.ty, None);
         }
@@ -983,8 +1000,8 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty.clone())?;
-            if declarator.ty.is_void() {
-                return Err(self.source.error_at(offset, "variable declared void"));
+            if declarator.ty.is_incomplete() {
+                return Err(self.source.error_at(offset, "variable has incomplete type"));
             }
             let local_id = self.create_local(declarator.name, declarator.ty);
 
@@ -1476,7 +1493,7 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(content) = self.current().as_str() {
-            let ty = Type::array(Type::char(), content.len());
+            let ty = Type::array(Type::char(), Some(content.len()));
             let global_id = self.create_anon_global(ty, content);
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
