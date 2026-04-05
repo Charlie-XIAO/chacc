@@ -21,9 +21,8 @@ At the current state:
 - incomplete local variables are rejected
 - incomplete global variables are rejected
 - incomplete struct/union members are rejected
-- incomplete array/function parameters are temporarily rejected instead of
-  being adjusted to pointer types
-- some invalid nested incomplete-array forms are still under-validated
+- array parameters now decay to pointers in function parameter context
+- invalid nested incomplete-array forms are now rejected
 
 This is a deliberate stopgap.
 
@@ -50,19 +49,20 @@ places where C requires extra behavior for such types.
 
 ## Why This Was Deferred
 
-There are really three separate features here:
+There are really several separate features here:
 
 1. Parsing incomplete array types
-2. Adjusting function parameter types
+2. Adjusting array/function parameter types
 3. Supporting special object/layout rules
 
 Those do not all land in the same upstream chapter.
 
 The first part is needed immediately for this chapter.
-The later two parts are broader semantic features and are better deferred until
-their surrounding machinery is present.
+Array-parameter adjustment and nested incomplete-array validation have now been
+implemented. The remaining items are broader semantic features and are better
+deferred until their surrounding machinery is present.
 
-## Deferred Part 1: Function Parameter Adjustment
+## Completed Part 1: Array Parameter Adjustment
 
 In C, function parameters are adjusted:
 
@@ -76,58 +76,47 @@ int f(int a[]);
 int f(int *a);
 ```
 
-At the current state, `chacc` does **not** implement that adjustment yet.
-
-Instead, parameter declarations such as:
+`chacc` now implements the array part of that adjustment. For example:
 
 ```c
 int f(int a[]);
 ```
 
-are temporarily rejected as:
+is now treated like `int f(int *a);`.
 
-- `parameter has incomplete type`
+This was deferred earlier, but has now been completed in the corresponding
+later chibicc chapter.
 
-That is intentionally stricter than the eventual goal, but it is still better
-than letting such types flow through unchanged and later panic in codegen.
+## Deferred Part 1: Function Parameter Adjustment
 
-This is intentionally deferred because latest chibicc does add this later in
-`parse.c:func_params()`, and we do not want to mix that later semantic step
-into the current chapter.
+Function parameters still need the analogous decay rule:
 
-When revisiting this, the fix should happen in parameter parsing, not in
-codegen:
+```c
+int f(int g());
+```
+
+should be treated like a parameter of pointer-to-function type rather than a
+raw function type.
+
+Latest chibicc does also add this later in `parse.c:func_params()`.
+
+When revisiting this, the remaining fix should happen in parameter parsing, not
+in codegen:
 
 - parse the declarator type normally
-- if the parameter type is an array, convert it to `ptr(base)`
 - if the parameter type is a function, convert it to `ptr(func_ty)`
 - store that adjusted type in the function type and in the parameter locals
 
-## Deferred Part 1.5: Validation Of Nested Incomplete Array Forms
+## Completed Part 1.5: Validation Of Nested Incomplete Array Forms
 
-The current parser is also still too permissive for some invalid combinations
-of omitted array bounds.
-
-Example:
+The parser now rejects invalid combinations of omitted array bounds, such as:
 
 ```c
 sizeof(int(*)[][][10])
 ```
 
-This is not a valid type, but chibicc also accepts similar forms, so this is
-another place where blindly following upstream would keep a known hole.
-
-The general issue is that an incomplete array bound should not be accepted in
-arbitrary nested positions just because `type_suffix` can mechanically build a
-tree of `array(base, None)`.
-
-When revisiting this, add an explicit semantic validation pass for array
-declarators so that:
-
-- allowed incomplete-array forms remain accepted where C permits them
-- invalid nested/stacked omitted bounds are rejected
-- the rule is enforced deliberately rather than falling out accidentally from
-  later codegen or size computations
+This was another place where chibicc was permissive and `chacc` now chooses to
+be stricter.
 
 ## Deferred Part 2: File-Scope Incomplete Arrays
 
@@ -207,13 +196,11 @@ When this area is revisited, do not try to solve everything in one patch.
 
 Instead split it into:
 
-1. Parameter adjustment
-   - arrays/functions in parameter position decay to pointers
-2. Validation of nested incomplete-array forms
-   - reject invalid omitted-bound combinations such as `int(*)[][][10]`
-3. Flexible array members
+1. Function parameter adjustment
+   - function parameters decay to pointers to function
+2. Flexible array members
    - last struct member only
-4. File-scope incomplete arrays / tentative definitions
+3. File-scope incomplete arrays / tentative definitions
    - make an explicit policy choice
 
 That will keep the work easier to reason about and closer to how the language

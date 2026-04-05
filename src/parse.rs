@@ -525,7 +525,17 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
-            if declarator.ty.is_incomplete() {
+
+            let ty = if declarator.ty.is_array() {
+                // Array decay will convert "array of T" to "pointer to T" in
+                // parameter declarations; e.g., "*argv[]" being converted to
+                // "**argv" is because of this rule
+                Type::ptr(declarator.ty.base().unwrap().clone())
+            } else {
+                declarator.ty
+            };
+
+            if ty.is_incomplete() {
                 return Err(self
                     .source
                     .error_at(offset, "parameter has incomplete type"));
@@ -537,7 +547,7 @@ impl<'a> Parser<'a> {
 
             params.push(Parameter {
                 name: declarator.name,
-                ty: declarator.ty,
+                ty,
             });
 
             if params.len() > MAX_FUNC_PARAMS {
