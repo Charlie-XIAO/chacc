@@ -269,6 +269,15 @@ fn test_control() {
     f.assert(55, "({ int j=0; for (int i=0; i<=10; i=i+1) j=j+i; j; })");
     f.assert(3, "({ int i=3; int j=0; for (int i=0; i<=10; i=i+1) j=j+i; i; })");
 
+    f.assert(1, "0||1");
+    f.assert(1, "0||(2-2)||5");
+    f.assert(0, "0||0");
+    f.assert(0, "0||(2-2)");
+
+    f.assert(0, "0&&1");
+    f.assert(0, "(2-2)&&5");
+    f.assert(1, "1&&5");
+
     f.finish();
     f.run("control");
 }

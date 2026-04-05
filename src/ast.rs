@@ -106,11 +106,11 @@ pub enum NodeKind {
     Addr(Box<Node>),
     /// A pointer dereference "*".
     Deref(Box<Node>),
-    /// A unary negation "-".
+    /// A unary negation operation "-".
     Neg(Box<Node>),
-    /// A unary not "!".
+    /// A unary not operation "!".
     Not(Box<Node>),
-    /// A unary bit-not "~".
+    /// A unary bit-not operation "~".
     BitNot(Box<Node>),
     /// A reference to a named entity.
     ///
@@ -124,6 +124,10 @@ pub enum NodeKind {
     ///
     /// [1]: https://gcc.gnu.org/onlinedocs/gcc-3.2.1/gcc/Lvalues.html
     Comma { lhs: Box<Node>, rhs: Box<Node> },
+    /// A logical and operation "&&".
+    LogicalAnd { lhs: Box<Node>, rhs: Box<Node> },
+    /// A logical or operation "||".
+    LogicalOr { lhs: Box<Node>, rhs: Box<Node> },
     /// A binary operation.
     Binary {
         op: BinaryOp,
@@ -222,6 +226,34 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Comma {
+                lhs: lhs.into(),
+                rhs: rhs.into(),
+            },
+        }
+    }
+
+    /// Construct a logical and node.
+    pub fn logical_and(
+        lhs: impl Into<Box<Node>>,
+        rhs: impl Into<Box<Node>>,
+        offset: usize,
+    ) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::LogicalAnd {
+                lhs: lhs.into(),
+                rhs: rhs.into(),
+            },
+        }
+    }
+
+    /// Construct a logical or node.
+    pub fn logical_or(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::LogicalOr {
                 lhs: lhs.into(),
                 rhs: rhs.into(),
             },

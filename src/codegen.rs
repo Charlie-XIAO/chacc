@@ -454,6 +454,34 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(lhs)?;
                 self.gen_expr(rhs)?;
             },
+            NodeKind::LogicalAnd { lhs, rhs } => {
+                let label = self.take_label();
+                self.gen_expr(lhs)?;
+                self.cmp_zero(lhs.expect_ty())?;
+                writeln!(self.out, "  je .L.false.{label}")?;
+                self.gen_expr(rhs)?;
+                self.cmp_zero(rhs.expect_ty())?;
+                writeln!(self.out, "  je .L.false.{label}")?;
+                writeln!(self.out, "  mov $1, %rax")?;
+                writeln!(self.out, "  jmp .L.end.{label}")?;
+                writeln!(self.out, ".L.false.{label}:")?;
+                writeln!(self.out, "  mov $0, %rax")?;
+                writeln!(self.out, ".L.end.{label}:")?;
+            },
+            NodeKind::LogicalOr { lhs, rhs } => {
+                let label = self.take_label();
+                self.gen_expr(lhs)?;
+                self.cmp_zero(lhs.expect_ty())?;
+                writeln!(self.out, "  jne .L.true.{label}")?;
+                self.gen_expr(rhs)?;
+                self.cmp_zero(rhs.expect_ty())?;
+                writeln!(self.out, "  jne .L.true.{label}")?;
+                writeln!(self.out, "  mov $0, %rax")?;
+                writeln!(self.out, "  jmp .L.end.{label}")?;
+                writeln!(self.out, ".L.true.{label}:")?;
+                writeln!(self.out, "  mov $1, %rax")?;
+                writeln!(self.out, ".L.end.{label}:")?;
+            },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.gen_expr(rhs)?;
                 self.push()?;

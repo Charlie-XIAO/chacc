@@ -1006,12 +1006,12 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <assign> ::= <bit-or> (<assign-op> <assign>)?
+    /// <assign> ::= <logical-or> (<assign-op> <assign>)?
     /// <assign-op> ::=
     ///   "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
-        let node = self.parse_bit_or()?;
+        let node = self.parse_logical_or()?;
         let offset = self.current().offset;
 
         if self.current().is_punct("=") {
@@ -1074,6 +1074,36 @@ impl<'a> Parser<'a> {
             let assign = self.parse_assign()?;
             let binary = Node::binary(BinaryOp::BitXor, node, assign, offset);
             return self.new_compound_assign(binary, offset);
+        }
+
+        Ok(node)
+    }
+
+    /// ```bnf
+    /// <logical-or> ::= <logical-and> ("||" <logical-and>)*
+    /// ```
+    fn parse_logical_or(&mut self) -> Result<Node> {
+        let mut node = self.parse_logical_and()?;
+
+        while self.current().is_punct("||") {
+            let offset = self.current().offset;
+            self.advance();
+            node = Node::logical_or(node, self.parse_logical_and()?, offset);
+        }
+
+        Ok(node)
+    }
+
+    /// ```bnf
+    /// <logical-and> ::= <bit-or> ("&&" <bit-or>)*
+    /// ```
+    fn parse_logical_and(&mut self) -> Result<Node> {
+        let mut node = self.parse_bit_or()?;
+
+        while self.current().is_punct("&&") {
+            let offset = self.current().offset;
+            self.advance();
+            node = Node::logical_and(node, self.parse_bit_or()?, offset);
         }
 
         Ok(node)
@@ -1936,7 +1966,7 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Not(expr) => {
                 self.infer_type(expr)?;
-                Type::int() // In C, logical NOT is int 0/1 not bool
+                Type::int() // C logical operators give int 0/1 not bool
             },
             NodeKind::Entity(entity) => match *entity {
                 EntityRef::Local(local_id) => self.locals[local_id].ty.clone(),
@@ -1958,6 +1988,11 @@ impl<'a> Parser<'a> {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
                 rhs.expect_ty().clone()
+            },
+            NodeKind::LogicalAnd { lhs, rhs } | NodeKind::LogicalOr { lhs, rhs } => {
+                self.infer_type(lhs)?;
+                self.infer_type(rhs)?;
+                Type::int() // C logical operators give int 0/1 not bool
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
