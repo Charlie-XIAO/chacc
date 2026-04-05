@@ -1006,11 +1006,12 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <assign> ::= <equality> (<assign-op> <assign>)?
-    /// <assign-op> ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
+    /// <assign> ::= <bit-or> (<assign-op> <assign>)?
+    /// <assign-op> ::=
+    ///   "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
-        let node = self.parse_equality()?;
+        let node = self.parse_bit_or()?;
         let offset = self.current().offset;
 
         if self.current().is_punct("=") {
@@ -1052,6 +1053,72 @@ impl<'a> Parser<'a> {
             let assign = self.parse_assign()?;
             let binary = Node::binary(BinaryOp::Mod, node, assign, offset);
             return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("&=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::BitAnd, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("|=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::BitOr, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("^=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::BitXor, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        Ok(node)
+    }
+
+    /// ```bnf
+    /// <bit-or> ::= <bit-xor> ("|" <bit-xor>)*
+    /// ```
+    fn parse_bit_or(&mut self) -> Result<Node> {
+        let mut node = self.parse_bit_xor()?;
+
+        while self.current().is_punct("|") {
+            let offset = self.current().offset;
+            self.advance();
+            node = Node::binary(BinaryOp::BitOr, node, self.parse_bit_xor()?, offset);
+        }
+
+        Ok(node)
+    }
+
+    /// ```bnf
+    /// <bit-xor> ::= <bit-and> ("^" <bit-and>)*
+    /// ```
+    fn parse_bit_xor(&mut self) -> Result<Node> {
+        let mut node = self.parse_bit_and()?;
+
+        while self.current().is_punct("^") {
+            let offset = self.current().offset;
+            self.advance();
+            node = Node::binary(BinaryOp::BitXor, node, self.parse_bit_and()?, offset);
+        }
+
+        Ok(node)
+    }
+
+    /// ```bnf
+    /// <bit-and> ::= <equality> ("&" <equality>)*
+    /// ```
+    fn parse_bit_and(&mut self) -> Result<Node> {
+        let mut node = self.parse_equality()?;
+
+        while self.current().is_punct("&") {
+            let offset = self.current().offset;
+            self.advance();
+            node = Node::binary(BinaryOp::BitAnd, node, self.parse_equality()?, offset);
         }
 
         Ok(node)
@@ -1901,7 +1968,10 @@ impl<'a> Parser<'a> {
                     | BinaryOp::Sub
                     | BinaryOp::Mul
                     | BinaryOp::Div
-                    | BinaryOp::Mod => ty,
+                    | BinaryOp::Mod
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor => ty,
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::int(),
                 }
             },

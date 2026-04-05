@@ -202,6 +202,22 @@ fn test_arith() {
     f.assert(2, "({ int i=10; i%=4; i; })");
     f.assert(2, "({ long i=10; i%=4; i; })");
 
+    f.assert(0, "0&1");
+    f.assert(1, "3&1");
+    f.assert(3, "7&3");
+    f.assert(10, "-1&10");
+
+    f.assert(1, "0|1");
+    f.assert(0b10011, "0b10000|0b00011");
+
+    f.assert(0, "0^0");
+    f.assert(0, "0b1111^0b1111");
+    f.assert(0b110100, "0b111000^0b001100");
+
+    f.assert(2, "({ int i=6; i&=3; i; })");
+    f.assert(7, "({ int i=6; i|=3; i; })");
+    f.assert(10, "({ int i=15; i^=5; i; })");
+
     f.finish();
     f.run("arith");
 }

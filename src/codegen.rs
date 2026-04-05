@@ -82,6 +82,16 @@ impl ScalarWidth {
         }
     }
 
+    /// Return the `%rdx`-family register for this width.
+    fn rdx_reg(&self) -> &'static str {
+        match self {
+            Self::Byte => "%dl",
+            Self::Word => "%dx",
+            Self::Dword => "%edx",
+            Self::Qword => "%rdx",
+        }
+    }
+
     /// Return the mnemonic used to load a signed scalar of this width.
     fn signed_load_mnemonic(&self) -> &'static str {
         match self {
@@ -465,8 +475,11 @@ impl<'a> Codegen<'a> {
                     BinaryOp::Mod => {
                         writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
                         writeln!(self.out, "  idiv {rdi}")?;
-                        writeln!(self.out, "  mov %rdx, %rax")?;
+                        writeln!(self.out, "  mov {}, {}", width.rdx_reg(), acc)?;
                     },
+                    BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
+                    BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
+                    BinaryOp::BitXor => writeln!(self.out, "  xor {rdi}, {acc}")?,
                     BinaryOp::Eq => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  sete %al")?;
