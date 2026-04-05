@@ -38,6 +38,7 @@ struct TypeInner {
 #[derive(Debug, Default)]
 enum TypeKind {
     #[default] // For ergonomics
+    Dummy,
     Void,
     Bool,
     Char,
@@ -127,6 +128,11 @@ impl Type {
     ///
     /// If `len` is `None`, this represents an incomplete array type.
     pub fn array(base: Type, len: Option<usize>) -> Self {
+        debug_assert!(
+            !base.is_incomplete() && !base.is_func(),
+            "invalid array element type: {base:?}",
+        );
+
         let size = match len {
             Some(len) => base.size() * (len as i64),
             None => -1,

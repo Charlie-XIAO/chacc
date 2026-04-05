@@ -555,30 +555,42 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <array-dimensions> ::= ("[" <num>? "]")*
     /// ```
-    fn parse_array_dimensions(&mut self, mut ty: Type) -> Result<Type> {
-        if self.current().is_punct("[") {
-            self.advance();
+    fn parse_array_dimensions(&mut self, ty: Type) -> Result<Type> {
+        if !self.current().is_punct("[") {
+            return Ok(ty);
+        }
 
-            if self.current().is_punct("]") {
-                self.advance();
-                ty = self.parse_array_dimensions(ty)?;
-                return Ok(Type::array(ty, None));
-            }
+        let offset = self.current().offset;
+        self.advance();
 
+        let len = if self.current().is_punct("]") {
+            None
+        } else {
             let Some(len) = self.current().as_num() else {
                 return Err(self.error_current("expected a number"));
             };
             let Ok(len) = usize::try_from(len) else {
                 return Err(self.error_current("array size is negative or out of range"));
             };
-
             self.advance();
-            self.skip_punct("]")?;
-            ty = self.parse_array_dimensions(ty)?;
-            return Ok(Type::array(ty, Some(len)));
+            Some(len)
+        };
+
+        self.skip_punct("]")?;
+
+        let ty = self.parse_array_dimensions(ty)?;
+        if ty.is_incomplete() {
+            return Err(self
+                .source
+                .error_at(offset, "array element type is incomplete"));
+        }
+        if ty.is_func() {
+            return Err(self
+                .source
+                .error_at(offset, "array element type cannot be function"));
         }
 
-        Ok(ty)
+        Ok(Type::array(ty, len))
     }
 
     /// ```bnf
