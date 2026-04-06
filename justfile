@@ -28,4 +28,6 @@ doc *flags:
 ci: fmt lint test
 
 compile code:
-    printf "{{ code }}" | cargo run --quiet -- - && cc -x assembler -o tmp a.out && ./tmp; echo $?
+    @printf "{{ code }}" | cargo run --quiet -- -
+    @cc -x assembler -o tmp a.out
+    @./tmp; echo $?

@@ -66,7 +66,8 @@ pub struct Member {
 #[derive(Debug, Clone)]
 pub struct StructOrUnionType {
     pub is_struct: bool,
-    pub members: Rc<[Member]>,
+    /// If `None`, this represents an incomplete struct or union type.
+    pub members: Option<Rc<[Member]>>,
 }
 
 /// The global store of non-simple type definitions used by the parsed program.
@@ -96,6 +97,13 @@ impl TypeStore {
     fn get(&self, ty: Type) -> Option<&TypeData> {
         match ty {
             Type::Stored(TypeId(id)) => Some(&self.types[id]),
+            _ => None,
+        }
+    }
+
+    fn get_mut(&mut self, ty: Type) -> Option<&mut TypeData> {
+        match ty {
+            Type::Stored(TypeId(id)) => Some(&mut self.types[id]),
             _ => None,
         }
     }
@@ -136,9 +144,34 @@ impl TypeStore {
 
     /// Construct a struct or union type with the given members.
     ///
-    /// For a struct, the member offsets will be assigned here so they do not
-    /// need to be pre-computed. For a union, the member offsets must be all 0.
-    pub fn struct_or_union(&mut self, is_struct: bool, mut members: Vec<Member>) -> Type {
+    /// If `members` is `None`, this represents an incomplete struct or union
+    /// type. Otherwise, for a struct, the member offsets will be assigned here
+    /// so they do not need to be pre-computed. For a union, the member offsets
+    /// must be all 0.
+    pub fn struct_or_union(&mut self, is_struct: bool, members: Option<Vec<Member>>) -> Type {
+        let ty = self.push(
+            TypeKind::StructOrUnion(StructOrUnionType {
+                is_struct,
+                members: None,
+            }),
+            -1,
+            1,
+        );
+        if let Some(members) = members {
+            self.complete_struct_or_union(is_struct, members, ty);
+        }
+        ty
+    }
+
+    /// Complete an existing incomplete struct or union type.
+    ///
+    /// See [`TypeStore::struct_or_union`] for more details.
+    pub fn complete_struct_or_union(
+        &mut self,
+        is_struct: bool,
+        mut members: Vec<Member>,
+        ty: Type,
+    ) {
         let mut offset = 0;
         let mut align = 1;
 
@@ -157,14 +190,19 @@ impl TypeStore {
             }
         }
 
-        self.push(
-            TypeKind::StructOrUnion(StructOrUnionType {
-                is_struct,
-                members: members.into(),
-            }),
-            align_to(offset, align), // Trailing padding
-            align,
-        )
+        let data = self.get_mut(ty).expect("type not found");
+        let TypeKind::StructOrUnion(sou) = &mut data.kind else {
+            panic!("not a struct or union type");
+        };
+
+        debug_assert!(
+            sou.members.is_none(),
+            "cannot complete an already completed struct or union type",
+        );
+
+        sou.members = Some(members.into());
+        data.size = align_to(offset, align); // Trailing padding
+        data.align = align;
     }
 
     /// Coerce two operand types for a validated binary operation.
@@ -262,7 +300,11 @@ impl TypeStore {
         let Some(data) = self.get(ty) else {
             return false;
         };
-        matches!(data.kind, TypeKind::Array(ArrayType { _len: None, .. }))
+        matches!(
+            data.kind,
+            TypeKind::Array(ArrayType { _len: None, .. })
+                | TypeKind::StructOrUnion(StructOrUnionType { members: None, .. })
+        )
     }
 
     /// Return whether the type is an integer type.

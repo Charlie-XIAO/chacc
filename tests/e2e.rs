@@ -601,6 +601,11 @@ fn test_struct() {
     f.assert(16, "({ struct {char a; long b;} x; sizeof(x); })");
     f.assert(4, "({ struct {char a; short b;} x; sizeof(x); })");
 
+    f.assert(8, "({ struct foo *bar; sizeof(bar); })");
+    f.assert(4, "({ struct T *foo; struct T {int x;}; sizeof(struct T); })");
+    f.assert(1, "({ struct T { struct T *next; int x; } a; struct T b; b.x=1; a.next=&b; a.next->x; })");
+    f.assert(4, "({ typedef struct T T; struct T { int x; }; sizeof(T); })");
+
     f.finish();
     f.run("struct");
 }

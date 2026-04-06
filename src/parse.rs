@@ -612,41 +612,92 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <struct-or-union-decl> ::= <ident> | <ident>? "{" <struct_member>* "}"
-    /// <struct-or-union-member> ::=
-    ///   <declspec> <declarator> ("," <declarator>)* ";"
+    /// <struct-or-union-decl> ::= <ident> | <ident>? "{" <members-decl>
     /// ```
     fn parse_struct_or_union_decl(&mut self, is_struct: bool) -> Result<Type> {
         let offset = self.current().offset;
         let tag = self.current().as_ident();
 
         let repr = || if is_struct { "struct" } else { "union" };
+        let context = DeclspecContext::MemberDecl(repr());
 
         if let Some(tag) = tag {
             self.advance();
-            if !self.current().is_punct("{") {
-                let ty = self.find_tag(tag).ok_or_else(|| {
-                    self.source
-                        .error_at(offset, format_smolstr!("unknown {} type", repr()))
-                })?;
 
-                let sou = self.types.as_struct_or_union(ty).ok_or_else(|| {
-                    self.source
-                        .error_at(offset, format_smolstr!("not a {} tag", repr()))
-                })?;
-                if sou.is_struct != is_struct {
+            // Case 1: "struct T"
+            if !self.current().is_punct("{") {
+                let Some(ty) = self.find_tag_current(tag) else {
+                    // Case 1A: Never declared before, create an incomplete type
+                    let ty = self.types.struct_or_union(is_struct, None);
+                    self.push_scope_tag(tag.to_smolstr(), ty);
+                    return Ok(ty);
+                };
+
+                if let Some(sou) = self.types.as_struct_or_union(ty)
+                    && sou.is_struct == is_struct
+                {
+                    // Case 1C: Declared before, do nothing
+                    return Ok(ty);
+                }
+
+                // Case 1B: Declared before but as different kind
+                return Err(self
+                    .source
+                    .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
+            }
+
+            // Case 2: "struct T {...}"
+            let Some(ty) = self.find_tag_current(tag) else {
+                // Case 2A: Never declared before, create a complete type
+                // Note: We have to create an incomplete type first, then parse
+                // the members and complete the type; this is to handle self-
+                // referential structs, so that member can see that this type is
+                // already declared and will not create a separate declaration
+                let ty = self.types.struct_or_union(is_struct, None);
+                self.push_scope_tag(tag.to_smolstr(), ty);
+                self.advance();
+                let members = self.parse_members_decl(context)?;
+                self.types.complete_struct_or_union(is_struct, members, ty);
+                return Ok(ty);
+            };
+
+            if let Some(sou) = self.types.as_struct_or_union(ty)
+                && sou.is_struct == is_struct
+            {
+                if !self.types.is_incomplete(ty) {
+                    // Case 2C: Declared and defined before
                     return Err(self
                         .source
-                        .error_at(offset, format_smolstr!("not a {} tag", repr())));
+                        .error_at(offset, format_smolstr!("redefinition of {} tag", repr())));
                 }
+
+                // Case 2D: Declared before but not defined, complete it
+                self.advance();
+                let members = self.parse_members_decl(context)?;
+                self.types.complete_struct_or_union(is_struct, members, ty);
                 return Ok(ty);
             }
+
+            // Case 2B: Declared before but as different kind
+            return Err(self
+                .source
+                .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
         }
 
+        // Case 3: "struct {...}"
         self.skip_punct("{")?;
+        let members = self.parse_members_decl(context)?;
+        let ty = self.types.struct_or_union(is_struct, Some(members));
+        Ok(ty)
+    }
 
+    /// ```bnf
+    /// <members-decl> ::= <member-decl>* "}"
+    /// <member-decl> ::= <declspec> <declarator> ("," <declarator>)* ";"
+    /// ```
+    fn parse_members_decl(&mut self, context: DeclspecContext) -> Result<Vec<Member>> {
         let mut members = Vec::new();
-        let context = DeclspecContext::MemberDecl(repr());
+
         while !self.current().is_punct("}") {
             let declspec = self.parse_declspec(context)?;
 
@@ -666,7 +717,7 @@ impl<'a> Parser<'a> {
                 members.push(Member {
                     name: declarator.name,
                     ty: declarator.ty,
-                    offset: 0, // Assigned in the constructor
+                    offset: 0, // union requires 0; struct fills in later
                 });
             }
 
@@ -674,12 +725,7 @@ impl<'a> Parser<'a> {
         }
 
         self.advance();
-
-        let ty = self.types.struct_or_union(is_struct, members);
-        if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty);
-        }
-        Ok(ty)
+        Ok(members)
     }
 
     /// ```bnf
@@ -1489,8 +1535,15 @@ impl<'a> Parser<'a> {
                 self.advance();
 
                 if self.at_typename() {
+                    let offset = self.current().offset;
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
+
+                    if self.types.is_incomplete(ty) {
+                        return Err(self
+                            .source
+                            .error_at(offset, "cannot apply sizeof to incomplete type"));
+                    }
                     return Ok(Node::num(self.types.size(ty), offset, false));
                 }
 
@@ -1651,6 +1704,11 @@ impl<'a> Parser<'a> {
             }
         }
         None
+    }
+
+    /// Find a struct or union tag in the current scope only.
+    fn find_tag_current(&self, tag: &str) -> Option<Type> {
+        self.scopes.last()?.tags.get(tag).copied()
     }
 
     /// Create a new local variable.
@@ -1886,10 +1944,18 @@ impl<'a> Parser<'a> {
     /// Build a member access node for the given node.
     fn new_member_access(&mut self, mut node: Node) -> Result<Node> {
         self.infer_type(&mut node)?;
+        let ty = node.expect_ty();
+        if self.types.is_incomplete(ty) {
+            return Err(self.error_current("request for member in an incomplete type"));
+        }
 
         let sou = match self.types.as_struct_or_union(node.expect_ty()) {
             Some(sou) => sou,
-            None => return Err(self.error_current("not a struct or union")),
+            None => {
+                return Err(self.error_current(
+                    "request for member in something that is not a struct or union",
+                ));
+            },
         };
 
         let ident = match self.current().as_ident() {
@@ -1897,7 +1963,13 @@ impl<'a> Parser<'a> {
             None => return Err(self.error_current("not an ident")),
         };
 
-        let member = match sou.members.iter().find(|member| member.name == ident) {
+        let member = match sou
+            .members
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|member| member.name == ident)
+        {
             Some(member) => member.clone(),
             None => return Err(self.error_current("no such member")),
         };
