@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
-use crate::types::{Member, Type};
+use crate::types::{Member, Type, TypeStore};
 
 /// The parsed program.
 #[derive(Debug)]
 pub struct Program {
+    pub types: TypeStore,
     pub functions: Vec<Function>,
     pub globals: Vec<GlobalVar>,
 }
@@ -267,9 +268,9 @@ impl Node {
     /// if the value fits in an [`i32`] and otherwise `long`.
     pub fn num(value: i64, offset: usize, force_long: bool) -> Self {
         let ty = if !force_long && i32::try_from(value).is_ok() {
-            Type::int()
+            Type::Int
         } else {
-            Type::long()
+            Type::Long
         };
 
         Self {
@@ -344,8 +345,8 @@ impl Node {
     }
 
     /// Get the type of this node, expecting it to be set.
-    pub fn expect_ty(&self) -> &Type {
-        self.ty.as_ref().expect("node type is not set")
+    pub fn expect_ty(&self) -> Type {
+        self.ty.expect("node type is not set")
     }
 }
 

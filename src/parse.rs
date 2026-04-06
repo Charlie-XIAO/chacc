@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
-use crate::types::{Member, Type};
+use crate::types::{Member, Type, TypeStore};
 use crate::utils::MAX_FUNC_PARAMS;
 
 /// Declaration of a function parameter.
@@ -74,7 +74,7 @@ struct Declspec {
 }
 
 /// An ordinary identifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 enum OrdinaryIdent {
     Entity(EntityRef),
     Typedef(Type),
@@ -82,14 +82,14 @@ enum OrdinaryIdent {
 }
 
 impl OrdinaryIdent {
-    fn as_entity(&self) -> Option<&EntityRef> {
+    fn into_entity(self) -> Option<EntityRef> {
         match self {
             OrdinaryIdent::Entity(entity) => Some(entity),
             _ => None,
         }
     }
 
-    fn as_typedef(&self) -> Option<&Type> {
+    fn into_typedef(self) -> Option<Type> {
         match self {
             OrdinaryIdent::Typedef(ty) => Some(ty),
             _ => None,
@@ -113,6 +113,7 @@ pub struct Parser<'a> {
     pos: usize,
 
     // Mutable states
+    types: TypeStore,
     locals: Vec<LocalVar>,
     functions: Vec<Function>,
     /// The index of the function currently being parsed.
@@ -130,6 +131,7 @@ impl<'a> Parser<'a> {
             source,
             tokens,
             pos: 0,
+            types: TypeStore::default(),
             locals: Vec::new(),
             functions: Vec::new(),
             active_function: None,
@@ -178,7 +180,7 @@ impl<'a> Parser<'a> {
             return false;
         };
         self.find_ident(name)
-            .and_then(OrdinaryIdent::as_typedef)
+            .and_then(OrdinaryIdent::into_typedef)
             .is_some()
     }
 
@@ -188,6 +190,7 @@ impl<'a> Parser<'a> {
     /// allowed for:
     ///
     /// - Mutating position;
+    /// - Appending transient types to the type store;
     /// - Mutating the outermost scope frame, or appending new frames;
     ///
     /// The parser state will be rolled back when the callback completes. The
@@ -200,20 +203,21 @@ impl<'a> Parser<'a> {
         self.scopes.push(ScopeFrame::default());
 
         let saved_pos = self.pos;
-        let saved_scope_depth = self.scopes.len();
+        let saved_types_len = self.types.len();
         let saved_locals_len = self.locals.len();
         let saved_functions_len = self.functions.len();
         let saved_active_function = self.active_function;
         let saved_globals_len = self.globals.len();
+        let saved_scope_depth = self.scopes.len();
         let saved_next_anon_global = self.next_anon_global;
         self.speculate_depth += 1;
 
         let result = f(self).map(|value| (value, self.pos));
 
-        debug_assert!(self.speculate_depth > 0, "speculation state is broken",);
+        debug_assert!(self.speculate_depth > 0, "speculation state is broken");
         debug_assert!(
-            self.scopes.len() >= saved_scope_depth,
-            "cannot pop more scope frames than appended during speculation",
+            self.types.len() >= saved_types_len,
+            "cannot remove pre-existing types during speculation",
         );
         debug_assert!(
             self.locals.len() >= saved_locals_len,
@@ -231,13 +235,18 @@ impl<'a> Parser<'a> {
             self.globals.len() >= saved_globals_len,
             "cannot remove pre-existing globals during speculation",
         );
+        debug_assert!(
+            self.scopes.len() >= saved_scope_depth,
+            "cannot pop more scope frames than appended during speculation",
+        );
 
         self.pos = saved_pos;
-        self.scopes.truncate(saved_scope_depth);
+        self.types.truncate(saved_types_len);
         self.locals.truncate(saved_locals_len);
         self.functions.truncate(saved_functions_len);
         self.active_function = saved_active_function;
         self.globals.truncate(saved_globals_len);
+        self.scopes.truncate(saved_scope_depth);
         self.next_anon_global = saved_next_anon_global;
         self.speculate_depth -= 1;
 
@@ -291,8 +300,7 @@ impl<'a> Parser<'a> {
             let ident = self.current().as_ident();
             let typedef_ty = ident
                 .and_then(|ident| self.find_ident(ident))
-                .and_then(OrdinaryIdent::as_typedef)
-                .cloned();
+                .and_then(OrdinaryIdent::into_typedef);
 
             if spec.is_some() && typedef_ty.is_some() {
                 // There is already a type specifier, so another ident, even if
@@ -389,12 +397,12 @@ impl<'a> Parser<'a> {
         }
 
         let ty = match spec.unwrap() {
-            TypeSpec::Void => Type::void(),
-            TypeSpec::Bool => Type::bool(),
-            TypeSpec::Char => Type::char(),
-            TypeSpec::Short => Type::short(),
-            TypeSpec::Int => Type::int(),
-            TypeSpec::Long => Type::long(),
+            TypeSpec::Void => Type::Void,
+            TypeSpec::Bool => Type::Bool,
+            TypeSpec::Char => Type::Char,
+            TypeSpec::Short => Type::Short,
+            TypeSpec::Int => Type::Int,
+            TypeSpec::Long => Type::Long,
             TypeSpec::Other(ty) => ty,
         };
 
@@ -407,7 +415,7 @@ impl<'a> Parser<'a> {
     fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator> {
         while self.current().is_punct("*") {
             self.advance();
-            ty = Type::ptr(ty);
+            ty = self.types.ptr(ty);
         }
 
         if self.current().is_punct("(") {
@@ -459,7 +467,7 @@ impl<'a> Parser<'a> {
     fn parse_abstract_declarator(&mut self, mut ty: Type) -> Result<Type> {
         while self.current().is_punct("*") {
             self.advance();
-            ty = Type::ptr(ty);
+            ty = self.types.ptr(ty);
         }
 
         // The following part of logic is analogous to "parse_declarator"
@@ -526,16 +534,16 @@ impl<'a> Parser<'a> {
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
 
-            let ty = if declarator.ty.is_array() {
+            let ty = if self.types.is_array(declarator.ty) {
                 // Array decay will convert "array of T" to "pointer to T" in
                 // parameter declarations; e.g., "*argv[]" being converted to
                 // "**argv" is because of this rule
-                Type::ptr(declarator.ty.base().unwrap().clone())
+                self.types.ptr(self.types.base(declarator.ty).unwrap())
             } else {
                 declarator.ty
             };
 
-            if ty.is_incomplete() {
+            if self.types.is_incomplete(ty) {
                 return Err(self
                     .source
                     .error_at(offset, "parameter has incomplete type"));
@@ -558,8 +566,8 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_punct(")")?;
-        let param_tys = params.iter().map(|param| param.ty.clone()).collect();
-        Ok((Type::func(return_ty, param_tys), params))
+        let param_tys = params.iter().map(|param| param.ty).collect();
+        Ok((self.types.func(return_ty, param_tys), params))
     }
 
     /// ```bnf
@@ -589,18 +597,18 @@ impl<'a> Parser<'a> {
         self.skip_punct("]")?;
 
         let ty = self.parse_array_dimensions(ty)?;
-        if ty.is_incomplete() {
+        if self.types.is_incomplete(ty) {
             return Err(self
                 .source
                 .error_at(offset, "array element type is incomplete"));
         }
-        if ty.is_func() {
+        if self.types.is_func(ty) {
             return Err(self
                 .source
                 .error_at(offset, "array element type cannot be function"));
         }
 
-        Ok(Type::array(ty, len))
+        Ok(self.types.array(ty, len))
     }
 
     /// ```bnf
@@ -617,12 +625,12 @@ impl<'a> Parser<'a> {
         if let Some(tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
-                let ty = self.find_tag(tag).cloned().ok_or_else(|| {
+                let ty = self.find_tag(tag).ok_or_else(|| {
                     self.source
                         .error_at(offset, format_smolstr!("unknown {} type", repr()))
                 })?;
 
-                let sou = ty.as_struct_or_union().ok_or_else(|| {
+                let sou = self.types.as_struct_or_union(ty).ok_or_else(|| {
                     self.source
                         .error_at(offset, format_smolstr!("not a {} tag", repr()))
                 })?;
@@ -649,8 +657,8 @@ impl<'a> Parser<'a> {
                 }
                 first = false;
 
-                let declarator = self.parse_declarator(declspec.ty.clone())?;
-                if declarator.ty.is_incomplete() {
+                let declarator = self.parse_declarator(declspec.ty)?;
+                if self.types.is_incomplete(declarator.ty) {
                     return Err(self
                         .source
                         .error_at(declarator.offset, "field has incomplete type"));
@@ -667,9 +675,9 @@ impl<'a> Parser<'a> {
 
         self.advance();
 
-        let ty = Type::struct_or_union(is_struct, members);
+        let ty = self.types.struct_or_union(is_struct, members);
         if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty.clone());
+            self.push_scope_tag(tag.to_smolstr(), ty);
         }
         Ok(ty)
     }
@@ -687,9 +695,8 @@ impl<'a> Parser<'a> {
             if !self.current().is_punct("{") {
                 let ty = self
                     .find_tag(tag)
-                    .cloned()
                     .ok_or_else(|| self.source.error_at(offset, "unknown enum type"))?;
-                if !ty.is_enum() {
+                if !matches!(ty, Type::Enum) {
                     return Err(self.source.error_at(offset, "not an enum tag"));
                 }
                 return Ok(ty);
@@ -727,9 +734,9 @@ impl<'a> Parser<'a> {
 
         self.advance();
 
-        let ty = Type::enum_();
+        let ty = Type::Enum;
         if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty.clone());
+            self.push_scope_tag(tag.to_smolstr(), ty);
         }
         Ok(ty)
     }
@@ -758,7 +765,7 @@ impl<'a> Parser<'a> {
         while !self.current().is_eof() {
             let declspec = self.parse_declspec(DeclspecContext::FileScopeDecl)?;
             if declspec.storage_class == Some(StorageClass::Typedef) {
-                self.parse_typedef_tail(&declspec.ty)?;
+                self.parse_typedef_tail(declspec.ty)?;
                 continue;
             }
 
@@ -775,6 +782,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Program {
+            types: std::mem::take(&mut self.types),
             functions: std::mem::take(&mut self.functions),
             globals: std::mem::take(&mut self.globals),
         })
@@ -788,11 +796,11 @@ impl<'a> Parser<'a> {
             return Ok(false);
         }
 
-        let (ty, _) = self.speculate(|parser| {
+        let (result, _) = self.speculate(|parser| {
             let declarator = parser.parse_declarator(Default::default())?;
-            Ok(declarator.ty)
+            Ok(parser.types.is_func(declarator.ty))
         })?;
-        Ok(ty.is_func())
+        Ok(result)
     }
 
     /// ```bnf
@@ -802,11 +810,11 @@ impl<'a> Parser<'a> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty)?;
-        if !declarator.ty.is_func() {
+        if !self.types.is_func(declarator.ty) {
             return Err(self.error_current("expected a function"));
         }
 
-        let func_id = self.create_function_decl(declarator.name.clone(), declarator.ty.clone());
+        let func_id = self.create_function_decl(declarator.name.clone(), declarator.ty);
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
@@ -845,13 +853,13 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(base_ty.clone())?;
-            if declarator.ty.is_func() {
+            let declarator = self.parse_declarator(base_ty)?;
+            if self.types.is_func(declarator.ty) {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "expected a global variable"));
             }
-            if declarator.ty.is_incomplete() {
+            if self.types.is_incomplete(declarator.ty) {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "variable has incomplete type"));
@@ -880,12 +888,8 @@ impl<'a> Parser<'a> {
             let mut expr = self.parse_expr()?;
             self.skip_punct(";")?;
 
-            let return_ty = self.functions[self.active_function.unwrap()]
-                .ty
-                .as_func()
-                .unwrap()
-                .return_ty
-                .clone();
+            let func_ty = self.functions[self.active_function.unwrap()].ty;
+            let return_ty = self.types.as_func(func_ty).unwrap().return_ty;
             self.apply_cast(&mut expr, return_ty)?;
             return Ok(Stmt::return_(expr, offset));
         }
@@ -915,7 +919,7 @@ impl<'a> Parser<'a> {
 
             let init = Box::new(if self.at_typename() {
                 let declspec = self.parse_declspec(DeclspecContext::ForLoopInitializer)?;
-                self.parse_declaration(&declspec.ty)?
+                self.parse_declaration(declspec.ty)?
             } else {
                 self.parse_expr_stmt()?
             });
@@ -971,11 +975,11 @@ impl<'a> Parser<'a> {
             let mut stmt = if self.at_typename() {
                 let declspec = self.parse_declspec(DeclspecContext::BlockScopeDecl)?;
                 if declspec.storage_class == Some(StorageClass::Typedef) {
-                    self.parse_typedef_tail(&declspec.ty)?;
+                    self.parse_typedef_tail(declspec.ty)?;
                     continue;
                 }
                 // TODO: Fix static local variables being treated as non-static
-                self.parse_declaration(&declspec.ty)?
+                self.parse_declaration(declspec.ty)?
             } else {
                 self.parse_stmt()?
             };
@@ -1009,7 +1013,7 @@ impl<'a> Parser<'a> {
     ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
     /// <declarator-init> ::= <declarator> ("=" <assign>)?
     /// ```
-    fn parse_declaration(&mut self, base_ty: &Type) -> Result<Stmt> {
+    fn parse_declaration(&mut self, base_ty: Type) -> Result<Stmt> {
         let offset = self.current().offset;
         let mut stmts = Vec::new();
         let mut first = true;
@@ -1021,8 +1025,8 @@ impl<'a> Parser<'a> {
             first = false;
 
             let offset = self.current().offset;
-            let declarator = self.parse_declarator(base_ty.clone())?;
-            if declarator.ty.is_incomplete() {
+            let declarator = self.parse_declarator(base_ty)?;
+            if self.types.is_incomplete(declarator.ty) {
                 return Err(self.source.error_at(offset, "variable has incomplete type"));
             }
             let local_id = self.create_local(declarator.name, declarator.ty);
@@ -1487,7 +1491,7 @@ impl<'a> Parser<'a> {
                 if self.at_typename() {
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
-                    return Ok(Node::num(ty.size(), offset, false));
+                    return Ok(Node::num(self.types.size(ty), offset, false));
                 }
 
                 self.pos = pos;
@@ -1495,7 +1499,7 @@ impl<'a> Parser<'a> {
 
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
-            let size = operand.expect_ty().size();
+            let size = self.types.size(operand.expect_ty());
             return Ok(Node::num(size, offset, false));
         }
 
@@ -1507,15 +1511,15 @@ impl<'a> Parser<'a> {
             self.advance();
 
             let node = match self.find_ident(name) {
-                Some(OrdinaryIdent::Entity(entity)) => Node::entity(*entity, offset),
-                Some(OrdinaryIdent::EnumConst(val)) => Node::num(*val, offset, false),
+                Some(OrdinaryIdent::Entity(entity)) => Node::entity(entity, offset),
+                Some(OrdinaryIdent::EnumConst(val)) => Node::num(val, offset, false),
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
             return Ok(node);
         }
 
         if let Some(content) = self.current().as_str() {
-            let ty = Type::array(Type::char(), Some(content.len()));
+            let ty = self.types.array(Type::Char, Some(content.len()));
             let global_id = self.create_anon_global(ty, content);
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
@@ -1539,7 +1543,7 @@ impl<'a> Parser<'a> {
 
         let entity = self
             .find_ident(name)
-            .and_then(OrdinaryIdent::as_entity)
+            .and_then(OrdinaryIdent::into_entity)
             .ok_or_else(|| {
                 self.source
                     .error_at(offset, "implicit declaration of a function")
@@ -1549,9 +1553,12 @@ impl<'a> Parser<'a> {
             return Err(self.source.error_at(offset, "not a function"));
         };
 
-        let ty = self.functions[*func_id].ty.clone();
-        let func_ty = ty.as_func().unwrap();
-        let mut param_tys = func_ty.params.iter();
+        let func = self
+            .types
+            .as_func(self.functions[func_id].ty)
+            .unwrap()
+            .clone();
+        let mut param_tys = func.params.iter().copied();
 
         let mut args = Vec::new();
         while !self.current().is_punct(")") {
@@ -1561,30 +1568,25 @@ impl<'a> Parser<'a> {
 
             let mut arg = self.parse_assign()?;
             if let Some(param_ty) = param_tys.next() {
-                if param_ty.as_struct_or_union().is_some() {
+                if self.types.as_struct_or_union(param_ty).is_some() {
                     return Err(self.source.error_at(
                         arg.offset,
                         "passing struct or union by value is not supported yet",
                     ));
                 }
-                self.apply_cast(&mut arg, param_ty.clone())?;
+                self.apply_cast(&mut arg, param_ty)?;
             }
             args.push(arg);
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(
-            name,
-            args,
-            func_ty.return_ty.clone(),
-            offset,
-        ))
+        Ok(Node::func_call(name, args, func.return_ty, offset))
     }
 
     /// ```bnf
     /// <typedef-tail> ::= <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_typedef_tail(&mut self, base_ty: &Type) -> Result<()> {
+    fn parse_typedef_tail(&mut self, base_ty: Type) -> Result<()> {
         let mut first = true;
 
         while !self.current().is_punct(";") {
@@ -1593,7 +1595,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(base_ty.clone())?;
+            let declarator = self.parse_declarator(base_ty)?;
             let typedef = OrdinaryIdent::Typedef(declarator.ty);
             self.push_scope_ident(declarator.name, typedef);
         }
@@ -1632,20 +1634,20 @@ impl<'a> Parser<'a> {
     }
 
     /// Find an ordinary identifier by name.
-    fn find_ident(&self, name: &str) -> Option<&OrdinaryIdent> {
+    fn find_ident(&self, name: &str) -> Option<OrdinaryIdent> {
         for frame in self.scopes.iter().rev() {
             if let Some(entry) = frame.idents.get(name) {
-                return Some(entry);
+                return Some(*entry);
             }
         }
         None
     }
 
     /// Find a struct or union tag by name.
-    fn find_tag(&self, tag: &str) -> Option<&Type> {
+    fn find_tag(&self, tag: &str) -> Option<Type> {
         for frame in self.scopes.iter().rev() {
             if let Some(ty) = frame.tags.get(tag) {
-                return Some(ty);
+                return Some(*ty);
             }
         }
         None
@@ -1738,29 +1740,30 @@ impl<'a> Parser<'a> {
     }
 
     /// Build an addition node with pointer scaling.
-    fn new_add(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
+    fn new_add(&mut self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
-        let lhs_ty = lhs.ty.clone().unwrap();
-        let rhs_ty = rhs.ty.clone().unwrap();
+        let lhs_ty = lhs.expect_ty();
+        let rhs_ty = rhs.expect_ty();
 
         // num + num
-        if lhs_ty.is_integer() && rhs_ty.is_integer() {
+        if self.types.is_integer(lhs_ty) && self.types.is_integer(rhs_ty) {
             return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
-        if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
+        if self.types.base(lhs_ty).is_some() && self.types.base(rhs_ty).is_some() {
             return Err(self.source.error_at(offset, "invalid operands"));
         }
 
         // Canonicalize num + ptr to ptr + num
-        if lhs_ty.base().is_none() && rhs_ty.base().is_some() {
+        if self.types.base(lhs_ty).is_none() && self.types.base(rhs_ty).is_some() {
             std::mem::swap(&mut lhs, &mut rhs);
         }
 
         // ptr + num
-        let base_size = lhs.expect_ty().base().unwrap().size();
+        let base_ty = self.types.base(lhs.expect_ty()).unwrap();
+        let base_size = self.types.size(base_ty);
         let scaled_rhs = Node::binary(
             BinaryOp::Mul,
             rhs,
@@ -1772,21 +1775,23 @@ impl<'a> Parser<'a> {
     }
 
     /// Build a subtraction node with pointer scaling.
-    fn new_sub(&self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
+    fn new_sub(&mut self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
-        let lhs_ty = lhs.ty.clone().unwrap();
-        let rhs_ty = rhs.ty.clone().unwrap();
+        let lhs_ty = lhs.expect_ty();
+        let rhs_ty = rhs.expect_ty();
 
         // num - num
-        if lhs_ty.is_integer() && rhs_ty.is_integer() {
+        if self.types.is_integer(lhs_ty) && self.types.is_integer(rhs_ty) {
             return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
         // ptr - num
-        if lhs_ty.base().is_some() && rhs_ty.is_integer() {
-            let base_size = lhs_ty.base().unwrap().size();
+        if let Some(base_ty) = self.types.base(lhs_ty)
+            && self.types.is_integer(rhs_ty)
+        {
+            let base_size = self.types.size(base_ty);
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
                 rhs,
@@ -1798,10 +1803,12 @@ impl<'a> Parser<'a> {
         }
 
         // ptr - ptr
-        if lhs_ty.base().is_some() && rhs_ty.base().is_some() {
-            let base_size = lhs_ty.base().unwrap().size();
+        if let Some(base_ty) = self.types.base(lhs_ty)
+            && self.types.base(rhs_ty).is_some()
+        {
+            let base_size = self.types.size(base_ty);
             let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            diff.ty = Some(Type::int());
+            diff.ty = Some(Type::Int);
             let node = Node::binary(
                 BinaryOp::Div,
                 diff,
@@ -1831,8 +1838,9 @@ impl<'a> Parser<'a> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
-        let tmp = self.create_local("", Type::ptr(lhs.expect_ty().clone()));
-        let tmp = EntityRef::Local(tmp);
+        // (typeof lhs) *tmp;
+        let lhs_ty = self.types.ptr(lhs.expect_ty());
+        let tmp = EntityRef::Local(self.create_local("", lhs_ty));
 
         // tmp = &lhs;
         let assign1 = Node::assign(Node::entity(tmp, offset), Node::addr(lhs, offset), offset);
@@ -1859,7 +1867,7 @@ impl<'a> Parser<'a> {
     /// post decrement is desugared into `(typeof node)((node -= 1) + 1)`.
     fn new_post_inc_dec(&mut self, mut node: Node, is_inc: bool, offset: usize) -> Result<Node> {
         self.infer_type(&mut node)?;
-        let ty = node.expect_ty().clone();
+        let ty = node.expect_ty();
 
         let addend = if is_inc { 1 } else { -1 };
 
@@ -1876,11 +1884,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Build a member access node for the given node.
-    fn new_member_access(&self, mut node: Node) -> Result<Node> {
+    fn new_member_access(&mut self, mut node: Node) -> Result<Node> {
         self.infer_type(&mut node)?;
 
-        let sou = match node.expect_ty().as_struct_or_union() {
-            Some(members) => members,
+        let sou = match self.types.as_struct_or_union(node.expect_ty()) {
+            Some(sou) => sou,
             None => return Err(self.error_current("not a struct or union")),
         };
 
@@ -1898,7 +1906,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Apply a cast on the given node to the given type.
-    fn apply_cast(&self, node: &mut Node, ty: Type) -> Result<()> {
+    fn apply_cast(&mut self, node: &mut Node, ty: Type) -> Result<()> {
         let offset = node.offset;
         let mut old = std::mem::take(node);
         self.infer_type(&mut old)?;
@@ -1909,15 +1917,15 @@ impl<'a> Parser<'a> {
     /// Apply a usual arithmetic conversion on the given operands.
     ///
     /// Returns the coerced common type.
-    fn apply_usual_arith_conv(&self, lhs: &mut Node, rhs: &mut Node) -> Result<Type> {
-        let ty = lhs.expect_ty().coerce(rhs.expect_ty());
-        self.apply_cast(lhs, ty.clone())?;
-        self.apply_cast(rhs, ty.clone())?;
+    fn apply_usual_arith_conv(&mut self, lhs: &mut Node, rhs: &mut Node) -> Result<Type> {
+        let ty = self.types.coerce(lhs.expect_ty(), rhs.expect_ty());
+        self.apply_cast(lhs, ty)?;
+        self.apply_cast(rhs, ty)?;
         Ok(ty)
     }
 
     /// Infer types for a statement subtree.
-    fn infer_type_stmt(&self, stmt: &mut Stmt) -> Result<()> {
+    fn infer_type_stmt(&mut self, stmt: &mut Stmt) -> Result<()> {
         match &mut stmt.kind {
             StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr),
             StmtKind::Loop {
@@ -1959,7 +1967,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Infer the type for an expression subtree.
-    fn infer_type(&self, node: &mut Node) -> Result<()> {
+    fn infer_type(&mut self, node: &mut Node) -> Result<()> {
         if node.ty.is_some() {
             return Ok(());
         }
@@ -1969,69 +1977,71 @@ impl<'a> Parser<'a> {
                 for arg in args {
                     self.infer_type(arg)?;
                 }
-                Type::long()
+                Type::Long
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
                 let pointee = expr.expect_ty();
-                let base = if pointee.is_array() {
+                let base = if self.types.is_array(pointee) {
                     // In C, array decays into a pointer to its first element
                     // when taking its address, so we need to take its base type
-                    pointee.base().cloned().unwrap()
+                    self.types.base(pointee).unwrap()
                 } else {
-                    pointee.clone()
+                    pointee
                 };
-                Type::ptr(base)
+                self.types.ptr(base)
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
-                let Some(base) = expr.expect_ty().base() else {
+                let Some(base) = self.types.base(expr.expect_ty()) else {
                     return Err(self
                         .source
                         .error_at(node.offset, "invalid pointer dereference"));
                 };
-                if base.is_void() {
+                if matches!(base, Type::Void) {
                     return Err(self
                         .source
                         .error_at(node.offset, "dereferencing a void pointer"));
                 }
-                base.clone()
+                base
             },
             NodeKind::Neg(expr) | NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
-                let ty = Type::int().coerce(expr.expect_ty());
-                self.apply_cast(expr, ty.clone())?;
+                let ty = self.types.coerce(Type::Int, expr.expect_ty());
+                self.apply_cast(expr, ty)?;
                 ty
             },
             NodeKind::Not(expr) => {
                 self.infer_type(expr)?;
-                Type::int() // C logical operators give int 0/1 not bool
+                Type::Int // C logical operators give int 0/1 not bool
             },
             NodeKind::Entity(entity) => match *entity {
-                EntityRef::Local(local_id) => self.locals[local_id].ty.clone(),
-                EntityRef::Global(global_id) => self.globals[global_id].ty.clone(),
-                EntityRef::Function(function_id) => self.functions[function_id].ty.clone(),
+                EntityRef::Local(local_id) => self.locals[local_id].ty,
+                EntityRef::Global(global_id) => self.globals[global_id].ty,
+                EntityRef::Function(function_id) => self.functions[function_id].ty,
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                if lhs.expect_ty().is_array() {
+
+                let lhs_ty = lhs.expect_ty();
+                if self.types.is_array(lhs_ty) {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
-                if lhs.expect_ty().as_struct_or_union().is_none() {
-                    self.apply_cast(rhs, lhs.expect_ty().clone())?;
+                if self.types.as_struct_or_union(lhs_ty).is_none() {
+                    self.apply_cast(rhs, lhs_ty)?;
                 }
-                lhs.expect_ty().clone()
+                lhs_ty
             },
             NodeKind::Comma { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                rhs.expect_ty().clone()
+                rhs.expect_ty()
             },
             NodeKind::LogicalAnd { lhs, rhs } | NodeKind::LogicalOr { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                Type::int() // C logical operators give int 0/1 not bool
+                Type::Int // C logical operators give int 0/1 not bool
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
@@ -2046,16 +2056,16 @@ impl<'a> Parser<'a> {
                     | BinaryOp::BitAnd
                     | BinaryOp::BitOr
                     | BinaryOp::BitXor => ty,
-                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::int(),
+                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::Int,
                 }
             },
-            NodeKind::Member { member, .. } => member.ty.clone(),
+            NodeKind::Member { member, .. } => member.ty,
             NodeKind::StmtExpr(body) => {
                 if let Some(stmt) = body.last_mut()
                     && let StmtKind::Expr(expr) = &mut stmt.kind
                 {
                     self.infer_type(expr)?;
-                    expr.expect_ty().clone()
+                    expr.expect_ty()
                 } else {
                     return Err(self.source.error_at(
                         node.offset,

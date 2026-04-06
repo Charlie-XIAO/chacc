@@ -11,7 +11,7 @@ use crate::ast::{
 };
 use crate::error::Result;
 use crate::source::Source;
-use crate::types::{Type, TypeId};
+use crate::types::{Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, align_to};
 
 const GP_ARG_REGS_8: [&str; MAX_FUNC_PARAMS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
@@ -44,8 +44,8 @@ impl ScalarWidth {
     ///
     /// char, short, and int are computed in 32-bit registers. long and pointers
     /// are computed in 64-bit registers.
-    fn from_promoted_binary_type(ty: &Type) -> Self {
-        if ty.base().is_some() || ty.size() == 8 {
+    fn from_promoted_binary_type(ty: Type, types: &TypeStore) -> Self {
+        if types.base(ty).is_some() || types.size(ty) == 8 {
             Self::Qword
         } else {
             Self::Dword
@@ -132,6 +132,7 @@ struct FunctionState {
 pub struct Codegen<'a> {
     source: &'a Source,
     out: BufWriter<File>,
+    types: TypeStore,
     function_names: Vec<SmolStr>,
     globals: Vec<GlobalVar>,
     next_label: usize,
@@ -147,6 +148,7 @@ impl<'a> Codegen<'a> {
         Ok(Self {
             source,
             out,
+            types: TypeStore::default(),
             function_names: Vec::new(),
             globals: Vec::new(),
             next_label: 1,
@@ -170,10 +172,16 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for an entire [`Program`].
     pub fn generate(mut self, program: Program) -> Result<()> {
-        let Program { functions, globals } = program;
+        let Program {
+            types,
+            functions,
+            globals,
+        } = program;
 
         writeln!(self.out, ".file 1 \"{}\"", self.source.file())?;
 
+        self.types = types;
+        self.types.frozen = true;
         self.function_names = functions
             .iter()
             .map(|function| function.name.clone())
@@ -201,7 +209,7 @@ impl<'a> Codegen<'a> {
                     writeln!(self.out, "  .byte {byte}")?;
                 }
             } else {
-                writeln!(self.out, "  .zero {}", global.ty.size())?;
+                writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
             }
         }
         Ok(())
@@ -222,7 +230,7 @@ impl<'a> Codegen<'a> {
             return Ok(());
         };
 
-        let stack_size = assign_lvar_offsets(&mut locals);
+        let stack_size = self.assign_lvar_offsets(&mut locals);
 
         if is_static {
             writeln!(self.out, "  .local {name}")?;
@@ -238,7 +246,7 @@ impl<'a> Codegen<'a> {
 
         for (i, param_id) in param_locals.iter().enumerate() {
             let local = &locals[*param_id];
-            self.store_gp(i, local.offset, local.ty.size())?;
+            self.store_gp(i, local.offset, self.types.size(local.ty))?;
         }
 
         self.function = Some(FunctionState {
@@ -357,26 +365,47 @@ impl<'a> Codegen<'a> {
     }
 
     /// Generate assembly for a type cast.
-    fn gen_cast(&mut self, from: &Type, to: &Type) -> Result<()> {
-        if to.is_void() {
+    fn gen_cast(&mut self, from: Type, to: Type) -> Result<()> {
+        if matches!(to, Type::Void) {
             return Ok(());
         }
 
-        if to.is_bool() {
+        if matches!(to, Type::Bool) {
             self.cmp_zero(from)?;
             writeln!(self.out, "  setne %al")?;
             writeln!(self.out, "  movzx %al, %eax")?;
             return Ok(());
         }
 
-        let Ok(from) = TypeId::try_from(from) else {
-            return Ok(());
-        };
-        let Ok(to) = TypeId::try_from(to) else {
-            return Ok(());
-        };
+        enum CastTypeId {
+            I8,
+            I16,
+            I32,
+            I64,
+        }
 
-        use TypeId::*;
+        use CastTypeId::*;
+
+        impl TryFrom<Type> for CastTypeId {
+            type Error = ();
+
+            fn try_from(value: Type) -> Result<Self, Self::Error> {
+                match value {
+                    Type::Char => Ok(I8),
+                    Type::Short => Ok(I16),
+                    Type::Int | Type::Enum => Ok(I32),
+                    Type::Long => Ok(I64),
+                    _ => Err(()),
+                }
+            }
+        }
+
+        let Ok(from) = CastTypeId::try_from(from) else {
+            return Ok(());
+        };
+        let Ok(to) = CastTypeId::try_from(to) else {
+            return Ok(());
+        };
 
         match (from, to) {
             (I8, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
@@ -488,7 +517,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(lhs)?;
                 self.pop("%rdi")?;
 
-                let width = ScalarWidth::from_promoted_binary_type(lhs.expect_ty());
+                let width = ScalarWidth::from_promoted_binary_type(lhs.expect_ty(), &self.types);
                 let acc = width.acc_reg();
                 let rdi = width.rdi_reg();
 
@@ -559,12 +588,15 @@ impl<'a> Codegen<'a> {
     /// into a register. Consequently, the result of an evaluation of an array
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
-    fn load(&mut self, ty: &Type) -> Result<()> {
-        if ty.is_array() || ty.is_func() || ty.as_struct_or_union().is_some() {
+    fn load(&mut self, ty: Type) -> Result<()> {
+        if self.types.is_array(ty)
+            || self.types.is_func(ty)
+            || self.types.as_struct_or_union(ty).is_some()
+        {
             return Ok(());
         }
 
-        let width = ScalarWidth::from_size(ty.size());
+        let width = ScalarWidth::from_size(self.types.size(ty));
         writeln!(
             self.out,
             "  {} (%rax), {}",
@@ -575,18 +607,18 @@ impl<'a> Codegen<'a> {
     }
 
     /// Store `%rax` into the address on top of the temporary stack.
-    fn store(&mut self, ty: &Type) -> Result<()> {
+    fn store(&mut self, ty: Type) -> Result<()> {
         self.pop("%rdi")?;
 
-        if ty.as_struct_or_union().is_some() {
-            for i in 0..ty.size() {
+        if self.types.as_struct_or_union(ty).is_some() {
+            for i in 0..self.types.size(ty) {
                 writeln!(self.out, "  mov {i}(%rax), %r8b")?;
                 writeln!(self.out, "  mov %r8b, {i}(%rdi)")?;
             }
             return Ok(());
         }
 
-        let width = ScalarWidth::from_size(ty.size());
+        let width = ScalarWidth::from_size(self.types.size(ty));
         writeln!(self.out, "  mov {}, (%rdi)", width.acc_reg())?;
         Ok(())
     }
@@ -606,8 +638,8 @@ impl<'a> Codegen<'a> {
     }
 
     /// Compare a scalar value against zero.
-    fn cmp_zero(&mut self, ty: &Type) -> Result<()> {
-        if ty.is_integer() && ty.size() <= 4 {
+    fn cmp_zero(&mut self, ty: Type) -> Result<()> {
+        if self.types.is_integer(ty) && self.types.size(ty) <= 4 {
             writeln!(self.out, "  cmp $0, %eax")?;
         } else {
             writeln!(self.out, "  cmp $0, %rax")?;
@@ -621,18 +653,18 @@ impl<'a> Codegen<'a> {
         self.next_label += 1;
         label
     }
-}
 
-/// Assign stack offsets to locals and return the aligned stack size.
-fn assign_lvar_offsets(locals: &mut [LocalVar]) -> i64 {
-    let mut offset = 0;
+    /// Assign stack offsets to locals and return the aligned stack size.
+    fn assign_lvar_offsets(&self, locals: &mut [LocalVar]) -> i64 {
+        let mut offset = 0;
 
-    // The first parsed local stays closest to `%rbp`
-    for local in locals.iter_mut().rev() {
-        offset += local.ty.size();
-        offset = align_to(offset, local.ty.align());
-        local.offset = -offset;
+        // The first parsed local stays closest to `%rbp`
+        for local in locals.iter_mut().rev() {
+            offset += self.types.size(local.ty);
+            offset = align_to(offset, self.types.align(local.ty));
+            local.offset = -offset;
+        }
+
+        align_to(offset, 16)
     }
-
-    align_to(offset, 16)
 }
