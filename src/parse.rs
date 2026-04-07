@@ -350,11 +350,19 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Struct) => match spec {
-                    None => spec = Some(TypeSpec::Other(self.parse_struct_or_union_decl(true)?)),
+                    None => {
+                        spec = Some(TypeSpec::Other(
+                            self.parse_struct_or_union_decl(true, context)?,
+                        ))
+                    },
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Union) => match spec {
-                    None => spec = Some(TypeSpec::Other(self.parse_struct_or_union_decl(false)?)),
+                    None => {
+                        spec = Some(TypeSpec::Other(
+                            self.parse_struct_or_union_decl(false, context)?,
+                        ))
+                    },
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Enum) => match spec {
@@ -614,20 +622,51 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <struct-or-union-decl> ::= <ident> | <ident>? "{" <members-decl>
     /// ```
-    fn parse_struct_or_union_decl(&mut self, is_struct: bool) -> Result<Type> {
+    fn parse_struct_or_union_decl(
+        &mut self,
+        is_struct: bool,
+        context: DeclspecContext,
+    ) -> Result<Type> {
         let offset = self.current().offset;
         let tag = self.current().as_ident();
 
         let repr = || if is_struct { "struct" } else { "union" };
-        let context = DeclspecContext::MemberDecl(repr());
+        let member_context = DeclspecContext::MemberDecl(repr());
 
         if let Some(tag) = tag {
             self.advance();
 
-            // Case 1: "struct T"
             if !self.current().is_punct("{") {
-                let Some(ty) = self.find_tag_current(tag) else {
-                    // Case 1A: Never declared before, create an incomplete type
+                if self.current().is_punct(";")
+                    && matches!(
+                        context,
+                        DeclspecContext::FileScopeDecl | DeclspecContext::BlockScopeDecl
+                    )
+                {
+                    // "struct T;" in file/block scope, which is a forward
+                    // declaration within the same scope
+                    let Some(ty) = self.find_tag_current(tag) else {
+                        let ty = self.types.struct_or_union(is_struct, None);
+                        self.push_scope_tag(tag.to_smolstr(), ty);
+                        return Ok(ty);
+                    };
+
+                    if let Some(sou) = self.types.as_struct_or_union(ty)
+                        && sou.is_struct == is_struct
+                    {
+                        return Ok(ty);
+                    }
+
+                    return Err(self
+                        .source
+                        .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
+                }
+
+                // "struct T" not followed by "{" or ";"; which is a tag use
+                // rather than a declaration, so we should look it up not only
+                // in the current scope; only if it is not found in any visible
+                // scope should we introduce a new incomplete type
+                let Some(ty) = self.find_tag(tag) else {
                     let ty = self.types.struct_or_union(is_struct, None);
                     self.push_scope_tag(tag.to_smolstr(), ty);
                     return Ok(ty);
@@ -636,27 +675,24 @@ impl<'a> Parser<'a> {
                 if let Some(sou) = self.types.as_struct_or_union(ty)
                     && sou.is_struct == is_struct
                 {
-                    // Case 1C: Declared before, do nothing
                     return Ok(ty);
                 }
 
-                // Case 1B: Declared before but as different kind
                 return Err(self
                     .source
                     .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
             }
 
-            // Case 2: "struct T {...}"
+            // "struct T {...}", which is a concrete definition
             let Some(ty) = self.find_tag_current(tag) else {
-                // Case 2A: Never declared before, create a complete type
                 // Note: We have to create an incomplete type first, then parse
                 // the members and complete the type; this is to handle self-
-                // referential structs, so that member can see that this type is
+                // referential structs, so members can see that this type is
                 // already declared and will not create a separate declaration
                 let ty = self.types.struct_or_union(is_struct, None);
                 self.push_scope_tag(tag.to_smolstr(), ty);
                 self.advance();
-                let members = self.parse_members_decl(context)?;
+                let members = self.parse_members_decl(member_context)?;
                 self.types.complete_struct_or_union(is_struct, members, ty);
                 return Ok(ty);
             };
@@ -665,28 +701,25 @@ impl<'a> Parser<'a> {
                 && sou.is_struct == is_struct
             {
                 if !self.types.is_incomplete(ty) {
-                    // Case 2C: Declared and defined before
                     return Err(self
                         .source
                         .error_at(offset, format_smolstr!("redefinition of {} tag", repr())));
                 }
 
-                // Case 2D: Declared before but not defined, complete it
                 self.advance();
-                let members = self.parse_members_decl(context)?;
+                let members = self.parse_members_decl(member_context)?;
                 self.types.complete_struct_or_union(is_struct, members, ty);
                 return Ok(ty);
             }
 
-            // Case 2B: Declared before but as different kind
             return Err(self
                 .source
                 .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
         }
 
-        // Case 3: "struct {...}"
+        // "struct {...}", which is an anonymous definition
         self.skip_punct("{")?;
-        let members = self.parse_members_decl(context)?;
+        let members = self.parse_members_decl(member_context)?;
         let ty = self.types.struct_or_union(is_struct, Some(members));
         Ok(ty)
     }
