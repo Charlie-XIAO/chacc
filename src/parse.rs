@@ -1304,7 +1304,17 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <assign> ::= <logical-or> (<assign-op> <assign>)?
     /// <assign-op> ::=
-    ///   "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
+    ///   "="
+    ///   | "+="
+    ///   | "-="
+    ///   | "*="
+    ///   | "/="
+    ///   | "%="
+    ///   | "&="
+    ///   | "|="
+    ///   | "^="
+    ///   | "<<="
+    ///   | ">>="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
         let node = self.parse_logical_or()?;
@@ -1369,6 +1379,20 @@ impl<'a> Parser<'a> {
             self.advance();
             let assign = self.parse_assign()?;
             let binary = Node::binary(BinaryOp::BitXor, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct("<<=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::BitLeftShift, node, assign, offset);
+            return self.new_compound_assign(binary, offset);
+        }
+
+        if self.current().is_punct(">>=") {
+            self.advance();
+            let assign = self.parse_assign()?;
+            let binary = Node::binary(BinaryOp::BitRightShift, node, assign, offset);
             return self.new_compound_assign(binary, offset);
         }
 
@@ -1457,15 +1481,15 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_relational()?;
 
         loop {
+            let offset = self.current().offset;
+
             if self.current().is_punct("==") {
-                let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?, offset);
                 continue;
             }
 
             if self.current().is_punct("!=") {
-                let offset = self.current().offset;
                 self.advance();
                 node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?, offset);
                 continue;
@@ -1476,39 +1500,63 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <relational> ::= <add> ("<" <add> | "<=" <add> | ">" <add> | ">=" <add>)*
+    /// <relational> ::=
+    ///   <shift> ("<" <shift> | "<=" <shift> | ">" <shift> | ">=" <shift>)*
     /// ```
     fn parse_relational(&mut self) -> Result<Node> {
-        let mut node = self.parse_add()?;
+        let mut node = self.parse_shift()?;
 
         loop {
+            let offset = self.current().offset;
+
             if self.current().is_punct("<") {
-                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Lt, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::Lt, node, self.parse_shift()?, offset);
                 continue;
             }
 
             if self.current().is_punct("<=") {
-                let offset = self.current().offset;
                 self.advance();
-                node = Node::binary(BinaryOp::Le, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::Le, node, self.parse_shift()?, offset);
                 continue;
             }
 
             if self.current().is_punct(">") {
-                let offset = self.current().offset;
                 self.advance();
                 // Reuse < with flipped operands
-                node = Node::binary(BinaryOp::Lt, self.parse_add()?, node, offset);
+                node = Node::binary(BinaryOp::Lt, self.parse_shift()?, node, offset);
                 continue;
             }
 
             if self.current().is_punct(">=") {
-                let offset = self.current().offset;
                 self.advance();
                 // Reuse <= with flipped operands
-                node = Node::binary(BinaryOp::Le, self.parse_add()?, node, offset);
+                node = Node::binary(BinaryOp::Le, self.parse_shift()?, node, offset);
+                continue;
+            }
+
+            return Ok(node);
+        }
+    }
+
+    /// ```bnf
+    /// <shift> ::= <add> ("<<" <add> | ">>" <add>)*
+    /// ```
+    fn parse_shift(&mut self) -> Result<Node> {
+        let mut node = self.parse_add()?;
+
+        loop {
+            let offset = self.current().offset;
+
+            if self.current().is_punct("<<") {
+                self.advance();
+                node = Node::binary(BinaryOp::BitLeftShift, node, self.parse_add()?, offset);
+                continue;
+            }
+
+            if self.current().is_punct(">>") {
+                self.advance();
+                node = Node::binary(BinaryOp::BitRightShift, node, self.parse_add()?, offset);
                 continue;
             }
 
@@ -1523,8 +1571,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_mul()?;
 
         loop {
+            let offset = self.current().offset;
+
             if self.current().is_punct("+") {
-                let offset = self.current().offset;
                 self.advance();
                 let rhs = self.parse_mul()?;
                 node = self.new_add(node, rhs, offset)?;
@@ -1532,7 +1581,6 @@ impl<'a> Parser<'a> {
             }
 
             if self.current().is_punct("-") {
-                let offset = self.current().offset;
                 self.advance();
                 let rhs = self.parse_mul()?;
                 node = self.new_sub(node, rhs, offset)?;
@@ -2340,7 +2388,9 @@ impl<'a> Parser<'a> {
                     | BinaryOp::Mod
                     | BinaryOp::BitAnd
                     | BinaryOp::BitOr
-                    | BinaryOp::BitXor => ty,
+                    | BinaryOp::BitXor
+                    | BinaryOp::BitLeftShift
+                    | BinaryOp::BitRightShift => ty,
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::Int,
                 }
             },

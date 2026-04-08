@@ -92,6 +92,16 @@ impl ScalarWidth {
         }
     }
 
+    /// Return the `%rcx`-family register for this width.
+    fn rcx_reg(&self) -> &'static str {
+        match self {
+            Self::Byte => "%cl",
+            Self::Word => "%cx",
+            Self::Dword => "%ecx",
+            Self::Qword => "%rcx",
+        }
+    }
+
     /// Return the mnemonic used to load a signed scalar of this width.
     fn signed_load_mnemonic(&self) -> &'static str {
         match self {
@@ -546,6 +556,7 @@ impl<'a> Codegen<'a> {
                 let width = ScalarWidth::from_promoted_binary_type(lhs.expect_ty(), &self.types);
                 let acc = width.acc_reg();
                 let rdi = width.rdi_reg();
+                let rcx = width.rcx_reg();
 
                 match op {
                     BinaryOp::Add => writeln!(self.out, "  add {rdi}, {acc}")?,
@@ -563,6 +574,14 @@ impl<'a> Codegen<'a> {
                     BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
                     BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
                     BinaryOp::BitXor => writeln!(self.out, "  xor {rdi}, {acc}")?,
+                    BinaryOp::BitLeftShift => {
+                        writeln!(self.out, "  mov {rdi}, {rcx}")?;
+                        writeln!(self.out, "  shl %cl, {acc}")?;
+                    },
+                    BinaryOp::BitRightShift => {
+                        writeln!(self.out, "  mov {rdi}, {rcx}")?;
+                        writeln!(self.out, "  sar %cl, {acc}")?;
+                    },
                     BinaryOp::Eq => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
                         writeln!(self.out, "  sete %al")?;

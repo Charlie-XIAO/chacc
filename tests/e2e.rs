@@ -218,6 +218,17 @@ fn test_arith() {
     f.assert(7, "({ int i=6; i|=3; i; })");
     f.assert(10, "({ int i=15; i^=5; i; })");
 
+    f.assert(1, "1<<0");
+    f.assert(8, "1<<3");
+    f.assert(10, "5<<1");
+    f.assert(2, "5>>1");
+    f.assert(-1, "-1>>1");
+    f.assert(1, "({ int i=1; i<<=0; i; })");
+    f.assert(8, "({ int i=1; i<<=3; i; })");
+    f.assert(10, "({ int i=5; i<<=1; i; })");
+    f.assert(2, "({ int i=5; i>>=1; i; })");
+    f.assert(-1, "({ int i=-1; i>>=1; i; })");
+
     f.finish();
     f.run("arith");
 }
