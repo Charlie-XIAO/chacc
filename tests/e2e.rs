@@ -289,6 +289,13 @@ fn test_control() {
     f.assert(3, "({ int i=0; for(;i<10;i++) { for (;;) break; if (i == 3) break; } i; })");
     f.assert(4, "({ int i=0; while (1) { while(1) break; if (i++ == 3) break; } i; })");
 
+    f.assert(10, "({ int i=0; int j=0; for (;i<10;i++) { if (i>5) continue; j++; } i; })");
+    f.assert(6, "({ int i=0; int j=0; for (;i<10;i++) { if (i>5) continue; j++; } j; })");
+    f.assert(10, "({ int i=0; int j=0; for(;!i;) { for (;j!=10;j++) continue; break; } j; })");
+    f.assert(11, "({ int i=0; int j=0; while (i++<10) { if (i>5) continue; j++; } i; })");
+    f.assert(5, "({ int i=0; int j=0; while (i++<10) { if (i>5) continue; j++; } j; })");
+    f.assert(11, "({ int i=0; int j=0; while(!i) { while (j++!=10) continue; break; } j; })");
+
     f.finish();
     f.run("control");
 }

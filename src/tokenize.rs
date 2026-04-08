@@ -31,6 +31,7 @@ pub enum Keyword {
     Static,
     Goto,
     Break,
+    Continue,
 }
 
 /// Token kinds recognized by the tokenizer.

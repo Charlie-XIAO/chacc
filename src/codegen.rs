@@ -283,6 +283,7 @@ impl<'a> Codegen<'a> {
                 inc,
                 body,
                 brk_label,
+                cont_label,
             } => {
                 let label = self.take_label();
                 if let Some(init) = init {
@@ -295,6 +296,7 @@ impl<'a> Codegen<'a> {
                     writeln!(self.out, "  je {brk_label}")?;
                 }
                 self.gen_stmt(body)?;
+                writeln!(self.out, "{cont_label}:")?;
                 if let Some(inc) = inc {
                     self.gen_expr(inc)?;
                 }

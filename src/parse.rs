@@ -119,6 +119,7 @@ pub struct Parser<'a> {
     /// The index of the function currently being parsed.
     active_function: Option<usize>,
     active_brk_label: Option<SmolStr>,
+    active_cont_label: Option<SmolStr>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_unique_label: usize,
@@ -137,6 +138,7 @@ impl<'a> Parser<'a> {
             functions: Vec::new(),
             active_function: None,
             active_brk_label: None,
+            active_cont_label: None,
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_unique_label: 0,
@@ -230,8 +232,11 @@ impl<'a> Parser<'a> {
         let saved_scope_depth = self.scopes.len();
 
         #[cfg(debug_assertions)]
-        let (saved_active_function, saved_active_brk_label) =
-            (self.active_function, self.active_brk_label.clone());
+        let (saved_active_function, saved_active_brk_label, saved_active_cont_label) = (
+            self.active_function,
+            self.active_brk_label.clone(),
+            self.active_cont_label.clone(),
+        );
 
         self.speculate_depth += 1;
 
@@ -269,6 +274,10 @@ impl<'a> Parser<'a> {
                 self.active_brk_label == saved_active_brk_label,
                 "cannot change active break label during speculation",
             );
+            debug_assert!(
+                self.active_cont_label == saved_active_cont_label,
+                "cannot change active continue label during speculation",
+            );
         }
 
         self.pos = saved_pos;
@@ -282,6 +291,7 @@ impl<'a> Parser<'a> {
         {
             self.active_function = saved_active_function;
             self.active_brk_label = saved_active_brk_label;
+            self.active_cont_label = saved_active_cont_label;
         }
 
         self.speculate_depth -= 1;
@@ -986,6 +996,7 @@ impl<'a> Parser<'a> {
     ///   | "while" "(" <expr> ")" <stmt>
     ///   | "goto" <ident> ";"
     ///   | "break" ";"
+    ///   | "continue" ";"
     ///   | <ident> ":" <stmt>
     ///   | "{" <compound-stmt>
     ///   | <expr-stmt>
@@ -1025,7 +1036,9 @@ impl<'a> Parser<'a> {
 
             self.enter_scope();
             let brk_label = self.unique_label();
+            let cont_label = self.unique_label();
             let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
+            let prev_cont_label = self.active_cont_label.replace(cont_label.clone());
 
             let init = Box::new(if self.at_typename() {
                 let declspec = self.parse_declspec(DeclspecContext::ForLoopInitializer)?;
@@ -1051,9 +1064,12 @@ impl<'a> Parser<'a> {
             let body = Box::new(self.parse_stmt()?);
 
             self.active_brk_label = prev_brk_label;
+            self.active_cont_label = prev_cont_label;
             self.leave_scope();
 
-            return Ok(Stmt::for_(init, cond, inc, body, brk_label, offset));
+            return Ok(Stmt::for_(
+                init, cond, inc, body, brk_label, cont_label, offset,
+            ));
         }
 
         if self.current().is_keyword(Keyword::While) {
@@ -1063,11 +1079,16 @@ impl<'a> Parser<'a> {
             self.skip_punct(")")?;
 
             let brk_label = self.unique_label();
+            let cont_label = self.unique_label();
             let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
-            let body = Box::new(self.parse_stmt()?);
-            self.active_brk_label = prev_brk_label;
+            let prev_cont_label = self.active_cont_label.replace(cont_label.clone());
 
-            return Ok(Stmt::while_(cond, body, brk_label, offset));
+            let body = Box::new(self.parse_stmt()?);
+
+            self.active_brk_label = prev_brk_label;
+            self.active_cont_label = prev_cont_label;
+
+            return Ok(Stmt::while_(cond, body, brk_label, cont_label, offset));
         }
 
         if self.current().is_keyword(Keyword::Goto) {
@@ -1083,7 +1104,16 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             self.skip_punct(";")?;
-            return Ok(Stmt::break_(brk_label, offset));
+            return Ok(Stmt::jump(brk_label, offset));
+        }
+
+        if self.current().is_keyword(Keyword::Continue) {
+            let Some(cont_label) = self.active_cont_label.clone() else {
+                return Err(self.error_current("stray continue"));
+            };
+            self.advance();
+            self.skip_punct(";")?;
+            return Ok(Stmt::jump(cont_label, offset));
         }
 
         if let Some(ident) = self.current().as_ident()

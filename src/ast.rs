@@ -377,6 +377,8 @@ pub enum StmtKind {
         body: Box<Stmt>,
         /// The label that a "break" statement in this loop should jump to.
         brk_label: SmolStr,
+        /// The label that a "continue" statement in this loop should jump to.
+        cont_label: SmolStr,
     },
     /// An if-else statement.
     If {
@@ -386,7 +388,7 @@ pub enum StmtKind {
     },
     /// A block statement.
     Block(Vec<Stmt>),
-    /// A jump statement, like goto or break.
+    /// A jump statement, like goto, break, and continue.
     Jump {
         /// The target label in assembly.
         ///
@@ -437,6 +439,7 @@ impl Stmt {
         inc: Option<Node>,
         body: Box<Stmt>,
         brk_label: SmolStr,
+        cont_label: SmolStr,
         offset: usize,
     ) -> Self {
         Self {
@@ -447,12 +450,19 @@ impl Stmt {
                 inc,
                 body,
                 brk_label,
+                cont_label,
             },
         }
     }
 
     /// Construct a while-loop statement.
-    pub fn while_(cond: Node, body: Box<Stmt>, brk_label: SmolStr, offset: usize) -> Self {
+    pub fn while_(
+        cond: Node,
+        body: Box<Stmt>,
+        brk_label: SmolStr,
+        cont_label: SmolStr,
+        offset: usize,
+    ) -> Self {
         Self {
             offset,
             kind: StmtKind::Loop {
@@ -461,6 +471,7 @@ impl Stmt {
                 inc: None,
                 body,
                 brk_label,
+                cont_label,
             },
         }
     }
@@ -493,8 +504,8 @@ impl Stmt {
         }
     }
 
-    /// Construct a break statement.
-    pub fn break_(label: impl Into<SmolStr>, offset: usize) -> Self {
+    /// Construct a break/continue statement.
+    pub fn jump(label: impl Into<SmolStr>, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Jump {
