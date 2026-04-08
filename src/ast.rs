@@ -384,6 +384,18 @@ pub enum StmtKind {
     },
     /// A block statement.
     Block(Vec<Stmt>),
+    /// A goto statement.
+    Goto {
+        name: SmolStr,
+        /// The target label ID, corresponding to [`StmtKind::Label::id`].
+        target: Option<SmolStr>,
+    },
+    /// A label statement.
+    Label {
+        name: SmolStr,
+        id: SmolStr,
+        stmt: Box<Stmt>,
+    },
 }
 
 impl Stmt {
@@ -456,6 +468,36 @@ impl Stmt {
                 cond,
                 then_branch,
                 else_branch,
+            },
+        }
+    }
+
+    /// Construct a goto statement.
+    ///
+    /// The target label is not set and must be resolved later before codegen.
+    pub fn goto(name: impl Into<SmolStr>, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Goto {
+                name: name.into(),
+                target: None,
+            },
+        }
+    }
+
+    /// Construct a label statement.
+    pub fn label(
+        name: impl Into<SmolStr>,
+        id: impl Into<SmolStr>,
+        stmt: Box<Stmt>,
+        offset: usize,
+    ) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Label {
+                name: name.into(),
+                id: id.into(),
+                stmt,
             },
         }
     }

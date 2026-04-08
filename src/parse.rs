@@ -120,7 +120,7 @@ pub struct Parser<'a> {
     active_function: Option<usize>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
-    next_anon_global: usize,
+    next_unique_label: usize,
     speculate_depth: usize,
 }
 
@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
             active_function: None,
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
-            next_anon_global: 0,
+            next_unique_label: 0,
             speculate_depth: 0,
         }
     }
@@ -169,6 +169,24 @@ impl<'a> Parser<'a> {
         }
         self.advance();
         Ok(())
+    }
+
+    /// Assume and consume a number.
+    fn consume_num(&mut self) -> Result<i64> {
+        let Some(num) = self.current().as_num() else {
+            return Err(self.error_current("expected a number"));
+        };
+        self.advance();
+        Ok(num)
+    }
+
+    /// Assume and consume an identifier.
+    fn consume_ident(&mut self) -> Result<&'a str> {
+        let Some(ident) = self.current().as_ident() else {
+            return Err(self.error_current("expected an identifier"));
+        };
+        self.advance();
+        Ok(ident)
     }
 
     /// Return whether the current token can be interpreted as a typename.
@@ -209,7 +227,6 @@ impl<'a> Parser<'a> {
         let saved_active_function = self.active_function;
         let saved_globals_len = self.globals.len();
         let saved_scope_depth = self.scopes.len();
-        let saved_next_anon_global = self.next_anon_global;
         self.speculate_depth += 1;
 
         let result = f(self).map(|value| (value, self.pos));
@@ -247,7 +264,6 @@ impl<'a> Parser<'a> {
         self.active_function = saved_active_function;
         self.globals.truncate(saved_globals_len);
         self.scopes.truncate(saved_scope_depth);
-        self.next_anon_global = saved_next_anon_global;
         self.speculate_depth -= 1;
 
         self.scopes.pop(); // Pop the extra frame we inserted
@@ -454,12 +470,9 @@ impl<'a> Parser<'a> {
         }
 
         let offset = self.current().offset;
-        let Some(name) = self.current().as_ident() else {
-            return Err(self.error_current("expected a variable name"));
-        };
-
-        self.advance();
+        let name = self.consume_ident()?;
         let (ty, params) = self.parse_type_suffix(ty)?;
+
         Ok(Declarator {
             name: SmolStr::new(name),
             ty,
@@ -592,13 +605,10 @@ impl<'a> Parser<'a> {
         let len = if self.current().is_punct("]") {
             None
         } else {
-            let Some(len) = self.current().as_num() else {
-                return Err(self.error_current("expected a number"));
-            };
+            let len = self.consume_num()?;
             let Ok(len) = usize::try_from(len) else {
                 return Err(self.error_current("array size is negative or out of range"));
             };
-            self.advance();
             Some(len)
         };
 
@@ -792,19 +802,10 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let name = self
-                .current()
-                .as_ident()
-                .ok_or_else(|| self.error_current("expected an identifier"))?;
-            self.advance();
-
+            let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
-                val = self
-                    .current()
-                    .as_num()
-                    .ok_or_else(|| self.error_current("expected a number"))?;
-                self.advance();
+                val = self.consume_num()?;
             }
 
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::EnumConst(val));
@@ -906,8 +907,14 @@ impl<'a> Parser<'a> {
         self.enter_scope();
         let param_locals = self.create_param_locals(declarator.params);
         self.skip_punct("{")?;
-        let body = Stmt::block(self.parse_compound_stmt()?, body_offset);
+        let mut body = Stmt::block(self.parse_compound_stmt()?, body_offset);
         self.leave_scope();
+
+        {
+            let mut labels = FxHashMap::default();
+            self.collect_labels_stmt(&body, &mut labels)?;
+            self.resolve_gotos_stmt(&mut body, &labels)?;
+        }
 
         let function = &mut self.functions[func_id];
         function.body = Some(body);
@@ -957,12 +964,15 @@ impl<'a> Parser<'a> {
     ///   | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
     ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///   | "while" "(" <expr> ")" <stmt>
+    ///   | "goto" <ident> ";"
+    ///   | <ident> ":" <stmt>
     ///   | "{" <compound-stmt>
     ///   | <expr-stmt>
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt> {
+        let offset = self.current().offset;
+
         if self.current().is_keyword(Keyword::Return) {
-            let offset = self.current().offset;
             self.advance();
             let mut expr = self.parse_expr()?;
             self.skip_punct(";")?;
@@ -974,7 +984,6 @@ impl<'a> Parser<'a> {
         }
 
         if self.current().is_keyword(Keyword::If) {
-            let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
             let cond = self.parse_expr()?;
@@ -990,7 +999,6 @@ impl<'a> Parser<'a> {
         }
 
         if self.current().is_keyword(Keyword::For) {
-            let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
 
@@ -1024,7 +1032,6 @@ impl<'a> Parser<'a> {
         }
 
         if self.current().is_keyword(Keyword::While) {
-            let offset = self.current().offset;
             self.advance();
             self.skip_punct("(")?;
             let cond = self.parse_expr()?;
@@ -1034,8 +1041,24 @@ impl<'a> Parser<'a> {
             return Ok(Stmt::while_(cond, body, offset));
         }
 
+        if self.current().is_keyword(Keyword::Goto) {
+            self.advance();
+            let ident = self.consume_ident()?;
+            self.skip_punct(";")?;
+            return Ok(Stmt::goto(ident, offset));
+        }
+
+        if let Some(ident) = self.current().as_ident()
+            && self.peek(1).is_some_and(|tok| tok.is_punct(":"))
+        {
+            self.advance();
+            self.advance();
+            let id = self.unique_label();
+            let stmt = self.parse_stmt()?;
+            return Ok(Stmt::label(ident, id, Box::new(stmt), offset));
+        }
+
         if self.current().is_punct("{") {
-            let offset = self.current().offset;
             self.advance();
             return Ok(Stmt::block(self.parse_compound_stmt()?, offset));
         }
@@ -1051,17 +1074,18 @@ impl<'a> Parser<'a> {
         self.enter_scope();
 
         while !self.current().is_punct("}") {
-            let mut stmt = if self.at_typename() {
-                let declspec = self.parse_declspec(DeclspecContext::BlockScopeDecl)?;
-                if declspec.storage_class == Some(StorageClass::Typedef) {
-                    self.parse_typedef_tail(declspec.ty)?;
-                    continue;
-                }
-                // TODO: Fix static local variables being treated as non-static
-                self.parse_declaration(declspec.ty)?
-            } else {
-                self.parse_stmt()?
-            };
+            let mut stmt =
+                if self.at_typename() && !self.peek(1).is_some_and(|tok| tok.is_punct(":")) {
+                    let declspec = self.parse_declspec(DeclspecContext::BlockScopeDecl)?;
+                    if declspec.storage_class == Some(StorageClass::Typedef) {
+                        self.parse_typedef_tail(declspec.ty)?;
+                        continue;
+                    }
+                    // TODO: Fix static local variables being treated as non-static
+                    self.parse_declaration(declspec.ty)?
+                } else {
+                    self.parse_stmt()?
+                };
             self.infer_type_stmt(&mut stmt)?;
             stmts.push(stmt);
         }
@@ -1802,8 +1826,7 @@ impl<'a> Parser<'a> {
     fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
         self.disallow_speculation();
 
-        let name = format_smolstr!(".L..{}", self.next_anon_global);
-        self.next_anon_global += 1;
+        let name = self.unique_label();
         self.create_global(name, ty, Some(init_data))
     }
 
@@ -2032,7 +2055,7 @@ impl<'a> Parser<'a> {
     /// Infer types for a statement subtree.
     fn infer_type_stmt(&mut self, stmt: &mut Stmt) -> Result<()> {
         match &mut stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr),
+            StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr)?,
             StmtKind::Loop {
                 init,
                 cond,
@@ -2048,7 +2071,7 @@ impl<'a> Parser<'a> {
                 if let Some(inc) = inc {
                     self.infer_type(inc)?;
                 }
-                self.infer_type_stmt(body)
+                self.infer_type_stmt(body)?;
             },
             StmtKind::If {
                 cond,
@@ -2060,18 +2083,20 @@ impl<'a> Parser<'a> {
                 if let Some(else_branch) = else_branch {
                     self.infer_type_stmt(else_branch)?;
                 }
-                Ok(())
             },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.infer_type_stmt(stmt)?;
                 }
-                Ok(())
             },
+            StmtKind::Goto { .. } => {},
+            StmtKind::Label { stmt, .. } => self.infer_type_stmt(stmt)?,
         }
+
+        Ok(())
     }
 
-    /// Infer the type for an expression subtree.
+    /// Infer types for an expression subtree.
     fn infer_type(&mut self, node: &mut Node) -> Result<()> {
         if node.ty.is_some() {
             return Ok(());
@@ -2185,5 +2210,201 @@ impl<'a> Parser<'a> {
         });
 
         Ok(())
+    }
+
+    /// Collect [label]s from a statement subtree.
+    ///
+    /// [label]: StmtKind::Label
+    fn collect_labels_stmt(
+        &self,
+        stmt: &Stmt,
+        labels: &mut FxHashMap<SmolStr, SmolStr>,
+    ) -> Result<()> {
+        let offset = stmt.offset;
+        match &stmt.kind {
+            StmtKind::Expr(node) | StmtKind::Return(node) => self.collect_labels(node, labels)?,
+            StmtKind::Loop {
+                init,
+                cond,
+                inc,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_labels_stmt(init, labels)?;
+                }
+                if let Some(cond) = cond {
+                    self.collect_labels(cond, labels)?;
+                }
+                if let Some(inc) = inc {
+                    self.collect_labels(inc, labels)?;
+                }
+                self.collect_labels_stmt(body, labels)?;
+            },
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.collect_labels(cond, labels)?;
+                self.collect_labels_stmt(then_branch, labels)?;
+                if let Some(else_branch) = else_branch {
+                    self.collect_labels_stmt(else_branch, labels)?;
+                }
+            },
+            StmtKind::Block(stmts) => {
+                for stmt in stmts {
+                    self.collect_labels_stmt(stmt, labels)?;
+                }
+            },
+            StmtKind::Goto { .. } => {},
+            StmtKind::Label {
+                name,
+                id,
+                stmt: inner,
+            } => {
+                if labels.insert(name.clone(), id.clone()).is_some() {
+                    return Err(self.source.error_at(offset, "duplicate label"));
+                }
+                self.collect_labels_stmt(inner, labels)?;
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Collect [label]s from an expression subtree.
+    ///
+    /// [label]: StmtKind::Label
+    fn collect_labels(&self, node: &Node, labels: &mut FxHashMap<SmolStr, SmolStr>) -> Result<()> {
+        match &node.kind {
+            NodeKind::Entity(_) | NodeKind::Num(_) => {},
+            NodeKind::Addr(expr)
+            | NodeKind::Deref(expr)
+            | NodeKind::Neg(expr)
+            | NodeKind::BitNot(expr)
+            | NodeKind::Not(expr)
+            | NodeKind::Cast(expr)
+            | NodeKind::Member { parent: expr, .. } => self.collect_labels(expr, labels)?,
+            NodeKind::Assign { lhs, rhs }
+            | NodeKind::Comma { lhs, rhs }
+            | NodeKind::LogicalAnd { lhs, rhs }
+            | NodeKind::LogicalOr { lhs, rhs }
+            | NodeKind::Binary { lhs, rhs, .. } => {
+                self.collect_labels(lhs, labels)?;
+                self.collect_labels(rhs, labels)?;
+            },
+            NodeKind::FuncCall { args, .. } => {
+                for arg in args {
+                    self.collect_labels(arg, labels)?;
+                }
+            },
+            NodeKind::StmtExpr(body) => {
+                for stmt in body {
+                    self.collect_labels_stmt(stmt, labels)?;
+                }
+            },
+            NodeKind::Dummy => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    /// Resolve [goto]s from a statement subtree.
+    ///
+    /// [goto]: StmtKind::Goto
+    fn resolve_gotos_stmt(
+        &self,
+        stmt: &mut Stmt,
+        labels: &FxHashMap<SmolStr, SmolStr>,
+    ) -> Result<()> {
+        match &mut stmt.kind {
+            StmtKind::Expr(node) | StmtKind::Return(node) => self.resolve_gotos(node, labels)?,
+            StmtKind::Loop {
+                init,
+                cond,
+                inc,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.resolve_gotos_stmt(init, labels)?;
+                }
+                if let Some(cond) = cond {
+                    self.resolve_gotos(cond, labels)?;
+                }
+                if let Some(inc) = inc {
+                    self.resolve_gotos(inc, labels)?;
+                }
+                self.resolve_gotos_stmt(body, labels)?;
+            },
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.resolve_gotos(cond, labels)?;
+                self.resolve_gotos_stmt(then_branch, labels)?;
+                if let Some(else_branch) = else_branch {
+                    self.resolve_gotos_stmt(else_branch, labels)?;
+                }
+            },
+            StmtKind::Block(stmts) => {
+                for stmt in stmts {
+                    self.resolve_gotos_stmt(stmt, labels)?;
+                }
+            },
+            StmtKind::Goto { name, target } => {
+                let Some(name) = labels.get(name) else {
+                    return Err(self.source.error_at(stmt.offset, "use of undeclared label"));
+                };
+                *target = Some(name.clone());
+            },
+            StmtKind::Label { stmt, .. } => self.resolve_gotos_stmt(stmt, labels)?,
+        }
+
+        Ok(())
+    }
+
+    /// Resolve [goto]s from an expression subtree.
+    ///
+    /// [goto]: StmtKind::Goto
+    fn resolve_gotos(&self, node: &mut Node, labels: &FxHashMap<SmolStr, SmolStr>) -> Result<()> {
+        match &mut node.kind {
+            NodeKind::Entity(_) | NodeKind::Num(_) => {},
+            NodeKind::Addr(expr)
+            | NodeKind::Deref(expr)
+            | NodeKind::Neg(expr)
+            | NodeKind::BitNot(expr)
+            | NodeKind::Not(expr)
+            | NodeKind::Cast(expr)
+            | NodeKind::Member { parent: expr, .. } => self.resolve_gotos(expr, labels)?,
+            NodeKind::Assign { lhs, rhs }
+            | NodeKind::Comma { lhs, rhs }
+            | NodeKind::LogicalAnd { lhs, rhs }
+            | NodeKind::LogicalOr { lhs, rhs }
+            | NodeKind::Binary { lhs, rhs, .. } => {
+                self.resolve_gotos(lhs, labels)?;
+                self.resolve_gotos(rhs, labels)?;
+            },
+            NodeKind::FuncCall { args, .. } => {
+                for arg in args {
+                    self.resolve_gotos(arg, labels)?;
+                }
+            },
+            NodeKind::StmtExpr(body) => {
+                for stmt in body {
+                    self.resolve_gotos_stmt(stmt, labels)?;
+                }
+            },
+            NodeKind::Dummy => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    /// Generate a unique label.
+    fn unique_label(&mut self) -> SmolStr {
+        let label = format_smolstr!(".L..{}", self.next_unique_label);
+        self.next_unique_label += 1;
+        label
     }
 }

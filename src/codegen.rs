@@ -272,11 +272,10 @@ impl<'a> Codegen<'a> {
         writeln!(self.out, "  .loc 1 {}", self.source.line_no(stmt.offset))?;
 
         match &stmt.kind {
-            StmtKind::Expr(expr) => self.gen_expr(expr),
+            StmtKind::Expr(expr) => self.gen_expr(expr)?,
             StmtKind::Return(expr) => {
                 self.gen_expr(expr)?;
                 writeln!(self.out, "  jmp .L.return.{}", self.function().name.clone())?;
-                Ok(())
             },
             StmtKind::Loop {
                 init,
@@ -300,7 +299,6 @@ impl<'a> Codegen<'a> {
                 }
                 writeln!(self.out, "  jmp .L.begin.{label}")?;
                 writeln!(self.out, ".L.end.{label}:")?;
-                Ok(())
             },
             StmtKind::If {
                 cond,
@@ -318,15 +316,23 @@ impl<'a> Codegen<'a> {
                     self.gen_stmt(else_branch)?;
                 }
                 writeln!(self.out, ".L.end.{label}:")?;
-                Ok(())
             },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.gen_stmt(stmt)?;
                 }
-                Ok(())
+            },
+            StmtKind::Goto { target, .. } => {
+                let target = target.as_ref().expect("unresolved goto leaked to codegen");
+                writeln!(self.out, "  jmp {target}")?;
+            },
+            StmtKind::Label { id, stmt, .. } => {
+                writeln!(self.out, "{id}:")?;
+                self.gen_stmt(stmt)?;
             },
         }
+
+        Ok(())
     }
 
     /// Generate the address of an addressable expression into `%rax`.
@@ -426,9 +432,7 @@ impl<'a> Codegen<'a> {
         writeln!(self.out, "  .loc 1 {}", self.source.line_no(node.offset))?;
 
         match &node.kind {
-            NodeKind::Num(value) => {
-                writeln!(self.out, "  mov ${value}, %rax")?;
-            },
+            NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
             NodeKind::FuncCall { name, args } => {
                 if args.len() > MAX_FUNC_PARAMS {
                     return Err(self.source.error_at(
@@ -448,9 +452,7 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  mov $0, %rax")?;
                 writeln!(self.out, "  call {name}")?;
             },
-            NodeKind::Addr(expr) => {
-                self.gen_addr(expr)?;
-            },
+            NodeKind::Addr(expr) => self.gen_addr(expr)?,
             NodeKind::Deref(expr) => {
                 self.gen_expr(expr)?;
                 self.load(node.expect_ty())?;

@@ -278,6 +278,12 @@ fn test_control() {
     f.assert(0, "(2-2)&&5");
     f.assert(1, "1&&5");
 
+    f.assert(3, "({ int i=0; goto a; a: i++; b: i++; c: i++; i; })");
+    f.assert(2, "({ int i=0; goto e; d: i++; e: i++; f: i++; i; })");
+    f.assert(1, "({ int i=0; goto i; g: i++; h: i++; i: i++; i; })");
+
+    f.assert(1, "({ typedef int foo; goto foo; foo:; 1; })");
+
     f.finish();
     f.run("control");
 }

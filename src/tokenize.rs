@@ -29,6 +29,7 @@ pub enum Keyword {
     Union,
     Typedef,
     Static,
+    Goto,
 }
 
 /// Token kinds recognized by the tokenizer.
