@@ -375,6 +375,8 @@ pub enum StmtKind {
         inc: Option<Node>,
         /// Loop body.
         body: Box<Stmt>,
+        /// The label that a "break" statement in this loop should jump to.
+        brk_label: SmolStr,
     },
     /// An if-else statement.
     If {
@@ -384,17 +386,22 @@ pub enum StmtKind {
     },
     /// A block statement.
     Block(Vec<Stmt>),
-    /// A goto statement.
-    Goto {
-        name: SmolStr,
-        /// The target label ID, corresponding to [`StmtKind::Label::id`].
-        target: Option<SmolStr>,
+    /// A jump statement, like goto or break.
+    Jump {
+        /// The target label in assembly.
+        ///
+        /// This must be set before codegen, and is `Option` because goto
+        /// statements cannot be resolved upon creation.
+        label: Option<SmolStr>,
+        /// The label name to jump to, used by goto.
+        label_name: Option<SmolStr>,
     },
     /// A label statement.
     Label {
         name: SmolStr,
-        id: SmolStr,
-        stmt: Box<Stmt>,
+        /// The label in assembly.
+        label: SmolStr,
+        body: Box<Stmt>,
     },
 }
 
@@ -429,6 +436,7 @@ impl Stmt {
         cond: Option<Node>,
         inc: Option<Node>,
         body: Box<Stmt>,
+        brk_label: SmolStr,
         offset: usize,
     ) -> Self {
         Self {
@@ -438,12 +446,13 @@ impl Stmt {
                 cond,
                 inc,
                 body,
+                brk_label,
             },
         }
     }
 
     /// Construct a while-loop statement.
-    pub fn while_(cond: Node, body: Box<Stmt>, offset: usize) -> Self {
+    pub fn while_(cond: Node, body: Box<Stmt>, brk_label: SmolStr, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Loop {
@@ -451,6 +460,7 @@ impl Stmt {
                 cond: Some(cond),
                 inc: None,
                 body,
+                brk_label,
             },
         }
     }
@@ -473,14 +483,23 @@ impl Stmt {
     }
 
     /// Construct a goto statement.
-    ///
-    /// The target label is not set and must be resolved later before codegen.
-    pub fn goto(name: impl Into<SmolStr>, offset: usize) -> Self {
+    pub fn goto(label_name: impl Into<SmolStr>, offset: usize) -> Self {
         Self {
             offset,
-            kind: StmtKind::Goto {
-                name: name.into(),
-                target: None,
+            kind: StmtKind::Jump {
+                label: None,
+                label_name: Some(label_name.into()),
+            },
+        }
+    }
+
+    /// Construct a break statement.
+    pub fn break_(label: impl Into<SmolStr>, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Jump {
+                label: Some(label.into()),
+                label_name: None,
             },
         }
     }
@@ -488,16 +507,16 @@ impl Stmt {
     /// Construct a label statement.
     pub fn label(
         name: impl Into<SmolStr>,
-        id: impl Into<SmolStr>,
-        stmt: Box<Stmt>,
+        label: impl Into<SmolStr>,
+        body: Box<Stmt>,
         offset: usize,
     ) -> Self {
         Self {
             offset,
             kind: StmtKind::Label {
                 name: name.into(),
-                id: id.into(),
-                stmt,
+                label: label.into(),
+                body,
             },
         }
     }

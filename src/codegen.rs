@@ -282,6 +282,7 @@ impl<'a> Codegen<'a> {
                 cond,
                 inc,
                 body,
+                brk_label,
             } => {
                 let label = self.take_label();
                 if let Some(init) = init {
@@ -291,14 +292,14 @@ impl<'a> Codegen<'a> {
                 if let Some(cond) = cond {
                     self.gen_expr(cond)?;
                     self.cmp_zero(cond.expect_ty())?;
-                    writeln!(self.out, "  je  .L.end.{label}")?;
+                    writeln!(self.out, "  je {brk_label}")?;
                 }
                 self.gen_stmt(body)?;
                 if let Some(inc) = inc {
                     self.gen_expr(inc)?;
                 }
                 writeln!(self.out, "  jmp .L.begin.{label}")?;
-                writeln!(self.out, ".L.end.{label}:")?;
+                writeln!(self.out, "{brk_label}:")?;
             },
             StmtKind::If {
                 cond,
@@ -322,13 +323,13 @@ impl<'a> Codegen<'a> {
                     self.gen_stmt(stmt)?;
                 }
             },
-            StmtKind::Goto { target, .. } => {
-                let target = target.as_ref().expect("unresolved goto leaked to codegen");
-                writeln!(self.out, "  jmp {target}")?;
+            StmtKind::Jump { label, .. } => {
+                let label = label.as_ref().expect("unresolved goto leaked to codegen");
+                writeln!(self.out, "  jmp {label}")?;
             },
-            StmtKind::Label { id, stmt, .. } => {
-                writeln!(self.out, "{id}:")?;
-                self.gen_stmt(stmt)?;
+            StmtKind::Label { label, body, .. } => {
+                writeln!(self.out, "{label}:")?;
+                self.gen_stmt(body)?;
             },
         }
 

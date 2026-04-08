@@ -30,6 +30,7 @@ pub enum Keyword {
     Typedef,
     Static,
     Goto,
+    Break,
 }
 
 /// Token kinds recognized by the tokenizer.

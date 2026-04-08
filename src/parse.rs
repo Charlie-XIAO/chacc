@@ -118,6 +118,7 @@ pub struct Parser<'a> {
     functions: Vec<Function>,
     /// The index of the function currently being parsed.
     active_function: Option<usize>,
+    active_brk_label: Option<SmolStr>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_unique_label: usize,
@@ -135,6 +136,7 @@ impl<'a> Parser<'a> {
             locals: Vec::new(),
             functions: Vec::new(),
             active_function: None,
+            active_brk_label: None,
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_unique_label: 0,
@@ -224,9 +226,13 @@ impl<'a> Parser<'a> {
         let saved_types_len = self.types.len();
         let saved_locals_len = self.locals.len();
         let saved_functions_len = self.functions.len();
-        let saved_active_function = self.active_function;
         let saved_globals_len = self.globals.len();
         let saved_scope_depth = self.scopes.len();
+
+        #[cfg(debug_assertions)]
+        let (saved_active_function, saved_active_brk_label) =
+            (self.active_function, self.active_brk_label.clone());
+
         self.speculate_depth += 1;
 
         let result = f(self).map(|value| (value, self.pos));
@@ -245,10 +251,6 @@ impl<'a> Parser<'a> {
             "cannot remove pre-existing functions during speculation",
         );
         debug_assert!(
-            self.active_function == saved_active_function,
-            "cannot change active function during speculation",
-        );
-        debug_assert!(
             self.globals.len() >= saved_globals_len,
             "cannot remove pre-existing globals during speculation",
         );
@@ -257,13 +259,31 @@ impl<'a> Parser<'a> {
             "cannot pop more scope frames than appended during speculation",
         );
 
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                self.active_function == saved_active_function,
+                "cannot change active function during speculation",
+            );
+            debug_assert!(
+                self.active_brk_label == saved_active_brk_label,
+                "cannot change active break label during speculation",
+            );
+        }
+
         self.pos = saved_pos;
         self.types.truncate(saved_types_len);
         self.locals.truncate(saved_locals_len);
         self.functions.truncate(saved_functions_len);
-        self.active_function = saved_active_function;
         self.globals.truncate(saved_globals_len);
         self.scopes.truncate(saved_scope_depth);
+
+        #[cfg(debug_assertions)]
+        {
+            self.active_function = saved_active_function;
+            self.active_brk_label = saved_active_brk_label;
+        }
+
         self.speculate_depth -= 1;
 
         self.scopes.pop(); // Pop the extra frame we inserted
@@ -965,6 +985,7 @@ impl<'a> Parser<'a> {
     ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///   | "while" "(" <expr> ")" <stmt>
     ///   | "goto" <ident> ";"
+    ///   | "break" ";"
     ///   | <ident> ":" <stmt>
     ///   | "{" <compound-stmt>
     ///   | <expr-stmt>
@@ -1003,6 +1024,8 @@ impl<'a> Parser<'a> {
             self.skip_punct("(")?;
 
             self.enter_scope();
+            let brk_label = self.unique_label();
+            let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
 
             let init = Box::new(if self.at_typename() {
                 let declspec = self.parse_declspec(DeclspecContext::ForLoopInitializer)?;
@@ -1027,8 +1050,10 @@ impl<'a> Parser<'a> {
 
             let body = Box::new(self.parse_stmt()?);
 
+            self.active_brk_label = prev_brk_label;
             self.leave_scope();
-            return Ok(Stmt::for_(init, cond, inc, body, offset));
+
+            return Ok(Stmt::for_(init, cond, inc, body, brk_label, offset));
         }
 
         if self.current().is_keyword(Keyword::While) {
@@ -1036,9 +1061,13 @@ impl<'a> Parser<'a> {
             self.skip_punct("(")?;
             let cond = self.parse_expr()?;
             self.skip_punct(")")?;
+
+            let brk_label = self.unique_label();
+            let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
             let body = Box::new(self.parse_stmt()?);
-            // "while" can be desugared into "for" without init and inc
-            return Ok(Stmt::while_(cond, body, offset));
+            self.active_brk_label = prev_brk_label;
+
+            return Ok(Stmt::while_(cond, body, brk_label, offset));
         }
 
         if self.current().is_keyword(Keyword::Goto) {
@@ -1048,14 +1077,23 @@ impl<'a> Parser<'a> {
             return Ok(Stmt::goto(ident, offset));
         }
 
+        if self.current().is_keyword(Keyword::Break) {
+            let Some(brk_label) = self.active_brk_label.clone() else {
+                return Err(self.error_current("stray break"));
+            };
+            self.advance();
+            self.skip_punct(";")?;
+            return Ok(Stmt::break_(brk_label, offset));
+        }
+
         if let Some(ident) = self.current().as_ident()
             && self.peek(1).is_some_and(|tok| tok.is_punct(":"))
         {
             self.advance();
             self.advance();
-            let id = self.unique_label();
-            let stmt = self.parse_stmt()?;
-            return Ok(Stmt::label(ident, id, Box::new(stmt), offset));
+            let label = self.unique_label();
+            let body = self.parse_stmt()?;
+            return Ok(Stmt::label(ident, label, Box::new(body), offset));
         }
 
         if self.current().is_punct("{") {
@@ -2061,6 +2099,7 @@ impl<'a> Parser<'a> {
                 cond,
                 inc,
                 body,
+                ..
             } => {
                 if let Some(init) = init {
                     self.infer_type_stmt(init)?;
@@ -2089,8 +2128,8 @@ impl<'a> Parser<'a> {
                     self.infer_type_stmt(stmt)?;
                 }
             },
-            StmtKind::Goto { .. } => {},
-            StmtKind::Label { stmt, .. } => self.infer_type_stmt(stmt)?,
+            StmtKind::Jump { .. } => {},
+            StmtKind::Label { body, .. } => self.infer_type_stmt(body)?,
         }
 
         Ok(())
@@ -2228,6 +2267,7 @@ impl<'a> Parser<'a> {
                 cond,
                 inc,
                 body,
+                ..
             } => {
                 if let Some(init) = init {
                     self.collect_labels_stmt(init, labels)?;
@@ -2256,16 +2296,12 @@ impl<'a> Parser<'a> {
                     self.collect_labels_stmt(stmt, labels)?;
                 }
             },
-            StmtKind::Goto { .. } => {},
-            StmtKind::Label {
-                name,
-                id,
-                stmt: inner,
-            } => {
-                if labels.insert(name.clone(), id.clone()).is_some() {
+            StmtKind::Jump { .. } => {},
+            StmtKind::Label { name, label, body } => {
+                if labels.insert(name.clone(), label.clone()).is_some() {
                     return Err(self.source.error_at(offset, "duplicate label"));
                 }
-                self.collect_labels_stmt(inner, labels)?;
+                self.collect_labels_stmt(body, labels)?;
             },
         }
 
@@ -2311,7 +2347,7 @@ impl<'a> Parser<'a> {
 
     /// Resolve [goto]s from a statement subtree.
     ///
-    /// [goto]: StmtKind::Goto
+    /// [goto]: StmtKind::Jump
     fn resolve_gotos_stmt(
         &self,
         stmt: &mut Stmt,
@@ -2324,6 +2360,7 @@ impl<'a> Parser<'a> {
                 cond,
                 inc,
                 body,
+                ..
             } => {
                 if let Some(init) = init {
                     self.resolve_gotos_stmt(init, labels)?;
@@ -2352,13 +2389,15 @@ impl<'a> Parser<'a> {
                     self.resolve_gotos_stmt(stmt, labels)?;
                 }
             },
-            StmtKind::Goto { name, target } => {
-                let Some(name) = labels.get(name) else {
-                    return Err(self.source.error_at(stmt.offset, "use of undeclared label"));
-                };
-                *target = Some(name.clone());
+            StmtKind::Jump { label, label_name } => {
+                if let Some(name) = label_name {
+                    let Some(name) = labels.get(name) else {
+                        return Err(self.source.error_at(stmt.offset, "use of undeclared label"));
+                    };
+                    *label = Some(name.clone());
+                }
             },
-            StmtKind::Label { stmt, .. } => self.resolve_gotos_stmt(stmt, labels)?,
+            StmtKind::Label { body, .. } => self.resolve_gotos_stmt(body, labels)?,
         }
 
         Ok(())
@@ -2366,7 +2405,7 @@ impl<'a> Parser<'a> {
 
     /// Resolve [goto]s from an expression subtree.
     ///
-    /// [goto]: StmtKind::Goto
+    /// [goto]: StmtKind::Jump
     fn resolve_gotos(&self, node: &mut Node, labels: &FxHashMap<SmolStr, SmolStr>) -> Result<()> {
         match &mut node.kind {
             NodeKind::Entity(_) | NodeKind::Num(_) => {},
