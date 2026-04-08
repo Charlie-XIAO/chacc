@@ -604,6 +604,21 @@ impl<'a> Codegen<'a> {
                     },
                 }
             },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                let label = self.take_label();
+                self.gen_expr(cond)?;
+                self.cmp_zero(cond.expect_ty())?;
+                writeln!(self.out, "  je  .L.else.{label}")?;
+                self.gen_expr(then_expr)?;
+                writeln!(self.out, "  jmp .L.end.{label}")?;
+                writeln!(self.out, ".L.else.{label}:")?;
+                self.gen_expr(else_expr)?;
+                writeln!(self.out, ".L.end.{label}:")?;
+            },
             NodeKind::StmtExpr(body) => {
                 for stmt in body {
                     self.gen_stmt(stmt)?;

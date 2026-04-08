@@ -137,6 +137,12 @@ pub enum NodeKind {
         lhs: Box<Node>,
         rhs: Box<Node>,
     },
+    /// A conditional operator "?".
+    Conditional {
+        cond: Box<Node>,
+        then_expr: Box<Node>,
+        else_expr: Box<Node>,
+    },
     /// A struct member.
     Member { parent: Box<Node>, member: Member },
     /// A [statement expression][1] as in GNU C Extension.
@@ -148,6 +154,47 @@ pub enum NodeKind {
 }
 
 impl Node {
+    /// Construct a numeric literal node.
+    ///
+    /// This will automatically infer the node type. If `force_long` is true,
+    /// the type of the node will always be `long`. Otherwise, it will be `int`
+    /// if the value fits in an [`i32`] and otherwise `long`.
+    pub fn num(value: i64, offset: usize, force_long: bool) -> Self {
+        let ty = if !force_long && i32::try_from(value).is_ok() {
+            Type::Int
+        } else {
+            Type::Long
+        };
+
+        Self {
+            offset,
+            ty: Some(ty),
+            kind: NodeKind::Num(value),
+        }
+    }
+
+    /// Construct a function call node.
+    pub fn func_call(
+        name: impl Into<SmolStr>,
+        args: Vec<Node>,
+        return_ty: Type,
+        offset: usize,
+    ) -> Self {
+        debug_assert!(
+            args.iter().all(|arg| arg.ty.is_some()),
+            "not all children node types are set",
+        );
+
+        Self {
+            offset,
+            ty: Some(return_ty),
+            kind: NodeKind::FuncCall {
+                name: name.into(),
+                args,
+            },
+        }
+    }
+
     /// Construct an address-of node.
     pub fn addr(node: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
@@ -163,24 +210,6 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::Deref(node.into()),
-        }
-    }
-
-    /// Construct a binary AST node.
-    pub fn binary(
-        op: BinaryOp,
-        lhs: impl Into<Box<Node>>,
-        rhs: impl Into<Box<Node>>,
-        offset: usize,
-    ) -> Self {
-        Self {
-            offset,
-            ty: None,
-            kind: NodeKind::Binary {
-                op,
-                lhs: lhs.into(),
-                rhs: rhs.into(),
-            },
         }
     }
 
@@ -208,6 +237,15 @@ impl Node {
             offset,
             ty: None,
             kind: NodeKind::BitNot(node.into()),
+        }
+    }
+
+    /// Construct an entity-reference node.
+    pub fn entity(entity: EntityRef, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: None,
+            kind: NodeKind::Entity(entity),
         }
     }
 
@@ -263,53 +301,39 @@ impl Node {
         }
     }
 
-    /// Construct a numeric literal node.
-    ///
-    /// This will automatically infer the node type. If `force_long` is true,
-    /// the type of the node will always be `long`. Otherwise, it will be `int`
-    /// if the value fits in an [`i32`] and otherwise `long`.
-    pub fn num(value: i64, offset: usize, force_long: bool) -> Self {
-        let ty = if !force_long && i32::try_from(value).is_ok() {
-            Type::Int
-        } else {
-            Type::Long
-        };
-
-        Self {
-            offset,
-            ty: Some(ty),
-            kind: NodeKind::Num(value),
-        }
-    }
-
-    /// Construct a function call node.
-    pub fn func_call(
-        name: impl Into<SmolStr>,
-        args: Vec<Node>,
-        return_ty: Type,
+    /// Construct a binary AST node.
+    pub fn binary(
+        op: BinaryOp,
+        lhs: impl Into<Box<Node>>,
+        rhs: impl Into<Box<Node>>,
         offset: usize,
     ) -> Self {
-        debug_assert!(
-            args.iter().all(|arg| arg.ty.is_some()),
-            "not all children node types are set",
-        );
-
         Self {
             offset,
-            ty: Some(return_ty),
-            kind: NodeKind::FuncCall {
-                name: name.into(),
-                args,
+            ty: None,
+            kind: NodeKind::Binary {
+                op,
+                lhs: lhs.into(),
+                rhs: rhs.into(),
             },
         }
     }
 
-    /// Construct an entity-reference node.
-    pub fn entity(entity: EntityRef, offset: usize) -> Self {
+    /// Construct a conditional node.
+    pub fn conditional(
+        cond: impl Into<Box<Node>>,
+        then_expr: impl Into<Box<Node>>,
+        else_expr: impl Into<Box<Node>>,
+        offset: usize,
+    ) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::Entity(entity),
+            kind: NodeKind::Conditional {
+                cond: cond.into(),
+                then_expr: then_expr.into(),
+                else_expr: else_expr.into(),
+            },
         }
     }
 

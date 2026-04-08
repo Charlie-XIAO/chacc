@@ -229,6 +229,19 @@ fn test_arith() {
     f.assert(2, "({ int i=5; i>>=1; i; })");
     f.assert(-1, "({ int i=-1; i>>=1; i; })");
 
+    f.assert(2, "0?1:2");
+    f.assert(1, "1?1:2");
+    f.assert(-1, "0?-2:-1");
+    f.assert(-2, "1?-2:-1");
+    f.assert(4, "sizeof(0?1:2)");
+    f.assert(8, "sizeof(0?(long)1:(long)2)");
+    f.assert(-1, "0?(long)-2:-1");
+    f.assert(-1, "0?-2:(long)-1");
+    f.assert(-2, "1?(long)-2:-1");
+    f.assert(-2, "1?-2:(long)-1");
+
+    f.line("1 ? -2 : (void)-1;");
+
     f.finish();
     f.run("arith");
 }

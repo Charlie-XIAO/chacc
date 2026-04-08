@@ -1302,7 +1302,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <assign> ::= <logical-or> (<assign-op> <assign>)?
+    /// <assign> ::= <conditional> (<assign-op> <assign>)?
     /// <assign-op> ::=
     ///   "="
     ///   | "+="
@@ -1317,7 +1317,7 @@ impl<'a> Parser<'a> {
     ///   | ">>="
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
-        let node = self.parse_logical_or()?;
+        let node = self.parse_conditional()?;
         let offset = self.current().offset;
 
         if self.current().is_punct("=") {
@@ -1397,6 +1397,25 @@ impl<'a> Parser<'a> {
         }
 
         Ok(node)
+    }
+
+    /// ```bnf
+    /// <conditional> ::= <logical-or> ("?" <expr> ":" <conditional>)?
+    /// ```
+    fn parse_conditional(&mut self) -> Result<Node> {
+        let node = self.parse_logical_or()?;
+
+        if !self.current().is_punct("?") {
+            return Ok(node);
+        }
+
+        let offset = self.current().offset;
+        self.advance();
+        let then_expr = self.parse_expr()?;
+        self.skip_punct(":")?;
+        let else_expr = self.parse_conditional()?;
+
+        Ok(Node::conditional(node, then_expr, else_expr, offset))
     }
 
     /// ```bnf
@@ -2242,7 +2261,10 @@ impl<'a> Parser<'a> {
 
     /// Apply a usual arithmetic conversion on the given operands.
     ///
-    /// Returns the coerced common type.
+    /// Returns the coerced common type. This is lhs-biased, see [`coerce`] for
+    /// more details.
+    ///
+    /// [`coerce`]: TypeStore::coerce
     fn apply_usual_arith_conv(&mut self, lhs: &mut Node, rhs: &mut Node) -> Result<Type> {
         let ty = self.types.coerce(lhs.expect_ty(), rhs.expect_ty());
         self.apply_cast(lhs, ty)?;
@@ -2394,6 +2416,33 @@ impl<'a> Parser<'a> {
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::Int,
                 }
             },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                self.infer_type(cond)?;
+                self.infer_type(then_expr)?;
+                self.infer_type(else_expr)?;
+
+                let then_ty = then_expr.expect_ty();
+                let else_ty = else_expr.expect_ty();
+
+                if matches!(then_ty, Type::Void) || matches!(else_ty, Type::Void) {
+                    Type::Void
+                } else {
+                    let (lhs, rhs) = if self.types.base(then_ty).is_some()
+                        || self.types.base(else_ty).is_none()
+                    {
+                        (then_expr, else_expr)
+                    } else {
+                        // "else" is pointer but "then" is not, we must
+                        // normalize this lone pointer to lhs
+                        (else_expr, then_expr)
+                    };
+                    self.apply_usual_arith_conv(lhs, rhs)?
+                }
+            },
             NodeKind::Member { member, .. } => member.ty,
             NodeKind::StmtExpr(body) => {
                 if let Some(stmt) = body.last_mut()
@@ -2506,6 +2555,15 @@ impl<'a> Parser<'a> {
                     self.collect_labels(arg, labels)?;
                 }
             },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                self.collect_labels(cond, labels)?;
+                self.collect_labels(then_expr, labels)?;
+                self.collect_labels(else_expr, labels)?;
+            },
             NodeKind::StmtExpr(body) => {
                 for stmt in body {
                     self.collect_labels_stmt(stmt, labels)?;
@@ -2604,6 +2662,15 @@ impl<'a> Parser<'a> {
                 for arg in args {
                     self.resolve_gotos(arg, labels)?;
                 }
+            },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                self.resolve_gotos(cond, labels)?;
+                self.resolve_gotos(then_expr, labels)?;
+                self.resolve_gotos(else_expr, labels)?;
             },
             NodeKind::StmtExpr(body) => {
                 for stmt in body {
