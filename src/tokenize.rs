@@ -32,6 +32,9 @@ pub enum Keyword {
     Goto,
     Break,
     Continue,
+    Switch,
+    Case,
+    Default,
 }
 
 /// Token kinds recognized by the tokenizer.

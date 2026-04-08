@@ -320,6 +320,27 @@ impl<'a> Codegen<'a> {
                 }
                 writeln!(self.out, ".L.end.{label}:")?;
             },
+            StmtKind::Switch {
+                cond,
+                body,
+                cases,
+                default,
+                brk_label,
+            } => {
+                self.gen_expr(cond)?;
+                let width = ScalarWidth::from_promoted_binary_type(cond.expect_ty(), &self.types);
+                let acc = width.acc_reg();
+                for (val, label) in cases {
+                    writeln!(self.out, "  cmp ${val}, {acc}")?;
+                    writeln!(self.out, "  je {label}")?;
+                }
+                if let Some(default) = default {
+                    writeln!(self.out, "  jmp {default}")?;
+                }
+                writeln!(self.out, "  jmp {brk_label}")?;
+                self.gen_stmt(body)?;
+                writeln!(self.out, "{brk_label}:")?;
+            },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.gen_stmt(stmt)?;

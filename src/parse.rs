@@ -97,6 +97,12 @@ impl OrdinaryIdent {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct SwitchContext {
+    cases: Vec<(i64, SmolStr)>,
+    default: Option<SmolStr>,
+}
+
 /// A scope frame.
 #[derive(Debug, Default)]
 struct ScopeFrame {
@@ -120,6 +126,7 @@ pub struct Parser<'a> {
     active_function: Option<usize>,
     active_brk_label: Option<SmolStr>,
     active_cont_label: Option<SmolStr>,
+    active_switch: Option<SwitchContext>,
     globals: Vec<GlobalVar>,
     scopes: Vec<ScopeFrame>,
     next_unique_label: usize,
@@ -139,6 +146,7 @@ impl<'a> Parser<'a> {
             active_function: None,
             active_brk_label: None,
             active_cont_label: None,
+            active_switch: None,
             globals: Vec::new(),
             scopes: vec![ScopeFrame::default()],
             next_unique_label: 0,
@@ -992,6 +1000,9 @@ impl<'a> Parser<'a> {
     /// <stmt> ::=
     ///   "return" <expr> ";"
     ///   | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
+    ///   | "switch" "(" <expr> ")" <stmt>
+    ///   | "case" <num> ":" <stmt>
+    ///   | "default" ":" <stmt>
     ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///   | "while" "(" <expr> ")" <stmt>
     ///   | "goto" <ident> ";"
@@ -1028,6 +1039,77 @@ impl<'a> Parser<'a> {
                 None
             };
             return Ok(Stmt::if_(cond, then_branch, else_branch, offset));
+        }
+
+        if self.current().is_keyword(Keyword::Switch) {
+            self.advance();
+            self.skip_punct("(")?;
+            let cond = self.parse_expr()?;
+            self.skip_punct(")")?;
+
+            let brk_label = self.unique_label();
+            let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
+            let prev_switch = self.active_switch.replace(SwitchContext::default());
+
+            let body = self.parse_stmt()?;
+
+            self.active_brk_label = prev_brk_label;
+            let switch = std::mem::replace(&mut self.active_switch, prev_switch).unwrap();
+
+            return Ok(Stmt::switch(
+                cond,
+                Box::new(body),
+                switch.cases,
+                switch.default,
+                brk_label,
+                offset,
+            ));
+        }
+
+        if self.current().is_keyword(Keyword::Case) {
+            self.advance();
+            let val = self.consume_num()?;
+            self.skip_punct(":")?;
+            let label = self.unique_label();
+            let body = self.parse_stmt()?;
+
+            match self.active_switch {
+                Some(ref mut switch) => {
+                    if switch.cases.iter().any(|(v, _)| *v == val) {
+                        return Err(self.source.error_at(offset, "duplicate case value"));
+                    }
+                    switch.cases.push((val, label.clone()));
+                },
+                None => {
+                    return Err(self
+                        .source
+                        .error_at(offset, "case label not within a switch"));
+                },
+            };
+            return Ok(Stmt::case(label, Box::new(body), offset));
+        }
+
+        if self.current().is_keyword(Keyword::Default) {
+            self.advance();
+            self.skip_punct(":")?;
+            let label = self.unique_label();
+            let body = self.parse_stmt()?;
+
+            match self.active_switch {
+                Some(ref mut switch) => {
+                    if switch.default.replace(label.clone()).is_some() {
+                        return Err(self
+                            .source
+                            .error_at(offset, "multiple default labels in one switch"));
+                    }
+                },
+                None => {
+                    return Err(self
+                        .source
+                        .error_at(offset, "default label not within a switch"));
+                },
+            };
+            return Ok(Stmt::case(label, Box::new(body), offset));
         }
 
         if self.current().is_keyword(Keyword::For) {
@@ -1100,7 +1182,7 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Break) {
             let Some(brk_label) = self.active_brk_label.clone() else {
-                return Err(self.error_current("stray break"));
+                return Err(self.error_current("break statement not within a loop or switch"));
             };
             self.advance();
             self.skip_punct(";")?;
@@ -1109,7 +1191,7 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Continue) {
             let Some(cont_label) = self.active_cont_label.clone() else {
-                return Err(self.error_current("stray continue"));
+                return Err(self.error_current("continue statement not within a loop"));
             };
             self.advance();
             self.skip_punct(";")?;
@@ -1123,7 +1205,7 @@ impl<'a> Parser<'a> {
             self.advance();
             let label = self.unique_label();
             let body = self.parse_stmt()?;
-            return Ok(Stmt::label(ident, label, Box::new(body), offset));
+            return Ok(Stmt::label(label, Box::new(body), ident, offset));
         }
 
         if self.current().is_punct("{") {
@@ -2153,6 +2235,10 @@ impl<'a> Parser<'a> {
                     self.infer_type_stmt(else_branch)?;
                 }
             },
+            StmtKind::Switch { cond, body, .. } => {
+                self.infer_type(cond)?;
+                self.infer_type_stmt(body)?;
+            },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.infer_type_stmt(stmt)?;
@@ -2321,14 +2407,20 @@ impl<'a> Parser<'a> {
                     self.collect_labels_stmt(else_branch, labels)?;
                 }
             },
+            StmtKind::Switch { cond, body, .. } => {
+                self.collect_labels(cond, labels)?;
+                self.collect_labels_stmt(body, labels)?;
+            },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.collect_labels_stmt(stmt, labels)?;
                 }
             },
             StmtKind::Jump { .. } => {},
-            StmtKind::Label { name, label, body } => {
-                if labels.insert(name.clone(), label.clone()).is_some() {
+            StmtKind::Label { label, body, name } => {
+                if let Some(name) = name
+                    && labels.insert(name.clone(), label.clone()).is_some()
+                {
                     return Err(self.source.error_at(offset, "duplicate label"));
                 }
                 self.collect_labels_stmt(body, labels)?;
@@ -2414,6 +2506,10 @@ impl<'a> Parser<'a> {
                     self.resolve_gotos_stmt(else_branch, labels)?;
                 }
             },
+            StmtKind::Switch { cond, body, .. } => {
+                self.resolve_gotos(cond, labels)?;
+                self.resolve_gotos_stmt(body, labels)?;
+            },
             StmtKind::Block(stmts) => {
                 for stmt in stmts {
                     self.resolve_gotos_stmt(stmt, labels)?;
@@ -2424,7 +2520,7 @@ impl<'a> Parser<'a> {
                     let Some(name) = labels.get(name) else {
                         return Err(self.source.error_at(stmt.offset, "use of undeclared label"));
                     };
-                    *label = Some(name.clone());
+                    let _ = label.insert(name.clone());
                 }
             },
             StmtKind::Label { body, .. } => self.resolve_gotos_stmt(body, labels)?,

@@ -375,9 +375,7 @@ pub enum StmtKind {
         inc: Option<Node>,
         /// Loop body.
         body: Box<Stmt>,
-        /// The label that a "break" statement in this loop should jump to.
         brk_label: SmolStr,
-        /// The label that a "continue" statement in this loop should jump to.
         cont_label: SmolStr,
     },
     /// An if-else statement.
@@ -385,6 +383,19 @@ pub enum StmtKind {
         cond: Node,
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,
+    },
+    /// A switch statement as in switch-case.
+    Switch {
+        cond: Node,
+        body: Box<Stmt>,
+        /// The cases within this switch.
+        ///
+        /// Each element corresponds to the case value and the corresponding
+        /// [`StmtKind::Label::label`].
+        cases: Vec<(i64, SmolStr)>,
+        /// The default case label within this switch.
+        default: Option<SmolStr>,
+        brk_label: SmolStr,
     },
     /// A block statement.
     Block(Vec<Stmt>),
@@ -398,12 +409,13 @@ pub enum StmtKind {
         /// The label name to jump to, used by goto.
         label_name: Option<SmolStr>,
     },
-    /// A label statement.
+    /// A label statement, including case and default as in switch-case.
     Label {
-        name: SmolStr,
         /// The label in assembly.
         label: SmolStr,
         body: Box<Stmt>,
+        /// The label name, used by actual label statement.
+        name: Option<SmolStr>,
     },
 }
 
@@ -493,6 +505,27 @@ impl Stmt {
         }
     }
 
+    /// Construct a switch statement.
+    pub fn switch(
+        cond: Node,
+        body: Box<Stmt>,
+        cases: Vec<(i64, SmolStr)>,
+        default: Option<SmolStr>,
+        brk_label: SmolStr,
+        offset: usize,
+    ) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Switch {
+                cond,
+                body,
+                cases,
+                default,
+                brk_label,
+            },
+        }
+    }
+
     /// Construct a goto statement.
     pub fn goto(label_name: impl Into<SmolStr>, offset: usize) -> Self {
         Self {
@@ -517,17 +550,29 @@ impl Stmt {
 
     /// Construct a label statement.
     pub fn label(
-        name: impl Into<SmolStr>,
         label: impl Into<SmolStr>,
         body: Box<Stmt>,
+        name: impl Into<SmolStr>,
         offset: usize,
     ) -> Self {
         Self {
             offset,
             kind: StmtKind::Label {
-                name: name.into(),
                 label: label.into(),
                 body,
+                name: Some(name.into()),
+            },
+        }
+    }
+
+    /// Construct a case statement.
+    pub fn case(label: impl Into<SmolStr>, body: Box<Stmt>, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::Label {
+                label: label.into(),
+                body,
+                name: None,
             },
         }
     }

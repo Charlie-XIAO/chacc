@@ -296,6 +296,17 @@ fn test_control() {
     f.assert(5, "({ int i=0; int j=0; while (i++<10) { if (i>5) continue; j++; } j; })");
     f.assert(11, "({ int i=0; int j=0; while(!i) { while (j++!=10) continue; break; } j; })");
 
+    f.assert(5, "({ int i=0; switch(0) { case 0:i=5;break; case 1:i=6;break; case 2:i=7;break; } i; })");
+    f.assert(6, "({ int i=0; switch(1) { case 0:i=5;break; case 1:i=6;break; case 2:i=7;break; } i; })");
+    f.assert(7, "({ int i=0; switch(2) { case 0:i=5;break; case 1:i=6;break; case 2:i=7;break; } i; })");
+    f.assert(0, "({ int i=0; switch(3) { case 0:i=5;break; case 1:i=6;break; case 2:i=7;break; } i; })");
+    f.assert(5, "({ int i=0; switch(0) { case 0:i=5;break; default:i=7; } i; })");
+    f.assert(7, "({ int i=0; switch(1) { case 0:i=5;break; default:i=7; } i; })");
+    f.assert(2, "({ int i=0; switch(1) { case 0: 0; case 1: 0; case 2: 0; i=2; } i; })");
+    f.assert(0, "({ int i=0; switch(3) { case 0: 0; case 1: 0; case 2: 0; i=2; } i; })");
+
+    f.assert(3, "({ int i=0; switch(-1) { case 0xffffffff: i=3; break; } i; })");
+
     f.finish();
     f.run("control");
 }
