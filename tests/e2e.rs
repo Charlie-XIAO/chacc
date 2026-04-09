@@ -490,6 +490,24 @@ fn test_function() {
 
 #[rustfmt::skip]
 #[test]
+fn test_initializer() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
+    f.assert(2, "({ int x[3]={1,2,3}; x[1]; })");
+    f.assert(3, "({ int x[3]={1,2,3}; x[2]; })");
+
+    f.assert(2, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[0][1]; })");
+    f.assert(4, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[1][0]; })");
+    f.assert(6, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[1][2]; })");
+
+    f.finish();
+    f.run("initializer");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_literal() {
     let mut f = Fixture::new();
     f.main();

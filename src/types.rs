@@ -45,7 +45,7 @@ enum TypeKind {
 pub struct ArrayType {
     pub base: Type,
     /// If `None`, this represents an incomplete array type.
-    _len: Option<usize>,
+    pub len: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +139,7 @@ impl TypeStore {
             None => -1,
         };
         let align = self.align(base);
-        self.push(TypeKind::Array(ArrayType { base, _len: len }), size, align)
+        self.push(TypeKind::Array(ArrayType { base, len }), size, align)
     }
 
     /// Construct a struct or union type with the given members.
@@ -262,6 +262,15 @@ impl TypeStore {
         }
     }
 
+    /// Return the array type if it is one.
+    pub fn as_array(&self, ty: Type) -> Option<&ArrayType> {
+        let data = self.get(ty)?;
+        match &data.kind {
+            TypeKind::Array(array) => Some(array),
+            _ => None,
+        }
+    }
+
     /// Return the function type if it is one.
     pub fn as_func(&self, ty: Type) -> Option<&FuncType> {
         let data = self.get(ty)?;
@@ -302,7 +311,7 @@ impl TypeStore {
         };
         matches!(
             data.kind,
-            TypeKind::Array(ArrayType { _len: None, .. })
+            TypeKind::Array(ArrayType { len: None, .. })
                 | TypeKind::StructOrUnion(StructOrUnionType { members: None, .. })
         )
     }

@@ -36,6 +36,20 @@ struct Declarator {
     params: Vec<Parameter>,
 }
 
+/// A variable initializer.
+struct Initializer {
+    ty: Type,
+    kind: InitializerKind,
+}
+
+/// The specific initializer form carried by [`Initializer`].
+enum InitializerKind {
+    /// The initialization expression for non-aggregate types.
+    Expr(Node),
+    /// Nested initializers for aggregate types, e.g., array.
+    Aggregate(Vec<Initializer>),
+}
+
 /// A storage class specifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 #[strum(serialize_all = "snake_case")]
@@ -1256,7 +1270,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <declaration> ::=
     ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
-    /// <declarator-init> ::= <declarator> ("=" <assign>)?
+    /// <declarator-init> ::= <declarator> ("=" <initializer>)?
     /// ```
     fn parse_declaration(&mut self, base_ty: Type) -> Result<Stmt> {
         let offset = self.current().offset;
@@ -1280,17 +1294,43 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // If there is an initializer, treat it as an assignment to the
-            // just-created variable
             self.advance();
-            let lhs = Node::entity(EntityRef::Local(local_id), declarator.offset);
-            let rhs = self.parse_assign()?;
-            let expr = Node::assign(lhs, rhs, declarator.offset);
-            stmts.push(Stmt::expr(expr, declarator.offset));
+            let init = self.parse_initializer(declarator.ty)?;
+            self.new_local_initializer(local_id, init, &mut Vec::new(), &mut stmts)?;
         }
 
         self.skip_punct(";")?;
         Ok(Stmt::block(stmts, offset))
+    }
+
+    /// ```bnf
+    /// <initializer> ::= "{" <initializer> ("," <initializer>)* "}" | <assign>
+    /// ```
+    fn parse_initializer(&mut self, ty: Type) -> Result<Initializer> {
+        if let Some(array) = self.types.as_array(ty) {
+            let base = array.base;
+            let len = array.len.unwrap();
+            self.skip_punct("{")?;
+
+            let mut elements = Vec::with_capacity(len);
+            for i in 0..len {
+                if i > 0 {
+                    self.skip_punct(",")?;
+                }
+                elements.push(self.parse_initializer(base)?);
+            }
+
+            self.skip_punct("}")?;
+            return Ok(Initializer {
+                ty,
+                kind: InitializerKind::Aggregate(elements),
+            });
+        }
+
+        Ok(Initializer {
+            ty,
+            kind: InitializerKind::Expr(self.parse_assign()?),
+        })
     }
 
     /// ```bnf
@@ -2251,6 +2291,45 @@ impl<'a> Parser<'a> {
         };
 
         Ok(Node::member(node, member, self.current().offset))
+    }
+
+    /// Build a local variable initializer.
+    ///
+    /// This will push into `stmts` one or more assignment statements, depending
+    /// on whether the initializer is aggregate or not. The caller should pass
+    /// an empty vector for `indices`.
+    fn new_local_initializer(
+        &mut self,
+        local_id: usize,
+        init: Initializer,
+        indices: &mut Vec<usize>,
+        stmts: &mut Vec<Stmt>,
+    ) -> Result<()> {
+        match init.kind {
+            InitializerKind::Expr(rhs) => {
+                let offset = rhs.offset;
+
+                let mut lhs = Node::entity(EntityRef::Local(local_id), offset);
+                for &index in indices.iter() {
+                    let index = Node::num(index as _, offset, false);
+                    lhs = Node::deref(self.new_add(lhs, index, offset)?, offset);
+                }
+
+                let expr = Node::assign(lhs, rhs, offset);
+                stmts.push(Stmt::expr(expr, offset));
+            },
+            InitializerKind::Aggregate(children) => {
+                debug_assert!(self.types.as_array(init.ty).is_some(), "not an array");
+
+                for (i, child) in children.into_iter().enumerate() {
+                    indices.push(i);
+                    self.new_local_initializer(local_id, child, indices, stmts)?;
+                    indices.pop();
+                }
+            },
+        }
+
+        Ok(())
     }
 
     /// Apply a cast on the given node to the given type.
