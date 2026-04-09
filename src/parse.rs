@@ -194,6 +194,11 @@ impl<'a> Parser<'a> {
         self.source.error_at(self.current().offset, message)
     }
 
+    /// Emit a warning message at the current token.
+    fn warn_current(&self, message: impl Into<SmolStr>) {
+        self.source.warn_at(self.current().offset, message);
+    }
+
     /// Assume and skip a specific punctuator.
     fn skip_punct(&mut self, expected: &str) -> Result<()> {
         if !self.current().is_punct(expected) {
@@ -1322,17 +1327,21 @@ impl<'a> Parser<'a> {
             self.skip_punct("{")?;
 
             let mut elements = Vec::with_capacity(len);
-            for i in 0..len {
-                if self.current().is_punct("}") {
-                    break;
-                }
+            let mut i = 0;
+            while !self.current().is_punct("}") {
                 if i > 0 {
                     self.skip_punct(",")?;
                 }
-                elements.push(self.parse_initializer(base)?);
+                if i < len {
+                    elements.push(self.parse_initializer(base)?);
+                } else {
+                    self.warn_current("excess elements in array initializer");
+                    self.skip_initializer_excess()?;
+                }
+                i += 1;
             }
 
-            self.skip_punct("}")?;
+            self.advance();
             return Ok(Initializer {
                 ty,
                 kind: InitializerKind::Aggregate(elements),
@@ -1343,6 +1352,30 @@ impl<'a> Parser<'a> {
             ty,
             kind: InitializerKind::Expr(self.parse_assign()?),
         })
+    }
+
+    /// Skip an excess element in an [`<initializer>`].
+    ///
+    /// [`<initializer>`]: Self::parse_initializer
+    fn skip_initializer_excess(&mut self) -> Result<()> {
+        if self.current().is_punct("{") {
+            self.advance();
+
+            let mut first = true;
+            while !self.current().is_punct("}") {
+                if !first {
+                    self.skip_punct(",")?;
+                }
+                first = false;
+                self.skip_initializer_excess()?;
+            }
+
+            self.advance();
+            return Ok(());
+        }
+
+        self.parse_assign()?;
+        Ok(())
     }
 
     /// ```bnf

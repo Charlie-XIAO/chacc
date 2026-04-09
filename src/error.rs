@@ -4,6 +4,7 @@ use smol_str::SmolStr;
 
 /// The severity level of a diagnostic message.
 #[derive(Clone, Copy, Debug, strum::Display)]
+#[strum(serialize_all = "lowercase")]
 pub enum DiagnosticLevel {
     Warning,
     Error,
