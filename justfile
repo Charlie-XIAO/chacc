@@ -28,6 +28,20 @@ doc *flags:
 ci: fmt lint test
 
 compile code:
-    @printf "{{ code }}" | cargo run --quiet -- -
-    @cc -x assembler -o tmp a.out
-    @./tmp; echo $?
+    #!/usr/bin/env bash
+    set -eou pipefail
+
+    ID=$(shuf -i 10000-99999 -n 1)
+    ASM_FILE="tmp_${ID}.s"
+    BIN_FILE="tmp_${ID}"
+
+    printf "{{ code }}" | cargo run --quiet -- -o "${ASM_FILE}" -
+    cc -x assembler -o "${BIN_FILE}" "${ASM_FILE}"
+
+    set +e
+    "./${BIN_FILE}"
+    echo $?
+    set -e
+
+    echo "ASM: ${ASM_FILE}"
+    echo "BIN: ${BIN_FILE}"

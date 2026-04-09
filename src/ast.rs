@@ -443,6 +443,8 @@ pub enum StmtKind {
         /// The label name, used by actual label statement.
         name: Option<SmolStr>,
     },
+    /// Zero-fill a local variable, given its ID.
+    MemzeroLocal(usize),
 }
 
 impl Stmt {
@@ -600,6 +602,14 @@ impl Stmt {
                 body,
                 name: None,
             },
+        }
+    }
+
+    /// Construct a statement that zero-fills a local variable.
+    pub fn memzero_local(local_id: usize, offset: usize) -> Self {
+        Self {
+            offset,
+            kind: StmtKind::MemzeroLocal(local_id),
         }
     }
 }

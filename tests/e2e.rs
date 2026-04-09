@@ -502,6 +502,14 @@ fn test_initializer() {
     f.assert(4, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[1][0]; })");
     f.assert(6, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[1][2]; })");
 
+    f.assert(0, "({ int x[3]={}; x[0]; })");
+    f.assert(0, "({ int x[3]={}; x[1]; })");
+    f.assert(0, "({ int x[3]={}; x[2]; })");
+
+    f.assert(2, "({ int x[2][3]={{1,2}}; x[0][1]; })");
+    f.assert(0, "({ int x[2][3]={{1,2}}; x[1][0]; })");
+    f.assert(0, "({ int x[2][3]={{1,2}}; x[1][2]; })");
+
     f.finish();
     f.run("initializer");
 }

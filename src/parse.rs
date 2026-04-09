@@ -42,6 +42,12 @@ struct Initializer {
     kind: InitializerKind,
 }
 
+impl Initializer {
+    fn is_aggregate(&self) -> bool {
+        matches!(self.kind, InitializerKind::Aggregate(_))
+    }
+}
+
 /// The specific initializer form carried by [`Initializer`].
 enum InitializerKind {
     /// The initialization expression for non-aggregate types.
@@ -1296,6 +1302,9 @@ impl<'a> Parser<'a> {
 
             self.advance();
             let init = self.parse_initializer(declarator.ty)?;
+            if init.is_aggregate() {
+                stmts.push(Stmt::memzero_local(local_id, offset));
+            }
             self.new_local_initializer(local_id, init, &mut Vec::new(), &mut stmts)?;
         }
 
@@ -1314,6 +1323,9 @@ impl<'a> Parser<'a> {
 
             let mut elements = Vec::with_capacity(len);
             for i in 0..len {
+                if self.current().is_punct("}") {
+                    break;
+                }
                 if i > 0 {
                     self.skip_punct(",")?;
                 }
@@ -2293,11 +2305,12 @@ impl<'a> Parser<'a> {
         Ok(Node::member(node, member, self.current().offset))
     }
 
-    /// Build a local variable initializer.
+    /// Build (lower) a local variable initializer.
     ///
-    /// This will push into `stmts` one or more assignment statements, depending
-    /// on whether the initializer is aggregate or not. The caller should pass
-    /// an empty vector for `indices`.
+    /// This pushes into `stmts` one or more assignment statements for the
+    /// explicit initializer pieces. Aggregate initializers are not zero-filled,
+    /// and the caller is responsible for that. The caller should pass an empty
+    /// vector for `indices`.
     fn new_local_initializer(
         &mut self,
         local_id: usize,
@@ -2396,8 +2409,8 @@ impl<'a> Parser<'a> {
                     self.infer_type_stmt(stmt)?;
                 }
             },
-            StmtKind::Jump { .. } => {},
             StmtKind::Label { body, .. } => self.infer_type_stmt(body)?,
+            StmtKind::Jump { .. } | StmtKind::MemzeroLocal(_) => {},
         }
 
         Ok(())
@@ -2597,7 +2610,6 @@ impl<'a> Parser<'a> {
                     self.collect_labels_stmt(stmt, labels)?;
                 }
             },
-            StmtKind::Jump { .. } => {},
             StmtKind::Label { label, body, name } => {
                 if let Some(name) = name
                     && labels.insert(name.clone(), label.clone()).is_some()
@@ -2606,6 +2618,7 @@ impl<'a> Parser<'a> {
                 }
                 self.collect_labels_stmt(body, labels)?;
             },
+            StmtKind::Jump { .. } | StmtKind::MemzeroLocal(_) => {},
         }
 
         Ok(())
@@ -2714,6 +2727,7 @@ impl<'a> Parser<'a> {
                 }
             },
             StmtKind::Label { body, .. } => self.resolve_gotos_stmt(body, labels)?,
+            StmtKind::MemzeroLocal(_) => {},
         }
 
         Ok(())

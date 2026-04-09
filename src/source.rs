@@ -65,9 +65,10 @@ impl Source {
         &self.content
     }
 
-    /// Get the line number (1-based) of the given byte offset.
-    pub fn line_no(&self, offset: usize) -> u32 {
-        self.line_index.line_col(text_size(offset)).line + 1
+    /// Get the line and column number (1-based) of the given byte offset.
+    pub fn line_col(&self, offset: usize) -> (u32, u32) {
+        let line_col = self.line_index.line_col(text_size(offset));
+        (line_col.line + 1, line_col.col + 1)
     }
 
     /// Return an error diagnostic at the given offset.

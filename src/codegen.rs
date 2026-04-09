@@ -188,7 +188,7 @@ impl<'a> Codegen<'a> {
             globals,
         } = program;
 
-        writeln!(self.out, ".file 1 \"{}\"", self.source.file())?;
+        writeln!(self.out, "  .file 1 \"{}\"", self.source.file())?;
 
         self.types = types;
         self.types.frozen = true;
@@ -279,7 +279,8 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for a statement.
     fn gen_stmt(&mut self, stmt: &Stmt) -> Result<()> {
-        writeln!(self.out, "  .loc 1 {}", self.source.line_no(stmt.offset))?;
+        let (line_no, col_no) = self.source.line_col(stmt.offset);
+        writeln!(self.out, "  .loc 1 {line_no} {col_no}")?;
 
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr)?,
@@ -363,6 +364,15 @@ impl<'a> Codegen<'a> {
             StmtKind::Label { label, body, .. } => {
                 writeln!(self.out, "{label}:")?;
                 self.gen_stmt(body)?;
+            },
+            StmtKind::MemzeroLocal(local_id) => {
+                let local = &self.function().locals[*local_id];
+                let offset = local.offset;
+                let size = self.types.size(local.ty);
+                writeln!(self.out, "  lea {offset}(%rbp), %rdi")?;
+                writeln!(self.out, "  mov ${size}, %ecx")?;
+                writeln!(self.out, "  xor %eax, %eax")?;
+                writeln!(self.out, "  rep stosb")?;
             },
         }
 
@@ -463,7 +473,8 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
-        writeln!(self.out, "  .loc 1 {}", self.source.line_no(node.offset))?;
+        let (line_no, col_no) = self.source.line_col(node.offset);
+        writeln!(self.out, "  .loc 1 {line_no} {col_no}")?;
 
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
