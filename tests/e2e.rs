@@ -268,6 +268,50 @@ fn test_cast() {
 
 #[rustfmt::skip]
 #[test]
+fn test_constexpr() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(10, "({ enum { ten=1+2+3+4 }; ten; })");
+    f.assert(1, "({ int i=0; switch(3) { case 5-2+0*3: i++; } i; })");
+    f.assert(8, "({ int x[1+1]; sizeof(x); })");
+    f.assert(6, "({ char x[8-2]; sizeof(x); })");
+    f.assert(6, "({ char x[2*3]; sizeof(x); })");
+    f.assert(3, "({ char x[12/4]; sizeof(x); })");
+    f.assert(2, "({ char x[12%10]; sizeof(x); })");
+    f.assert(0b100, "({ char x[0b110&0b101]; sizeof(x); })");
+    f.assert(0b111, "({ char x[0b110|0b101]; sizeof(x); })");
+    f.assert(0b110, "({ char x[0b111^0b001]; sizeof(x); })");
+    f.assert(4, "({ char x[1<<2]; sizeof(x); })");
+    f.assert(2, "({ char x[4>>1]; sizeof(x); })");
+    f.assert(2, "({ char x[(1==1)+1]; sizeof(x); })");
+    f.assert(1, "({ char x[(1!=1)+1]; sizeof(x); })");
+    f.assert(1, "({ char x[(1<1)+1]; sizeof(x); })");
+    f.assert(2, "({ char x[(1<=1)+1]; sizeof(x); })");
+    f.assert(2, "({ char x[1?2:3]; sizeof(x); })");
+    f.assert(3, "({ char x[0?2:3]; sizeof(x); })");
+    f.assert(3, "({ char x[(1,3)]; sizeof(x); })");
+    f.assert(2, "({ char x[!0+1]; sizeof(x); })");
+    f.assert(1, "({ char x[!1+1]; sizeof(x); })");
+    f.assert(2, "({ char x[~-3]; sizeof(x); })");
+    f.assert(2, "({ char x[(5||6)+1]; sizeof(x); })");
+    f.assert(1, "({ char x[(0||0)+1]; sizeof(x); })");
+    f.assert(2, "({ char x[(1&&1)+1]; sizeof(x); })");
+    f.assert(1, "({ char x[(1&&0)+1]; sizeof(x); })");
+    f.assert(3, "({ char x[(int)3]; sizeof(x); })");
+    f.assert(15, "({ char x[(char)0xffffff0f]; sizeof(x); })");
+    f.assert(0x10f, "({ char x[(short)0xffff010f]; sizeof(x); })");
+    f.assert(4, "({ char x[(int)0xfffffffffff+5]; sizeof(x); })");
+    f.assert(8, "({ char x[(int*)0+2]; sizeof(x); })");
+    f.assert(12, "({ char x[(int*)16-1]; sizeof(x); })");
+    f.assert(3, "({ char x[(int*)16-(int*)4]; sizeof(x); })");
+
+    f.finish();
+    f.run("constexpr");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_control() {
     let mut f = Fixture::new();
     f.line("/*");

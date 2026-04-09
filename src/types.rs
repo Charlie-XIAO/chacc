@@ -306,11 +306,13 @@ impl TypeStore {
                 | TypeKind::StructOrUnion(StructOrUnionType { members: None, .. })
         )
     }
+}
 
+impl Type {
     /// Return whether the type is an integer type.
-    pub fn is_integer(&self, ty: Type) -> bool {
+    pub fn is_integer(&self) -> bool {
         matches!(
-            ty,
+            self,
             Type::Bool | Type::Char | Type::Short | Type::Int | Type::Long | Type::Enum
         )
     }

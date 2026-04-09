@@ -699,7 +699,7 @@ impl<'a> Codegen<'a> {
 
     /// Compare a scalar value against zero.
     fn cmp_zero(&mut self, ty: Type) -> Result<()> {
-        if self.types.is_integer(ty) && self.types.size(ty) <= 4 {
+        if ty.is_integer() && self.types.size(ty) <= 4 {
             writeln!(self.out, "  cmp $0, %eax")?;
         } else {
             writeln!(self.out, "  cmp $0, %rax")?;

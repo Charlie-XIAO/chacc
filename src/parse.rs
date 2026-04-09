@@ -183,15 +183,6 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Assume and consume a number.
-    fn consume_num(&mut self) -> Result<i64> {
-        let Some(num) = self.current().as_num() else {
-            return Err(self.error_current("expected a number"));
-        };
-        self.advance();
-        Ok(num)
-    }
-
     /// Assume and consume an identifier.
     fn consume_ident(&mut self) -> Result<&'a str> {
         let Some(ident) = self.current().as_ident() else {
@@ -630,7 +621,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-dimensions> ::= ("[" <num>? "]")*
+    /// <array-dimensions> ::= ("[" <constexpr>? "]")*
     /// ```
     fn parse_array_dimensions(&mut self, ty: Type) -> Result<Type> {
         if !self.current().is_punct("[") {
@@ -643,7 +634,7 @@ impl<'a> Parser<'a> {
         let len = if self.current().is_punct("]") {
             None
         } else {
-            let len = self.consume_num()?;
+            let len = self.parse_constexpr()?;
             let Ok(len) = usize::try_from(len) else {
                 return Err(self.error_current("array size is negative or out of range"));
             };
@@ -811,7 +802,8 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <enum-specifier> ::= <ident>? "{" <enum-list>? "}" | <ident>
-    /// <enum-list> ::= <ident> ("=" <num>)? ("," <ident> ("=" <num>)?)*
+    /// <enum-list> ::=
+    ///   <ident> ("=" <constexpr>)? ("," <ident> ("=" <constexpr>)?)*
     /// ```
     fn parse_enum_specifier(&mut self) -> Result<Type> {
         let offset = self.current().offset;
@@ -843,7 +835,7 @@ impl<'a> Parser<'a> {
             let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
-                val = self.consume_num()?;
+                val = self.parse_constexpr()?;
             }
 
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::EnumConst(val));
@@ -1001,7 +993,7 @@ impl<'a> Parser<'a> {
     ///   "return" <expr> ";"
     ///   | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
     ///   | "switch" "(" <expr> ")" <stmt>
-    ///   | "case" <num> ":" <stmt>
+    ///   | "case" <constexpr> ":" <stmt>
     ///   | "default" ":" <stmt>
     ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///   | "while" "(" <expr> ")" <stmt>
@@ -1068,7 +1060,7 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Case) {
             self.advance();
-            let val = self.consume_num()?;
+            let val = self.parse_constexpr()?;
             self.skip_punct(":")?;
             let label = self.unique_label();
             let body = self.parse_stmt()?;
@@ -1931,6 +1923,17 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// ```bnf
+    /// <constexpr> ::= <conditional>
+    /// ```
+    ///
+    /// Semantically, not every conditional expression is a valid constant
+    /// expression, and that restriction is forced by [`Self::eval`].
+    fn parse_constexpr(&mut self) -> Result<i64> {
+        let mut node = self.parse_conditional()?;
+        self.eval(&mut node)
+    }
+
     /// Enter a new variable scope.
     fn enter_scope(&mut self) {
         self.scopes.push(ScopeFrame::default());
@@ -2079,7 +2082,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num + num
-        if self.types.is_integer(lhs_ty) && self.types.is_integer(rhs_ty) {
+        if lhs_ty.is_integer() && rhs_ty.is_integer() {
             return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
@@ -2114,13 +2117,13 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num - num
-        if self.types.is_integer(lhs_ty) && self.types.is_integer(rhs_ty) {
+        if lhs_ty.is_integer() && rhs_ty.is_integer() {
             return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
         // ptr - num
         if let Some(base_ty) = self.types.base(lhs_ty)
-            && self.types.is_integer(rhs_ty)
+            && rhs_ty.is_integer()
         {
             let base_size = self.types.size(base_ty);
             let scaled_rhs = Node::binary(
@@ -2681,6 +2684,85 @@ impl<'a> Parser<'a> {
         }
 
         Ok(())
+    }
+
+    fn eval(&mut self, node: &mut Node) -> Result<i64> {
+        self.infer_type(node)?;
+        let ty = node.expect_ty();
+
+        Ok(match &mut node.kind {
+            NodeKind::Num(val) => *val,
+            NodeKind::Neg(expr) => self.eval(expr)?.wrapping_neg(),
+            NodeKind::Not(expr) => {
+                let cond = self.eval(expr)? == 0;
+                if cond { 1 } else { 0 }
+            },
+            NodeKind::BitNot(expr) => !self.eval(expr)?,
+            NodeKind::Comma { rhs, .. } => self.eval(rhs)?,
+            NodeKind::LogicalAnd { lhs, rhs } => {
+                let cond = self.eval(lhs)? != 0 && self.eval(rhs)? != 0;
+                if cond { 1 } else { 0 }
+            },
+            NodeKind::LogicalOr { lhs, rhs } => {
+                let cond = self.eval(lhs)? != 0 || self.eval(rhs)? != 0;
+                if cond { 1 } else { 0 }
+            },
+            NodeKind::Binary { op, lhs, rhs } => match op {
+                BinaryOp::Add => self.eval(lhs)?.wrapping_add(self.eval(rhs)?),
+                BinaryOp::Sub => self.eval(lhs)?.wrapping_sub(self.eval(rhs)?),
+                BinaryOp::Mul => self.eval(lhs)?.wrapping_mul(self.eval(rhs)?),
+                BinaryOp::Div => {
+                    let rhs = self.eval(rhs)?;
+                    if rhs == 0 {
+                        return Err(self.source.error_at(node.offset, "division by zero"));
+                    }
+                    self.eval(lhs)?.wrapping_div(rhs)
+                },
+                BinaryOp::Mod => {
+                    let rhs = self.eval(rhs)?;
+                    if rhs == 0 {
+                        return Err(self.source.error_at(node.offset, "division by zero"));
+                    }
+                    self.eval(lhs)?.wrapping_rem(rhs)
+                },
+                BinaryOp::BitAnd => self.eval(lhs)? & self.eval(rhs)?,
+                BinaryOp::BitOr => self.eval(lhs)? | self.eval(rhs)?,
+                BinaryOp::BitXor => self.eval(lhs)? ^ self.eval(rhs)?,
+                BinaryOp::BitLeftShift => self.eval(lhs)?.wrapping_shl(self.eval(rhs)? as _),
+                BinaryOp::BitRightShift => self.eval(lhs)?.wrapping_shr(self.eval(rhs)? as _),
+                BinaryOp::Eq => (self.eval(lhs)? == self.eval(rhs)?) as _,
+                BinaryOp::Ne => (self.eval(lhs)? != self.eval(rhs)?) as _,
+                BinaryOp::Lt => (self.eval(lhs)? < self.eval(rhs)?) as _,
+                BinaryOp::Le => (self.eval(lhs)? <= self.eval(rhs)?) as _,
+            },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                if self.eval(cond)? != 0 {
+                    self.eval(then_expr)?
+                } else {
+                    self.eval(else_expr)?
+                }
+            },
+            NodeKind::Cast(expr) => {
+                let val = self.eval(expr)?;
+                match ty {
+                    Type::Bool => (val != 0) as _,
+                    Type::Char => val as i8 as _,
+                    Type::Short => val as i16 as _,
+                    Type::Int => val as i32 as _,
+                    _ => val,
+                }
+            },
+            NodeKind::Dummy => unreachable!(),
+            _ => {
+                return Err(self
+                    .source
+                    .error_at(node.offset, "not a compile-time constant"));
+            },
+        })
     }
 
     /// Generate a unique label.
