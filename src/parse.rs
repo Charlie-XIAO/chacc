@@ -2499,15 +2499,7 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
-                let pointee = expr.expect_ty();
-                let base = if let Some(array) = self.types.as_array(pointee) {
-                    // In C, array decays into a pointer to its first element
-                    // when taking its address, so we need to take its base type
-                    array.base
-                } else {
-                    pointee
-                };
-                self.types.ptr(base)
+                self.types.ptr(expr.expect_ty())
             },
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;

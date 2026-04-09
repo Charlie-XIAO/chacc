@@ -663,13 +663,10 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    /// Load a value from where `%rax` is pointing to.
+    /// Load a scalar value from where `%rax` points to.
     ///
-    /// In particular, if the node is an array, we do not attempt to load the
-    /// value to the register because in general we cannot load an entire array
-    /// into a register. Consequently, the result of an evaluation of an array
-    /// becomes not the array itself but the address of the array, which is why
-    /// "array is a pointer to its first element" in C.
+    /// This does not attempt to load arrays, functions, and aggregates as
+    /// scalar register values, so that they are left as addresses in `%rax`.
     fn load(&mut self, ty: Type) -> Result<()> {
         if self.types.as_array(ty).is_some()
             || self.types.is_func(ty)
