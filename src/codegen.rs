@@ -671,7 +671,7 @@ impl<'a> Codegen<'a> {
     /// becomes not the array itself but the address of the array, which is why
     /// "array is a pointer to its first element" in C.
     fn load(&mut self, ty: Type) -> Result<()> {
-        if self.types.is_array(ty)
+        if self.types.as_array(ty).is_some()
             || self.types.is_func(ty)
             || self.types.as_struct_or_union(ty).is_some()
         {

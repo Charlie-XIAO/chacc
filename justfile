@@ -35,7 +35,7 @@ compile code:
     ASM_FILE="tmp_${ID}.s"
     BIN_FILE="tmp_${ID}"
 
-    printf "{{ code }}" | cargo run --quiet -- -o "${ASM_FILE}" -
+    printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${ASM_FILE}" -
     cc -x assembler -o "${BIN_FILE}" "${ASM_FILE}"
 
     set +e

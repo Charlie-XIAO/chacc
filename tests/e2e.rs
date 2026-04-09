@@ -497,6 +497,7 @@ fn test_initializer() {
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
     f.assert(2, "({ int x[3]={1,2,3}; x[1]; })");
     f.assert(3, "({ int x[3]={1,2,3}; x[2]; })");
+    f.assert(3, "({ int x[3]={1,2,3,4}; x[2]; })");
 
     f.assert(2, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[0][1]; })");
     f.assert(4, "({ int x[2][3]={{1,2,3},{4,5,6}}; x[1][0]; })");
@@ -509,6 +510,14 @@ fn test_initializer() {
     f.assert(2, "({ int x[2][3]={{1,2}}; x[0][1]; })");
     f.assert(0, "({ int x[2][3]={{1,2}}; x[1][0]; })");
     f.assert(0, "({ int x[2][3]={{1,2}}; x[1][2]; })");
+
+    f.assert(b'a', r#"({ char x[4]="abc"; x[0]; })"#);
+    f.assert(b'c', r#"({ char x[4]="abc"; x[2]; })"#);
+    f.assert(0, r#"({ char x[4]="abc"; x[3]; })"#);
+    f.assert(b'a', r#"({ char x[2][4]={"abc","def"}; x[0][0]; })"#);
+    f.assert(0, r#"({ char x[2][4]={"abc","def"}; x[0][3]; })"#);
+    f.assert(b'd', r#"({ char x[2][4]={"abc","def"}; x[1][0]; })"#);
+    f.assert(b'f', r#"({ char x[2][4]={"abc","def"}; x[1][2]; })"#);
 
     f.finish();
     f.run("initializer");

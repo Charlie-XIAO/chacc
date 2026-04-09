@@ -609,11 +609,11 @@ impl<'a> Parser<'a> {
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
 
-            let ty = if self.types.is_array(declarator.ty) {
+            let ty = if let Some(array) = self.types.as_array(declarator.ty) {
                 // Array decay will convert "array of T" to "pointer to T" in
                 // parameter declarations; e.g., "*argv[]" being converted to
                 // "**argv" is because of this rule
-                self.types.ptr(self.types.base(declarator.ty).unwrap())
+                self.types.ptr(array.base)
             } else {
                 declarator.ty
             };
@@ -1318,46 +1318,31 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <initializer> ::= "{" <initializer> ("," <initializer>)* "}" | <assign>
+    /// <initializer> ::= <string-initializer> | <array-initializer> | <assign>
     /// ```
     fn parse_initializer(&mut self, ty: Type) -> Result<Initializer> {
-        if let Some(array) = self.types.as_array(ty) {
+        let kind = if let Some(array) = self.types.as_array(ty) {
             let base = array.base;
             let len = array.len.unwrap();
-            self.skip_punct("{")?;
 
-            let mut elements = Vec::with_capacity(len);
-            let mut i = 0;
-            while !self.current().is_punct("}") {
-                if i > 0 {
-                    self.skip_punct(",")?;
-                }
-                if i < len {
-                    elements.push(self.parse_initializer(base)?);
-                } else {
-                    self.warn_current("excess elements in array initializer");
-                    self.skip_initializer_excess()?;
-                }
-                i += 1;
+            if matches!(base, Type::Char)
+                && let Some(content) = self.current().as_str()
+            {
+                self.parse_string_initializer(content, len)
+            } else {
+                self.parse_array_initializer(base, len)?
             }
+        } else {
+            InitializerKind::Expr(self.parse_assign()?)
+        };
 
-            self.advance();
-            return Ok(Initializer {
-                ty,
-                kind: InitializerKind::Aggregate(elements),
-            });
-        }
-
-        Ok(Initializer {
-            ty,
-            kind: InitializerKind::Expr(self.parse_assign()?),
-        })
+        Ok(Initializer { ty, kind })
     }
 
-    /// Skip an excess element in an [`<initializer>`].
+    /// Skip one excess [`<initializer>`].
     ///
     /// [`<initializer>`]: Self::parse_initializer
-    fn skip_initializer_excess(&mut self) -> Result<()> {
+    fn skip_initializer(&mut self) -> Result<()> {
         if self.current().is_punct("{") {
             self.advance();
 
@@ -1367,7 +1352,7 @@ impl<'a> Parser<'a> {
                     self.skip_punct(",")?;
                 }
                 first = false;
-                self.skip_initializer_excess()?;
+                self.skip_initializer()?;
             }
 
             self.advance();
@@ -1376,6 +1361,56 @@ impl<'a> Parser<'a> {
 
         self.parse_assign()?;
         Ok(())
+    }
+
+    /// ```bnf
+    /// <string-initializer> ::= <str>
+    /// ```
+    fn parse_string_initializer(&mut self, content: Rc<[u8]>, len: usize) -> InitializerKind {
+        let offset = self.current().offset;
+        if content.len() > len + 1 {
+            // The terminating null character is automatically not
+            // included (allowed per C spec) if there is no room for it,
+            // so we warn only if the content is at least 2 bytes longer
+            self.warn_current("initializer string is too long");
+        }
+
+        let elements = content
+            .iter()
+            .take(len)
+            .map(|&byte| Initializer {
+                ty: Type::Char,
+                kind: InitializerKind::Expr(Node::num(byte as i8 as _, offset, false)),
+            })
+            .collect();
+
+        self.advance();
+        InitializerKind::Aggregate(elements)
+    }
+
+    /// ```bnf
+    /// <array-initializer> ::= "{" <initializer> ("," <initializer>)* "}"
+    /// ```
+    fn parse_array_initializer(&mut self, base_ty: Type, len: usize) -> Result<InitializerKind> {
+        self.skip_punct("{")?;
+
+        let mut elements = Vec::with_capacity(len);
+        let mut i = 0;
+        while !self.current().is_punct("}") {
+            if i > 0 {
+                self.skip_punct(",")?;
+            }
+            if i < len {
+                elements.push(self.parse_initializer(base_ty)?);
+            } else {
+                self.warn_current("excess elements in array initializer");
+                self.skip_initializer()?;
+            }
+            i += 1;
+        }
+
+        self.advance();
+        Ok(InitializerKind::Aggregate(elements))
     }
 
     /// ```bnf
@@ -2465,10 +2500,10 @@ impl<'a> Parser<'a> {
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
                 let pointee = expr.expect_ty();
-                let base = if self.types.is_array(pointee) {
+                let base = if let Some(array) = self.types.as_array(pointee) {
                     // In C, array decays into a pointer to its first element
                     // when taking its address, so we need to take its base type
-                    self.types.base(pointee).unwrap()
+                    array.base
                 } else {
                     pointee
                 };
@@ -2508,7 +2543,7 @@ impl<'a> Parser<'a> {
                 self.infer_type(rhs)?;
 
                 let lhs_ty = lhs.expect_ty();
-                if self.types.is_array(lhs_ty) {
+                if self.types.as_array(lhs_ty).is_some() {
                     return Err(self.source.error_at(lhs.offset, "not an lvalue"));
                 }
                 if self.types.as_struct_or_union(lhs_ty).is_none() {

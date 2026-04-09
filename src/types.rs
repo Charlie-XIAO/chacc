@@ -205,27 +205,6 @@ impl TypeStore {
         data.align = align;
     }
 
-    /// Coerce two operand types for a validated binary operation.
-    ///
-    /// This helper is intentionally `lhs`-biased. If exactly one operand is a
-    /// pointer, it must already have been canonicalized to `lhs` by the
-    /// caller. This method also does not perform pointer legality checks and
-    /// the caller is responsible for those beforehand.
-    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
-        debug_assert!(
-            self.base(lhs).is_some() || self.base(rhs).is_none(),
-            "pointer coercion expects any lone pointer operand to be lhs",
-        );
-
-        if let Some(base) = self.base(lhs) {
-            return self.ptr(base);
-        }
-        if self.size(lhs) == 8 || self.size(rhs) == 8 {
-            return Type::Long;
-        }
-        Type::Int
-    }
-
     /// Return the byte alignment of the type.
     pub fn align(&self, ty: Type) -> i64 {
         match ty {
@@ -295,12 +274,6 @@ impl TypeStore {
             .is_some_and(|data| matches!(data.kind, TypeKind::Func(_)))
     }
 
-    /// Return whether the type is an array.
-    pub fn is_array(&self, ty: Type) -> bool {
-        self.get(ty)
-            .is_some_and(|data| matches!(data.kind, TypeKind::Array(_)))
-    }
-
     /// Return whether the type is incomplete.
     pub fn is_incomplete(&self, ty: Type) -> bool {
         if matches!(ty, Type::Void) {
@@ -314,6 +287,27 @@ impl TypeStore {
             TypeKind::Array(ArrayType { len: None, .. })
                 | TypeKind::StructOrUnion(StructOrUnionType { members: None, .. })
         )
+    }
+
+    /// Coerce two operand types for a validated binary operation.
+    ///
+    /// This helper is intentionally `lhs`-biased. If exactly one operand is a
+    /// pointer, it must already have been canonicalized to `lhs` by the
+    /// caller. This method also does not perform pointer legality checks and
+    /// the caller is responsible for those beforehand.
+    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
+        debug_assert!(
+            self.base(lhs).is_some() || self.base(rhs).is_none(),
+            "pointer coercion expects any lone pointer operand to be lhs",
+        );
+
+        if let Some(base) = self.base(lhs) {
+            return self.ptr(base);
+        }
+        if self.size(lhs) == 8 || self.size(rhs) == 8 {
+            return Type::Long;
+        }
+        Type::Int
     }
 }
 
