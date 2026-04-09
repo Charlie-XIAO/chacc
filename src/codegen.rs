@@ -146,6 +146,7 @@ pub struct Codegen<'a> {
     function_names: Vec<SmolStr>,
     globals: Vec<GlobalVar>,
     next_label: usize,
+    last_loc: Option<(u32, u32)>,
     function: Option<FunctionState>,
 }
 
@@ -162,6 +163,7 @@ impl<'a> Codegen<'a> {
             function_names: Vec::new(),
             globals: Vec::new(),
             next_label: 1,
+            last_loc: None,
             function: None,
         })
     }
@@ -279,8 +281,7 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for a statement.
     fn gen_stmt(&mut self, stmt: &Stmt) -> Result<()> {
-        let (line_no, col_no) = self.source.line_col(stmt.offset);
-        writeln!(self.out, "  .loc 1 {line_no} {col_no}")?;
+        self.gen_loc(stmt.offset)?;
 
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr)?,
@@ -458,14 +459,14 @@ impl<'a> Codegen<'a> {
         };
 
         match (from, to) {
-            (I8, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
-            (I16, I8) => writeln!(self.out, "movsbl %al, %eax")?,
-            (I16, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
-            (I32, I8) => writeln!(self.out, "movsbl %al, %eax")?,
-            (I32, I16) => writeln!(self.out, "movswl %ax, %eax")?,
-            (I32, I64) => writeln!(self.out, "movsxd %eax, %rax")?,
-            (I64, I8) => writeln!(self.out, "movsbl %al, %eax")?,
-            (I64, I16) => writeln!(self.out, "movswl %ax, %eax")?,
+            (I8, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
+            (I16, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
+            (I16, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
+            (I32, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
+            (I32, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
+            (I32, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
+            (I64, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
+            (I64, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
             _ => {},
         }
         Ok(())
@@ -473,8 +474,7 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
-        let (line_no, col_no) = self.source.line_col(node.offset);
-        writeln!(self.out, "  .loc 1 {line_no} {col_no}")?;
+        self.gen_loc(node.offset)?;
 
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
@@ -642,6 +642,17 @@ impl<'a> Codegen<'a> {
             NodeKind::Dummy => unreachable!(),
         }
 
+        Ok(())
+    }
+
+    /// Generate a `.loc` directive if the source location changed.
+    fn gen_loc(&mut self, offset: usize) -> Result<()> {
+        let loc = self.source.line_col(offset);
+        if self.last_loc == Some(loc) {
+            return Ok(());
+        }
+        self.last_loc = Some(loc);
+        writeln!(self.out, "  .loc 1 {} {}", loc.0, loc.1)?;
         Ok(())
     }
 
