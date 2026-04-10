@@ -217,6 +217,7 @@ impl<'a> Codegen<'a> {
 
             if let Some(GlobalInitData { bytes, relocations }) = &global.init_data {
                 writeln!(self.out, "  .data")?;
+                writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
                 writeln!(self.out, "{}:", global.name)?;
 
                 let mut pos = 0;
@@ -239,6 +240,7 @@ impl<'a> Codegen<'a> {
                 }
             } else {
                 writeln!(self.out, "  .bss")?;
+                writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
                 writeln!(self.out, "{}:", global.name)?;
                 writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
             }
