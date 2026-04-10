@@ -268,6 +268,12 @@ impl TypeStore {
         }
     }
 
+    /// Return whether the type is a pointer.
+    pub fn is_ptr(&self, ty: Type) -> bool {
+        self.get(ty)
+            .is_some_and(|data| matches!(data.kind, TypeKind::Ptr(_)))
+    }
+
     /// Return whether the type is a function.
     pub fn is_func(&self, ty: Type) -> bool {
         self.get(ty)

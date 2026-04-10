@@ -8,7 +8,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, EntityRef, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind,
+    BinaryOp, EntityRef, Function, GlobalInitData, GlobalVar, LocalVar, Node, NodeKind, Program,
+    Relocation, Stmt, StmtKind,
 };
 use crate::error::{Error, Result};
 use crate::source::Source;
@@ -46,6 +47,13 @@ struct Initializer {
 enum InitializerStep {
     Index(usize),
     Member(Member),
+}
+
+/// The compile-time value model for global initializers.
+enum GlobalInitValue {
+    Num(i64),
+    /// Relocation against the given label with the given addend/offset.
+    Reloc(SmolStr, i64),
 }
 
 /// The specific initializer form carried by [`Initializer`].
@@ -197,6 +205,13 @@ impl<'a> Parser<'a> {
     /// Emit a warning message at the current token.
     fn warn_current(&self, message: impl Into<SmolStr>) {
         self.source.warn_at(self.current().offset, message);
+    }
+
+    /// Generate a unique label.
+    fn unique_label(&mut self) -> SmolStr {
+        let label = format_smolstr!(".L..{}", self.next_unique_label);
+        self.next_unique_label += 1;
+        label
     }
 
     /// Assume and skip a specific punctuator.
@@ -1008,7 +1023,7 @@ impl<'a> Parser<'a> {
                 let init = self.parse_initializer(ty)?;
                 ty = init.ty;
                 let init_data = self.new_global_init(init)?;
-                self.globals[global_id].init_data = Some(init_data.into());
+                self.globals[global_id].init_data = Some(init_data);
             }
 
             if self.types.is_incomplete(ty) {
@@ -2251,7 +2266,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: impl Into<SmolStr>,
         ty: Type,
-        init_data: Option<Rc<[u8]>>,
+        init_data: Option<GlobalInitData>,
     ) -> usize {
         self.disallow_speculation();
 
@@ -2269,11 +2284,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new anonymous global variable.
-    fn create_anon_global(&mut self, ty: Type, init_data: Rc<[u8]>) -> usize {
+    fn create_anon_global(&mut self, ty: Type, bytes: Rc<[u8]>) -> usize {
         self.disallow_speculation();
 
         let name = self.unique_label();
-        self.create_global(name, ty, Some(init_data))
+        self.create_global(
+            name,
+            ty,
+            Some(GlobalInitData {
+                bytes,
+                relocations: Default::default(),
+            }),
+        )
     }
 
     /// Create a new function declaration.
@@ -2546,38 +2568,57 @@ impl<'a> Parser<'a> {
     }
 
     /// Write the initialization data of a global variable initializer.
-    fn new_global_init(&mut self, init: Initializer) -> Result<Vec<u8>> {
-        let mut data = vec![0; self.types.size(init.ty) as usize];
-        self.new_global_init2(init, &mut data, 0)?;
-        Ok(data)
+    fn new_global_init(&mut self, init: Initializer) -> Result<GlobalInitData> {
+        let mut bytes = vec![0; self.types.size(init.ty) as usize];
+        let mut relocations = Vec::new();
+        self.new_global_init2(init, &mut bytes, &mut relocations, 0)?;
+        Ok(GlobalInitData {
+            bytes: bytes.into(),
+            relocations: relocations.into(),
+        })
     }
 
     fn new_global_init2(
         &mut self,
         init: Initializer,
-        data: &mut [u8],
+        bytes: &mut [u8],
+        relocations: &mut Vec<Relocation>,
         offset: usize,
     ) -> Result<()> {
         let mut write = |val: i64, size| match size {
-            1 => data[offset] = val as _,
-            2 => data[offset..offset + 2].copy_from_slice(&(val as i16).to_ne_bytes()),
-            4 => data[offset..offset + 4].copy_from_slice(&(val as i32).to_ne_bytes()),
-            8 => data[offset..offset + 8].copy_from_slice(&val.to_ne_bytes()),
+            1 => bytes[offset] = val as _,
+            2 => bytes[offset..offset + 2].copy_from_slice(&(val as i16).to_ne_bytes()),
+            4 => bytes[offset..offset + 4].copy_from_slice(&(val as i32).to_ne_bytes()),
+            8 => bytes[offset..offset + 8].copy_from_slice(&val.to_ne_bytes()),
             _ => unreachable!(),
         };
 
         match init.kind {
-            InitializerKind::Expr(mut rhs) => write(self.eval(&mut rhs)?, self.types.size(init.ty)),
+            InitializerKind::Expr(mut rhs) => match self.eval_global_init(&mut rhs)? {
+                GlobalInitValue::Num(val) => write(val, self.types.size(init.ty)),
+                GlobalInitValue::Reloc(label, addend) => {
+                    if self.types.size(init.ty) != 8 {
+                        // Global relocations are emitted as ".quad" so they must
+                        // occpy one pointer-sized slot
+                        return Err(self.source.error_at(rhs.offset, "invalid initializer"));
+                    }
+                    relocations.push(Relocation {
+                        offset,
+                        label,
+                        addend,
+                    });
+                },
+            },
             InitializerKind::Aggregate(children) => {
                 if let Some(array) = self.types.as_array(init.ty) {
                     let stride = self.types.size(array.base) as usize;
                     for (i, child) in children.into_iter().enumerate() {
-                        self.new_global_init2(child, data, offset + i * stride)?;
+                        self.new_global_init2(child, bytes, relocations, offset + i * stride)?;
                     }
                 } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
                     let members = sou.members.clone().unwrap_or_default();
                     for (member, child) in members.iter().zip(children) {
-                        self.new_global_init2(child, data, offset + member.offset)?;
+                        self.new_global_init2(child, bytes, relocations, offset + member.offset)?;
                     }
                 }
             },
@@ -3012,6 +3053,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Evaluate an expression as a compile-time constant.
     fn eval(&mut self, node: &mut Node) -> Result<i64> {
         self.infer_type(node)?;
         let ty = node.expect_ty();
@@ -3091,10 +3133,107 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Generate a unique label.
-    fn unique_label(&mut self) -> SmolStr {
-        let label = format_smolstr!(".L..{}", self.next_unique_label);
-        self.next_unique_label += 1;
-        label
+    /// Evaluate a global initializer.
+    ///
+    /// On top of [`eval`], this further accepts "ptr+n" where "ptr" is a
+    /// pointer to a global variable or function and "n" is a number.
+    ///
+    /// [`eval`]: Self::eval
+    fn eval_global_init(&mut self, node: &mut Node) -> Result<GlobalInitValue> {
+        self.infer_type(node)?;
+        let ty = node.expect_ty();
+
+        if self.types.as_array(ty).is_some() || self.types.is_func(ty) {
+            // Arrays and functions decay to addresses in global initializers,
+            // so evaluating them is evaluating their addresses rather than
+            // plain integer constant evaluation
+            return self.eval_global_addr(node);
+        }
+
+        Ok(match &mut node.kind {
+            NodeKind::Binary { op, lhs, rhs } => {
+                let lhs = self.eval_global_init(lhs)?;
+                let rhs = self.eval_global_init(rhs)?;
+                match op {
+                    BinaryOp::Add => match (lhs, rhs) {
+                        (GlobalInitValue::Num(lhs), GlobalInitValue::Num(rhs)) => {
+                            GlobalInitValue::Num(lhs.wrapping_add(rhs))
+                        },
+                        (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
+                        | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
+                            GlobalInitValue::Reloc(label, addend.wrapping_add(rhs))
+                        },
+                        _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                    },
+                    BinaryOp::Sub => match (lhs, rhs) {
+                        (GlobalInitValue::Num(lhs), GlobalInitValue::Num(rhs)) => {
+                            GlobalInitValue::Num(lhs.wrapping_sub(rhs))
+                        },
+                        (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
+                            GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs))
+                        },
+                        _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                    },
+                    _ => GlobalInitValue::Num(self.eval(node)?),
+                }
+            },
+            NodeKind::Conditional {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                if self.eval(cond)? != 0 {
+                    self.eval_global_init(then_expr)?
+                } else {
+                    self.eval_global_init(else_expr)?
+                }
+            },
+            NodeKind::Comma { rhs, .. } => self.eval_global_init(rhs)?,
+            NodeKind::Cast(expr) => match self.eval_global_init(expr)? {
+                GlobalInitValue::Num(val) => {
+                    let val = match ty {
+                        Type::Bool => (val != 0) as _,
+                        Type::Char => val as i8 as _,
+                        Type::Short => val as i16 as _,
+                        Type::Int => val as i32 as _,
+                        _ => val,
+                    };
+                    GlobalInitValue::Num(val)
+                },
+                GlobalInitValue::Reloc(label, addend) => {
+                    if matches!(ty, Type::Long) || self.types.is_ptr(ty) {
+                        GlobalInitValue::Reloc(label, addend)
+                    } else {
+                        return Err(self.source.error_at(node.offset, "invalid initializer"));
+                    }
+                },
+            },
+            NodeKind::Addr(expr) => self.eval_global_addr(expr)?,
+            _ => GlobalInitValue::Num(self.eval(node)?),
+        })
+    }
+
+    /// Evaluate an expression as relocatable address for a global initializer.
+    fn eval_global_addr(&mut self, node: &mut Node) -> Result<GlobalInitValue> {
+        self.infer_type(node)?;
+
+        Ok(match &mut node.kind {
+            NodeKind::Entity(entity) => {
+                let label = match entity {
+                    EntityRef::Global(global_id) => self.globals[*global_id].name.clone(),
+                    EntityRef::Function(function_id) => self.functions[*function_id].name.clone(),
+                    _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                };
+                GlobalInitValue::Reloc(label, 0)
+            },
+            NodeKind::Deref(expr) => self.eval_global_init(expr)?,
+            NodeKind::Member { parent, member } => match self.eval_global_addr(parent)? {
+                GlobalInitValue::Reloc(label, addend) => {
+                    GlobalInitValue::Reloc(label, addend + member.offset as i64)
+                },
+                _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+            },
+            _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+        })
     }
 }

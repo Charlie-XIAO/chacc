@@ -31,13 +31,27 @@ pub struct Function {
     pub is_static: bool,
 }
 
+/// A relocation inside statically initialized global data.
+#[derive(Debug)]
+pub struct Relocation {
+    pub offset: usize,
+    pub label: SmolStr,
+    pub addend: i64,
+}
+
+/// Static initialization data of a global variable.
+#[derive(Debug)]
+pub struct GlobalInitData {
+    pub bytes: Rc<[u8]>,
+    pub relocations: Rc<[Relocation]>,
+}
+
 /// A global variable defined in [`Program`].
 #[derive(Debug)]
 pub struct GlobalVar {
     pub name: SmolStr,
     pub ty: Type,
-    /// Initial bytes for statically initialized data.
-    pub init_data: Option<Rc<[u8]>>,
+    pub init_data: Option<GlobalInitData>,
 }
 
 /// A local variable stored in a function's stack frame.

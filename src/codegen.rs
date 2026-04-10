@@ -7,7 +7,8 @@ use std::path::Path;
 use smol_str::{SmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, EntityRef, Function, GlobalVar, LocalVar, Node, NodeKind, Program, Stmt, StmtKind,
+    BinaryOp, EntityRef, Function, GlobalInitData, GlobalVar, LocalVar, Node, NodeKind, Program,
+    Stmt, StmtKind,
 };
 use crate::error::Result;
 use crate::source::Source;
@@ -216,9 +217,25 @@ impl<'a> Codegen<'a> {
             writeln!(self.out, "  .globl {}", global.name)?;
             writeln!(self.out, "{}:", global.name)?;
 
-            if let Some(init_data) = &global.init_data {
-                for byte in init_data.iter() {
-                    writeln!(self.out, "  .byte {byte}")?;
+            if let Some(GlobalInitData { bytes, relocations }) = &global.init_data {
+                let mut pos = 0;
+
+                for reloc in relocations.iter() {
+                    while pos < reloc.offset {
+                        writeln!(self.out, "  .byte {}", bytes[pos])?;
+                        pos += 1;
+                    }
+                    if reloc.addend == 0 {
+                        writeln!(self.out, "  .quad {}", reloc.label)?;
+                    } else {
+                        writeln!(self.out, "  .quad {}{:+}", reloc.label, reloc.addend)?;
+                    }
+                    pos += 8;
+                }
+
+                while pos < bytes.len() {
+                    writeln!(self.out, "  .byte {}", bytes[pos])?;
+                    pos += 1;
                 }
             } else {
                 writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;

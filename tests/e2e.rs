@@ -500,6 +500,21 @@ fn test_initializer() {
     f.line("struct {char a; int b;} g11[2] = {{1, 2}, {3, 4}};");
     f.line("struct {int a[2];} g12[2] = {{{1, 2}}};");
     f.line("union { int a; char b[8]; } g13[2] = {{0x01020304}, {0x05060708}};");
+    f.line(r#"char g17[] = "foobar";"#);
+    f.line(r#"char g18[10] = "foobar";"#);
+    f.line(r#"char g19[3] = "foobar";"#);
+    f.line("char *g20 = g17+0;");
+    f.line("char *g21 = g17+3;");
+    f.line("char *g22 = g17-3;");
+    f.line("char *g23[] = {g17+0, g17+3, g17-3};");
+    f.line("int g24=3;");
+    f.line("int *g25=&g24;");
+    f.line("int g26[3] = {1, 2, 3};");
+    f.line("int *g27 = g26 + 1;");
+    f.line("int *g28 = &g11[1].a;");
+    f.line("long g29 = (long)(long)g26;");
+    f.line("struct { struct { int a[3]; } a; } g30 = {{{1,2,3}}};");
+    f.line("int *g31=g30.a.a;");
     f.main();
 
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
@@ -586,6 +601,32 @@ fn test_initializer() {
     f.assert(3, "g13[0].b[1]");
     f.assert(8, "g13[1].b[0]");
     f.assert(7, "g13[1].b[1]");
+
+    f.assert(7, "sizeof(g17)");
+    f.assert(10," sizeof(g18)");
+    f.assert(3, "sizeof(g19)");
+
+    f.assert(0, r#"memcmp(g17, "foobar", 7)"#);
+    f.assert(0, r#"memcmp(g18, "foobar\0\0\0", 10)"#);
+    f.assert(0, r#"memcmp(g19, "foo", 3)"#);
+
+    f.assert(0, r#"strcmp(g20, "foobar")"#);
+    f.assert(0, r#"strcmp(g21, "bar")"#);
+    f.assert(0, r#"strcmp(g22+3, "foobar")"#);
+
+    f.assert(0, r#"strcmp(g23[0], "foobar")"#);
+    f.assert(0, r#"strcmp(g23[1], "bar")"#);
+    f.assert(0, r#"strcmp(g23[2]+3, "foobar")"#);
+
+    f.assert(3, "g24");
+    f.assert(3, "*g25");
+    f.assert(2, "*g27");
+    f.assert(3, "*g28");
+    f.assert(1, "*(int *)g29");
+
+    f.assert(1, "g31[0]");
+    f.assert(2, "g31[1]");
+    f.assert(3, "g31[2]");
 
     f.finish();
     f.run("initializer");
