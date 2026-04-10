@@ -772,6 +772,8 @@ fn test_sizeof() {
     f.assert(8, "sizeof(int(*)[10])");
     f.assert(8, "sizeof(int(*)[][10])");
 
+    f.assert(4, "sizeof(struct { int x, y[]; })");
+
     f.finish();
     f.run("sizeof");
 }

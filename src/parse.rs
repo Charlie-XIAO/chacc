@@ -806,7 +806,7 @@ impl<'a> Parser<'a> {
                 let ty = self.types.struct_or_union(is_struct, None);
                 self.push_scope_tag(tag.to_smolstr(), ty);
                 self.advance();
-                let members = self.parse_members_decl(member_context)?;
+                let members = self.parse_members_decl(is_struct, member_context)?;
                 self.types.complete_struct_or_union(is_struct, members, ty);
                 return Ok(ty);
             };
@@ -821,7 +821,7 @@ impl<'a> Parser<'a> {
                 }
 
                 self.advance();
-                let members = self.parse_members_decl(member_context)?;
+                let members = self.parse_members_decl(is_struct, member_context)?;
                 self.types.complete_struct_or_union(is_struct, members, ty);
                 return Ok(ty);
             }
@@ -833,7 +833,7 @@ impl<'a> Parser<'a> {
 
         // "struct {...}", which is an anonymous definition
         self.skip_punct("{")?;
-        let members = self.parse_members_decl(member_context)?;
+        let members = self.parse_members_decl(is_struct, member_context)?;
         let ty = self.types.struct_or_union(is_struct, Some(members));
         Ok(ty)
     }
@@ -842,8 +842,15 @@ impl<'a> Parser<'a> {
     /// <members-decl> ::= <member-decl>* "}"
     /// <member-decl> ::= <declspec> <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_members_decl(&mut self, context: DeclspecContext) -> Result<Vec<Member>> {
+    fn parse_members_decl(
+        &mut self,
+        is_struct: bool,
+        context: DeclspecContext,
+    ) -> Result<Vec<Member>> {
         let mut members = Vec::new();
+
+        // (is_flexible_array, offset)
+        let mut pending_incomplete = None::<(bool, usize)>;
 
         while !self.current().is_punct("}") {
             let declspec = self.parse_declspec(context)?;
@@ -855,12 +862,28 @@ impl<'a> Parser<'a> {
                 }
                 first = false;
 
-                let declarator = self.parse_declarator(declspec.ty)?;
-                if self.types.is_incomplete(declarator.ty) {
+                if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
+                    if !is_flexible_array {
+                        return Err(self.source.error_at(offset, "field has incomplete type"));
+                    }
+                    if !is_struct {
+                        return Err(self
+                            .source
+                            .error_at(offset, "flexible array member in union"));
+                    }
                     return Err(self
                         .source
-                        .error_at(declarator.offset, "field has incomplete type"));
+                        .error_at(offset, "flexible array member not at end of struct"));
                 }
+
+                let declarator = self.parse_declarator(declspec.ty)?;
+                if self.types.is_incomplete(declarator.ty) {
+                    pending_incomplete = Some((
+                        self.types.as_array(declarator.ty).is_some(),
+                        declarator.offset,
+                    ));
+                }
+
                 members.push(Member {
                     name: declarator.name,
                     ty: declarator.ty,
@@ -872,6 +895,24 @@ impl<'a> Parser<'a> {
         }
 
         self.advance();
+
+        if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
+            if !is_flexible_array {
+                return Err(self.source.error_at(offset, "field has incomplete type"));
+            }
+            if !is_struct {
+                return Err(self
+                    .source
+                    .error_at(offset, "flexible array member in union"));
+            }
+            if members.len() <= 1 {
+                return Err(self.source.error_at(
+                    offset,
+                    "flexible array member in a struct with no named members",
+                ));
+            }
+        }
+
         Ok(members)
     }
 
@@ -1579,7 +1620,15 @@ impl<'a> Parser<'a> {
             }
 
             if i < members.len() {
-                elements.push(self.parse_initializer(members[i].ty)?);
+                let ty = members[i].ty;
+                if self.types.is_incomplete(ty) {
+                    debug_assert!(
+                        self.types.as_array(ty).is_some(),
+                        "incomplete types other than flexible array member leaked",
+                    );
+                    return Err(self.error_current("cannot initialize a flexible array member"));
+                }
+                elements.push(self.parse_initializer(ty)?);
             } else {
                 self.warn_current("excess elements in struct initializer");
                 self.skip_initializer()?;
