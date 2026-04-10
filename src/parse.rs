@@ -1357,6 +1357,18 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(sou) = self.types.as_struct_or_union(ty).cloned() {
+            if !self.current().is_punct("{") {
+                let mut assign = self.parse_assign()?;
+                self.infer_type(&mut assign)?;
+                if assign.expect_ty() != ty {
+                    return Err(self.error_current("invalid initializer"));
+                }
+                return Ok(Initializer {
+                    ty,
+                    kind: InitializerKind::Expr(assign),
+                });
+            }
+
             let elements = if sou.is_struct {
                 self.parse_struct_initializer(&sou)?
             } else {

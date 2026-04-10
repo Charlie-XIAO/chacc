@@ -548,6 +548,8 @@ fn test_initializer() {
     f.assert(5, "({ typedef struct {int a,b,c,d,e,f;} T; T x={1,2,3,4,5,6}; T y; y=x; y.e; })");
     f.assert(2, "({ typedef struct {int a,b;} T; T x={1,2}; T y, z; z=y=x; z.b; })");
 
+    f.assert(1, "({ typedef struct {int a,b;} T; T x={1,2}; T y=x; y.a; })");
+
     f.finish();
     f.run("initializer");
 }

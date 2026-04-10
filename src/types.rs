@@ -7,11 +7,11 @@ use smol_str::SmolStr;
 use crate::utils::align_to;
 
 /// A stable handle to a non-simple type stored in [`TypeStore`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeId(usize);
 
 /// Expression types used for semantic analysis.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Type {
     #[default]
     Dummy,
