@@ -232,6 +232,41 @@ impl<'a> Parser<'a> {
         Ok(ident)
     }
 
+    /// Maybe skip the end of a braced list.
+    ///
+    /// A braced list ends with either "}" or "," + "}". If we are not at such
+    /// an end sequence, this returns false and does nothing. Otherwise, this
+    /// returns true, and optionally skips over that sequence if `skip` is true.
+    fn maybe_skip_list_end(&mut self, skip: bool) -> bool {
+        if self.current().is_punct("}") {
+            if skip {
+                self.advance();
+            }
+            return true;
+        }
+
+        if self.current().is_punct(",") && self.peek(1).is_some_and(|tok| tok.is_punct("}")) {
+            if skip {
+                self.advance();
+                self.advance();
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Assume and skip the end of a braced list.
+    ///
+    /// This is similar to [`maybe_skip_list_end`], but it assumes that we are
+    /// at such an end sequence and always skips it, erroring if we are not.
+    fn skip_list_end(&mut self) -> Result<()> {
+        if !self.maybe_skip_list_end(true) {
+            return Err(self.error_current("expected '}'"));
+        }
+        Ok(())
+    }
+
     /// Return whether the current token can be interpreted as a typename.
     fn at_typename(&self) -> bool {
         if self.current().is_typename_keyword() {
@@ -843,7 +878,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <enum-specifier> ::= <ident>? "{" <enum-list>? "}" | <ident>
     /// <enum-list> ::=
-    ///   <ident> ("=" <constexpr>)? ("," <ident> ("=" <constexpr>)?)*
+    ///   <ident> ("=" <constexpr>)? ("," <ident> ("=" <constexpr>)?)* ","?
     /// ```
     fn parse_enum_specifier(&mut self) -> Result<Type> {
         let offset = self.current().offset;
@@ -866,7 +901,7 @@ impl<'a> Parser<'a> {
 
         let mut first = true;
         let mut val = 0;
-        while !self.current().is_punct("}") {
+        while !self.maybe_skip_list_end(true) {
             if !first {
                 self.skip_punct(",")?;
             }
@@ -881,8 +916,6 @@ impl<'a> Parser<'a> {
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::EnumConst(val));
             val += 1;
         }
-
-        self.advance();
 
         let ty = Type::Enum;
         if let Some(tag) = tag {
@@ -919,7 +952,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.is_function()? {
+            if self.at_function()? {
                 self.parse_function(
                     declspec.ty,
                     declspec.storage_class == Some(StorageClass::Static),
@@ -941,7 +974,7 @@ impl<'a> Parser<'a> {
     /// Lookahead to determine whether we are at a [`<function>`].
     ///
     /// [`<function>`]: Self::parse_function
-    fn is_function(&mut self) -> Result<bool> {
+    fn at_function(&mut self) -> Result<bool> {
         if self.current().is_punct(";") {
             return Ok(false);
         }
@@ -1431,7 +1464,7 @@ impl<'a> Parser<'a> {
             self.advance();
 
             let mut first = true;
-            while !self.current().is_punct("}") {
+            while !self.maybe_skip_list_end(true) {
                 if !first {
                     self.skip_punct(",")?;
                 }
@@ -1439,7 +1472,6 @@ impl<'a> Parser<'a> {
                 self.skip_initializer()?;
             }
 
-            self.advance();
             return Ok(());
         }
 
@@ -1480,7 +1512,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <array-initializer> ::=
-    ///   "{" <initializer> ("," <initializer>)* "}"
+    ///   "{" <initializer> ("," <initializer>)* ","? "}"
     ///   | <initializer> ("," <initializer>)*
     /// ```
     fn parse_array_initializer(&mut self, array: &ArrayType) -> Result<Vec<Initializer>> {
@@ -1492,7 +1524,7 @@ impl<'a> Parser<'a> {
         let mut elements = Vec::with_capacity(array.len.unwrap_or(0));
         let mut i = 0;
         loop {
-            if braced && self.current().is_punct("}") {
+            if self.maybe_skip_list_end(braced) {
                 break;
             }
             let has_space = array.len.is_none_or(|len| i < len);
@@ -1515,15 +1547,12 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        if braced {
-            self.advance();
-        }
         Ok(elements)
     }
 
     /// ```bnf
     /// <struct-initializer> ::=
-    ///   "{" <initializer> ("," <initializer>)* "}"
+    ///   "{" <initializer> ("," <initializer>)* ","? "}"
     ///   | <initializer> ("," <initializer>)*
     /// ```
     fn parse_struct_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
@@ -1536,7 +1565,7 @@ impl<'a> Parser<'a> {
         let mut elements = Vec::with_capacity(members.len());
         let mut i = 0;
         loop {
-            if braced && self.current().is_punct("}") {
+            if self.maybe_skip_list_end(braced) {
                 break;
             }
             if !braced && i >= members.len() {
@@ -1558,14 +1587,11 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        if braced {
-            self.advance();
-        }
         Ok(elements)
     }
 
     /// ```bnf
-    /// <union-initializer> ::= "{" <initializer> "}" | <initializer>
+    /// <union-initializer> ::= "{" <initializer> ","? "}" | <initializer>
     /// ```
     fn parse_union_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
         let braced = self.current().is_punct("{");
@@ -1581,7 +1607,7 @@ impl<'a> Parser<'a> {
         }
 
         if braced {
-            self.skip_punct("}")?;
+            self.skip_list_end()?;
         }
         Ok(elements)
     }

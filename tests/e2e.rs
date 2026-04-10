@@ -652,6 +652,11 @@ fn test_initializer() {
     f.assert(0, r#"strcmp(g43[1], "bar")"#);
     f.assert(0, r#"strcmp(g44, "foo")"#);
 
+    f.assert(3, "({ int a[]={1,2,3,}; a[2]; })");
+    f.assert(1, "({ struct {int a,b,c;} x={1,2,3,}; x.a; })");
+    f.assert(1, "({ union {int a; char b;} x={1,}; x.a; })");
+    f.assert(2, "({ enum {x,y,z,}; z; })");
+
     f.finish();
     f.run("initializer");
 }
