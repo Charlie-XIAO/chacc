@@ -492,6 +492,14 @@ fn test_function() {
 #[test]
 fn test_initializer() {
     let mut f = Fixture::new();
+    f.line("char g3 = 3;");
+    f.line("short g4 = 4;");
+    f.line("int g5 = 5;");
+    f.line("long g6 = 6;");
+    f.line("int g9[3] = {0, 1, 2};");
+    f.line("struct {char a; int b;} g11[2] = {{1, 2}, {3, 4}};");
+    f.line("struct {int a[2];} g12[2] = {{{1, 2}}};");
+    f.line("union { int a; char b[8]; } g13[2] = {{0x01020304}, {0x05060708}};");
     f.main();
 
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
@@ -554,6 +562,30 @@ fn test_initializer() {
     f.assert(3, "({ union { int a; char b[4]; } x={0x01020304}; x.b[1]; })");
 
     f.assert(0x01020304, "({ union { struct { char a,b,c,d; } e; int f; } x={{4,3,2,1}}; x.f; })");
+
+    f.assert(3, "g3");
+    f.assert(4, "g4");
+    f.assert(5, "g5");
+    f.assert(6, "g6");
+
+    f.assert(0, "g9[0]");
+    f.assert(1, "g9[1]");
+    f.assert(2, "g9[2]");
+
+    f.assert(1, "g11[0].a");
+    f.assert(2, "g11[0].b");
+    f.assert(3, "g11[1].a");
+    f.assert(4, "g11[1].b");
+
+    f.assert(1, "g12[0].a[0]");
+    f.assert(2, "g12[0].a[1]");
+    f.assert(0, "g12[1].a[0]");
+    f.assert(0, "g12[1].a[1]");
+
+    f.assert(4, "g13[0].b[0]");
+    f.assert(3, "g13[0].b[1]");
+    f.assert(8, "g13[1].b[0]");
+    f.assert(7, "g13[1].b[1]");
 
     f.finish();
     f.run("initializer");

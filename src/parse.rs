@@ -42,12 +42,6 @@ struct Initializer {
     kind: InitializerKind,
 }
 
-impl Initializer {
-    fn is_aggregate(&self) -> bool {
-        matches!(self.kind, InitializerKind::Aggregate(_))
-    }
-}
-
 /// One step in the path from a local object to a nested initializer target.
 enum InitializerStep {
     Index(usize),
@@ -1006,13 +1000,23 @@ impl<'a> Parser<'a> {
                     .source
                     .error_at(declarator.offset, "expected a global variable"));
             }
-            if self.types.is_incomplete(declarator.ty) {
+            let global_id = self.create_global(declarator.name, declarator.ty, None);
+            let mut ty = self.globals[global_id].ty;
+
+            if self.current().is_punct("=") {
+                self.advance();
+                let init = self.parse_initializer(ty)?;
+                ty = init.ty;
+                let init_data = self.new_global_init(init)?;
+                self.globals[global_id].init_data = Some(init_data.into());
+            }
+
+            if self.types.is_incomplete(ty) {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "variable has incomplete type"));
             }
-
-            self.create_global(declarator.name, declarator.ty, None);
+            self.globals[global_id].ty = ty;
         }
 
         self.skip_punct(";")?;
@@ -1300,23 +1304,22 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty)?;
             let local_id = self.create_local(declarator.name, declarator.ty);
 
             let mut ty = self.locals[local_id].ty;
             if self.current().is_punct("=") {
+                let offset = self.current().offset;
                 self.advance();
-                let init = self.parse_initializer(self.locals[local_id].ty)?;
+                let init = self.parse_initializer(ty)?;
                 ty = init.ty;
-                if init.is_aggregate() {
-                    stmts.push(Stmt::memzero_local(local_id, offset));
-                }
-                self.new_local_initializer(local_id, init, &mut Vec::new(), &mut stmts)?;
+                self.new_local_init(local_id, init, offset, &mut stmts)?;
             }
 
             if self.types.is_incomplete(ty) {
-                return Err(self.source.error_at(offset, "variable has incomplete type"));
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "variable has incomplete type"));
             }
             self.locals[local_id].ty = ty;
         }
@@ -1506,8 +1509,8 @@ impl<'a> Parser<'a> {
         self.skip_punct("{")?;
 
         let mut elements = Vec::new();
-        // Unlike structs, union initializers take only one initializer, and
-        // that initializes the first union member
+        // Union initializer takes only one initializer and initializes the
+        // first union member
         if let Some(member) = sou.members.as_ref().and_then(|members| members.first()) {
             elements.push(self.parse_initializer(member.ty)?);
         }
@@ -2476,13 +2479,24 @@ impl<'a> Parser<'a> {
         Ok(Node::member(node, member, self.current().offset))
     }
 
-    /// Build (lower) a local variable initializer.
+    /// Lower a local variable initializer.
     ///
-    /// This pushes into `stmts` one or more assignment statements for the
-    /// explicit initializer pieces. Aggregate initializers are not zero-filled,
-    /// and the caller is responsible for that. The caller should pass an empty
-    /// vector for `paths`.
-    fn new_local_initializer(
+    /// This pushes into `stmts` the assignment statements for the explicit
+    /// initializer pieces.
+    fn new_local_init(
+        &mut self,
+        local_id: usize,
+        init: Initializer,
+        offset: usize,
+        stmts: &mut Vec<Stmt>,
+    ) -> Result<()> {
+        if matches!(init.kind, InitializerKind::Aggregate(_)) {
+            stmts.push(Stmt::memzero_local(local_id, offset));
+        }
+        self.new_local_init2(local_id, init, &mut Vec::new(), stmts)
+    }
+
+    fn new_local_init2(
         &mut self,
         local_id: usize,
         init: Initializer,
@@ -2513,7 +2527,7 @@ impl<'a> Parser<'a> {
                 if self.types.as_array(init.ty).is_some() {
                     for (i, child) in children.into_iter().enumerate() {
                         path.push(InitializerStep::Index(i));
-                        self.new_local_initializer(local_id, child, path, stmts)?;
+                        self.new_local_init2(local_id, child, path, stmts)?;
                         path.pop();
                     }
                 } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
@@ -2521,8 +2535,49 @@ impl<'a> Parser<'a> {
                         sou.members.clone().unwrap_or_default().iter().zip(children)
                     {
                         path.push(InitializerStep::Member(member.clone()));
-                        self.new_local_initializer(local_id, child, path, stmts)?;
+                        self.new_local_init2(local_id, child, path, stmts)?;
                         path.pop();
+                    }
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Write the initialization data of a global variable initializer.
+    fn new_global_init(&mut self, init: Initializer) -> Result<Vec<u8>> {
+        let mut data = vec![0; self.types.size(init.ty) as usize];
+        self.new_global_init2(init, &mut data, 0)?;
+        Ok(data)
+    }
+
+    fn new_global_init2(
+        &mut self,
+        init: Initializer,
+        data: &mut [u8],
+        offset: usize,
+    ) -> Result<()> {
+        let mut write = |val: i64, size| match size {
+            1 => data[offset] = val as _,
+            2 => data[offset..offset + 2].copy_from_slice(&(val as i16).to_ne_bytes()),
+            4 => data[offset..offset + 4].copy_from_slice(&(val as i32).to_ne_bytes()),
+            8 => data[offset..offset + 8].copy_from_slice(&val.to_ne_bytes()),
+            _ => unreachable!(),
+        };
+
+        match init.kind {
+            InitializerKind::Expr(mut rhs) => write(self.eval(&mut rhs)?, self.types.size(init.ty)),
+            InitializerKind::Aggregate(children) => {
+                if let Some(array) = self.types.as_array(init.ty) {
+                    let stride = self.types.size(array.base) as usize;
+                    for (i, child) in children.into_iter().enumerate() {
+                        self.new_global_init2(child, data, offset + i * stride)?;
+                    }
+                } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
+                    let members = sou.members.clone().unwrap_or_default();
+                    for (member, child) in members.iter().zip(children) {
+                        self.new_global_init2(child, data, offset + member.offset)?;
                     }
                 }
             },
