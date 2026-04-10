@@ -253,13 +253,15 @@ impl<'a> Parser<'a> {
             return true;
         }
 
-        return false;
+        false
     }
 
     /// Assume and skip the end of a braced list.
     ///
     /// This is similar to [`maybe_skip_list_end`], but it assumes that we are
     /// at such an end sequence and always skips it, erroring if we are not.
+    ///
+    /// [`maybe_skip_list_end`]: Self::maybe_skip_list_end
     fn skip_list_end(&mut self) -> Result<()> {
         if !self.maybe_skip_list_end(true) {
             return Err(self.error_current("expected '}'"));
