@@ -1330,6 +1330,7 @@ impl<'a> Parser<'a> {
     ///   <string-initializer>
     ///   | <array-initializer>
     ///   | <struct-initializer>
+    ///   | <union-initializer>
     ///   | <assign>
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
@@ -1372,7 +1373,7 @@ impl<'a> Parser<'a> {
             let elements = if sou.is_struct {
                 self.parse_struct_initializer(&sou)?
             } else {
-                unimplemented!("union initializer is not supported yet");
+                self.parse_union_initializer(&sou)?
             };
 
             return Ok(Initializer {
@@ -1495,6 +1496,23 @@ impl<'a> Parser<'a> {
         }
 
         self.advance();
+        Ok(elements)
+    }
+
+    /// ```bnf
+    /// <union-initializer> ::= "{" <initializer> "}"
+    /// ```
+    fn parse_union_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
+        self.skip_punct("{")?;
+
+        let mut elements = Vec::new();
+        // Unlike structs, union initializers take only one initializer, and
+        // that initializes the first union member
+        if let Some(member) = sou.members.as_ref().and_then(|members| members.first()) {
+            elements.push(self.parse_initializer(member.ty)?);
+        }
+
+        self.skip_punct("}")?;
         Ok(elements)
     }
 
