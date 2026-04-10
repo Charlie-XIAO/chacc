@@ -644,7 +644,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <func-params> ::= (<param> ("," <param>)*)? ")"
+    /// <func-params> ::= ("void" | <param> ("," <param>)*)? ")"
     /// <param> ::= <declspec> <declarator>
     /// ```
     fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>)> {
@@ -656,7 +656,20 @@ impl<'a> Parser<'a> {
                 self.skip_punct(",")?;
             }
 
+            let offset = self.current().offset;
             let declspec = self.parse_declspec(DeclspecContext::ParameterDecl)?;
+
+            if params.is_empty() && declspec.ty == Type::Void {
+                if self.current().is_punct(")") {
+                    self.advance();
+                    return Ok((self.types.func(return_ty, Vec::new()), Vec::new()));
+                }
+                if self.current().is_punct(",") {
+                    return Err(self
+                        .source
+                        .error_at(offset, "'void' must be the only parameter"));
+                }
+            }
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
@@ -933,7 +946,7 @@ impl<'a> Parser<'a> {
                 let ty = self
                     .find_tag(tag)
                     .ok_or_else(|| self.source.error_at(offset, "unknown enum type"))?;
-                if !matches!(ty, Type::Enum) {
+                if ty != Type::Enum {
                     return Err(self.source.error_at(offset, "not an enum tag"));
                 }
                 return Ok(ty);
@@ -1430,7 +1443,7 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
         if let Some(array) = self.types.as_array(ty).cloned() {
-            let elements = if matches!(array.base, Type::Char)
+            let elements = if array.base == Type::Char
                 && let Some(content) = self.current().as_str()
             {
                 self.parse_string_initializer(content, &array)
@@ -2851,7 +2864,7 @@ impl<'a> Parser<'a> {
                         .source
                         .error_at(node.offset, "invalid pointer dereference"));
                 };
-                if matches!(base, Type::Void) {
+                if base == Type::Void {
                     return Err(self
                         .source
                         .error_at(node.offset, "dereferencing a void pointer"));
@@ -2926,7 +2939,7 @@ impl<'a> Parser<'a> {
                 let then_ty = then_expr.expect_ty();
                 let else_ty = else_expr.expect_ty();
 
-                if matches!(then_ty, Type::Void) || matches!(else_ty, Type::Void) {
+                if then_ty == Type::Void || else_ty == Type::Void {
                     Type::Void
                 } else {
                     let (lhs, rhs) = if self.types.base(then_ty).is_some()
@@ -3330,7 +3343,7 @@ impl<'a> Parser<'a> {
                     GlobalInitValue::Num(val)
                 },
                 GlobalInitValue::Reloc(label, addend) => {
-                    if matches!(ty, Type::Long) || self.types.is_ptr(ty) {
+                    if ty == Type::Long || self.types.is_ptr(ty) {
                         GlobalInitValue::Reloc(label, addend)
                     } else {
                         return Err(self.source.error_at(node.offset, "invalid initializer"));

@@ -282,7 +282,7 @@ impl TypeStore {
 
     /// Return whether the type is incomplete.
     pub fn is_incomplete(&self, ty: Type) -> bool {
-        if matches!(ty, Type::Void) {
+        if ty == Type::Void {
             return true;
         }
         let Some(data) = self.get(ty) else {

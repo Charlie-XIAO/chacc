@@ -431,7 +431,7 @@ fn test_enum() {
 #[test]
 fn test_function() {
     let mut f = Fixture::new();
-    f.line("int ret3() { return 3; return 5; }");
+    f.line("int ret3(void) { return 3; return 5; }");
     f.line("int add2(int x, int y) { return x + y; }");
     f.line("int sub2(int x, int y) { return x - y; }");
     f.line("int add6(int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; }");
@@ -441,13 +441,13 @@ fn test_function() {
     f.line("int sub_long(long a, long b, long c) { return a - b - c; }");
     f.line("int sub_short(short a, short b, short c) { return a - b - c; }");
     f.line("int g1;");
-    f.line("int *g1_ptr() { return &g1; }");
+    f.line("int *g1_ptr(void) { return &g1; }");
     f.line("char int_to_char(int x) { return x; }");
     f.line("long first_long(long a, char b) { return a; }");
     f.line("int div_long(long a, long b) { return a / b; }");
     f.line("_Bool bool_fn_add(_Bool x) { return x + 1; }");
     f.line("_Bool bool_fn_sub(_Bool x) { return x - 1; }");
-    f.line("static int static_fn() { return 3; }");
+    f.line("static int static_fn(void) { return 3; }");
     f.line("int param_decay(int x[]) { return x[0]; }");
     f.main();
 

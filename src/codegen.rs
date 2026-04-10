@@ -436,11 +436,11 @@ impl<'a> Codegen<'a> {
 
     /// Generate assembly for a type cast.
     fn gen_cast(&mut self, from: Type, to: Type) -> Result<()> {
-        if matches!(to, Type::Void) {
+        if to == Type::Void {
             return Ok(());
         }
 
-        if matches!(to, Type::Bool) {
+        if to == Type::Bool {
             self.cmp_zero(from)?;
             writeln!(self.out, "  setne %al")?;
             writeln!(self.out, "  movzx %al, %eax")?;
