@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
-use crate::types::{ArrayType, Member, Type, TypeStore};
+use crate::types::{ArrayType, Member, StructOrUnionType, Type, TypeStore};
 use crate::utils::MAX_FUNC_PARAMS;
 
 /// Declaration of a function parameter.
@@ -48,11 +48,17 @@ impl Initializer {
     }
 }
 
+/// One step in the path from a local object to a nested initializer target.
+enum InitializerStep {
+    Index(usize),
+    Member(Member),
+}
+
 /// The specific initializer form carried by [`Initializer`].
 enum InitializerKind {
     /// The initialization expression for non-aggregate types.
     Expr(Node),
-    /// Nested initializers for aggregate types, e.g., array.
+    /// Nested initializers for aggregate types, e.g., array, struct.
     Aggregate(Vec<Initializer>),
 }
 
@@ -1320,7 +1326,11 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <initializer> ::= <string-initializer> | <array-initializer> | <assign>
+    /// <initializer> ::=
+    ///   <string-initializer>
+    ///   | <array-initializer>
+    ///   | <struct-initializer>
+    ///   | <assign>
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
         if let Some(array) = self.types.as_array(ty).cloned() {
@@ -1339,6 +1349,19 @@ impl<'a> Parser<'a> {
                 // then "T a1 = {1};" and "T a2 = {1,2};" have different types
                 ty = self.types.array(array.base, Some(elements.len()));
             }
+
+            return Ok(Initializer {
+                ty,
+                kind: InitializerKind::Aggregate(elements),
+            });
+        }
+
+        if let Some(sou) = self.types.as_struct_or_union(ty).cloned() {
+            let elements = if sou.is_struct {
+                self.parse_struct_initializer(&sou)?
+            } else {
+                unimplemented!("union initializer is not supported yet");
+            };
 
             return Ok(Initializer {
                 ty,
@@ -1427,6 +1450,33 @@ impl<'a> Parser<'a> {
                 elements.push(self.parse_initializer(array.base)?);
             } else {
                 self.warn_current("excess elements in array initializer");
+                self.skip_initializer()?;
+            }
+            i += 1;
+        }
+
+        self.advance();
+        Ok(elements)
+    }
+
+    /// ```bnf
+    /// <struct-initializer> ::= "{" <initializer> ("," <initializer>)* "}"
+    /// ```
+    fn parse_struct_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
+        self.skip_punct("{")?;
+
+        let members = sou.members.clone().unwrap_or_default();
+        let mut elements = Vec::with_capacity(members.len());
+        let mut i = 0;
+        while !self.current().is_punct("}") {
+            if i > 0 {
+                self.skip_punct(",")?;
+            }
+
+            if i < members.len() {
+                elements.push(self.parse_initializer(members[i].ty)?);
+            } else {
+                self.warn_current("excess elements in struct initializer");
                 self.skip_initializer()?;
             }
             i += 1;
@@ -2401,12 +2451,12 @@ impl<'a> Parser<'a> {
     /// This pushes into `stmts` one or more assignment statements for the
     /// explicit initializer pieces. Aggregate initializers are not zero-filled,
     /// and the caller is responsible for that. The caller should pass an empty
-    /// vector for `indices`.
+    /// vector for `paths`.
     fn new_local_initializer(
         &mut self,
         local_id: usize,
         init: Initializer,
-        indices: &mut Vec<usize>,
+        path: &mut Vec<InitializerStep>,
         stmts: &mut Vec<Stmt>,
     ) -> Result<()> {
         match init.kind {
@@ -2414,19 +2464,36 @@ impl<'a> Parser<'a> {
                 let offset = rhs.offset;
 
                 let mut lhs = Node::entity(EntityRef::Local(local_id), offset);
-                for &index in indices.iter() {
-                    let index = Node::num(index as _, offset, false);
-                    lhs = Node::deref(self.new_add(lhs, index, offset)?, offset);
+                for step in path.iter() {
+                    lhs = match step {
+                        InitializerStep::Index(index) => {
+                            let index = Node::num(*index as _, offset, false);
+                            Node::deref(self.new_add(lhs, index, offset)?, offset)
+                        },
+                        InitializerStep::Member(member) => {
+                            Node::member(lhs, member.clone(), offset)
+                        },
+                    };
                 }
 
                 let expr = Node::assign(lhs, rhs, offset);
                 stmts.push(Stmt::expr(expr, offset));
             },
             InitializerKind::Aggregate(children) => {
-                for (i, child) in children.into_iter().enumerate() {
-                    indices.push(i);
-                    self.new_local_initializer(local_id, child, indices, stmts)?;
-                    indices.pop();
+                if self.types.as_array(init.ty).is_some() {
+                    for (i, child) in children.into_iter().enumerate() {
+                        path.push(InitializerStep::Index(i));
+                        self.new_local_initializer(local_id, child, path, stmts)?;
+                        path.pop();
+                    }
+                } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
+                    for (member, child) in
+                        sou.members.clone().unwrap_or_default().iter().zip(children)
+                    {
+                        path.push(InitializerStep::Member(member.clone()));
+                        self.new_local_initializer(local_id, child, path, stmts)?;
+                        path.pop();
+                    }
                 }
             },
         }

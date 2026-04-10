@@ -528,6 +528,26 @@ fn test_initializer() {
     f.assert(2, r#"({ typedef char T[]; T x="x"; T y="foo"; sizeof(x); })"#);
     f.assert(4, r#"({ typedef char T[]; T x="x"; T y="foo"; sizeof(y); })"#);
 
+    f.assert(1, "({ struct {int a; int b; int c;} x={1,2,3}; x.a; })");
+    f.assert(2, "({ struct {int a; int b; int c;} x={1,2,3}; x.b; })");
+    f.assert(3, "({ struct {int a; int b; int c;} x={1,2,3}; x.c; })");
+    f.assert(1, "({ struct {int a; int b; int c;} x={1}; x.a; })");
+    f.assert(0, "({ struct {int a; int b; int c;} x={1}; x.b; })");
+    f.assert(0, "({ struct {int a; int b; int c;} x={1}; x.c; })");
+
+    f.assert(1, "({ struct {int a; int b;} x[2]={{1,2},{3,4}}; x[0].a; })");
+    f.assert(2, "({ struct {int a; int b;} x[2]={{1,2},{3,4}}; x[0].b; })");
+    f.assert(3, "({ struct {int a; int b;} x[2]={{1,2},{3,4}}; x[1].a; })");
+    f.assert(4, "({ struct {int a; int b;} x[2]={{1,2},{3,4}}; x[1].b; })");
+
+    f.assert(0, "({ struct {int a; int b;} x[2]={{1,2}}; x[1].b; })");
+
+    f.assert(0, "({ struct {int a; int b;} x={}; x.a; })");
+    f.assert(0, "({ struct {int a; int b;} x={}; x.b; })");
+
+    f.assert(5, "({ typedef struct {int a,b,c,d,e,f;} T; T x={1,2,3,4,5,6}; T y; y=x; y.e; })");
+    f.assert(2, "({ typedef struct {int a,b;} T; T x={1,2}; T y, z; z=y=x; z.b; })");
+
     f.finish();
     f.run("initializer");
 }
