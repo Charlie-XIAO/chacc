@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
-use crate::types::{Member, Type, TypeStore};
+use crate::types::{ArrayType, Member, Type, TypeStore};
 use crate::utils::MAX_FUNC_PARAMS;
 
 /// Declaration of a function parameter.
@@ -1296,21 +1296,23 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(base_ty)?;
-            if self.types.is_incomplete(declarator.ty) {
-                return Err(self.source.error_at(offset, "variable has incomplete type"));
-            }
             let local_id = self.create_local(declarator.name, declarator.ty);
 
-            if !self.current().is_punct("=") {
-                continue;
+            let mut ty = self.locals[local_id].ty;
+            if self.current().is_punct("=") {
+                self.advance();
+                let init = self.parse_initializer(self.locals[local_id].ty)?;
+                ty = init.ty;
+                if init.is_aggregate() {
+                    stmts.push(Stmt::memzero_local(local_id, offset));
+                }
+                self.new_local_initializer(local_id, init, &mut Vec::new(), &mut stmts)?;
             }
 
-            self.advance();
-            let init = self.parse_initializer(declarator.ty)?;
-            if init.is_aggregate() {
-                stmts.push(Stmt::memzero_local(local_id, offset));
+            if self.types.is_incomplete(ty) {
+                return Err(self.source.error_at(offset, "variable has incomplete type"));
             }
-            self.new_local_initializer(local_id, init, &mut Vec::new(), &mut stmts)?;
+            self.locals[local_id].ty = ty;
         }
 
         self.skip_punct(";")?;
@@ -1320,23 +1322,34 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <initializer> ::= <string-initializer> | <array-initializer> | <assign>
     /// ```
-    fn parse_initializer(&mut self, ty: Type) -> Result<Initializer> {
-        let kind = if let Some(array) = self.types.as_array(ty) {
-            let base = array.base;
-            let len = array.len.unwrap();
-
-            if matches!(base, Type::Char)
+    fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
+        if let Some(array) = self.types.as_array(ty).cloned() {
+            let elements = if matches!(array.base, Type::Char)
                 && let Some(content) = self.current().as_str()
             {
-                self.parse_string_initializer(content, len)
+                self.parse_string_initializer(content, &array)
             } else {
-                self.parse_array_initializer(base, len)?
-            }
-        } else {
-            InitializerKind::Expr(self.parse_assign()?)
-        };
+                self.parse_array_initializer(&array)?
+            };
 
-        Ok(Initializer { ty, kind })
+            if array.len.is_none() {
+                // If array length is omitted we infer from the length of the
+                // initializer; note that we have to create new type instead of
+                // completing the original, because e.g., "typedef int T[];",
+                // then "T a1 = {1};" and "T a2 = {1,2};" have different types
+                ty = self.types.array(array.base, Some(elements.len()));
+            }
+
+            return Ok(Initializer {
+                ty,
+                kind: InitializerKind::Aggregate(elements),
+            });
+        }
+
+        Ok(Initializer {
+            ty,
+            kind: InitializerKind::Expr(self.parse_assign()?),
+        })
     }
 
     /// Skip one excess [`<initializer>`].
@@ -1366,8 +1379,14 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <string-initializer> ::= <str>
     /// ```
-    fn parse_string_initializer(&mut self, content: Rc<[u8]>, len: usize) -> InitializerKind {
+    fn parse_string_initializer(
+        &mut self,
+        content: Rc<[u8]>,
+        array: &ArrayType,
+    ) -> Vec<Initializer> {
         let offset = self.current().offset;
+        let len = array.len.unwrap_or(content.len());
+
         if content.len() > len + 1 {
             // The terminating null character is automatically not
             // included (allowed per C spec) if there is no room for it,
@@ -1385,23 +1404,27 @@ impl<'a> Parser<'a> {
             .collect();
 
         self.advance();
-        InitializerKind::Aggregate(elements)
+        elements
     }
 
     /// ```bnf
     /// <array-initializer> ::= "{" <initializer> ("," <initializer>)* "}"
     /// ```
-    fn parse_array_initializer(&mut self, base_ty: Type, len: usize) -> Result<InitializerKind> {
+    fn parse_array_initializer(&mut self, array: &ArrayType) -> Result<Vec<Initializer>> {
         self.skip_punct("{")?;
 
-        let mut elements = Vec::with_capacity(len);
+        let mut elements = Vec::with_capacity(array.len.unwrap_or(0));
         let mut i = 0;
         while !self.current().is_punct("}") {
             if i > 0 {
                 self.skip_punct(",")?;
             }
-            if i < len {
-                elements.push(self.parse_initializer(base_ty)?);
+
+            if array.len.is_none_or(|len| i < len) {
+                // Note that for incomplete array (with unspecified length), it
+                // will be later completed according to the number of elements
+                // so we should always push in that case
+                elements.push(self.parse_initializer(array.base)?);
             } else {
                 self.warn_current("excess elements in array initializer");
                 self.skip_initializer()?;
@@ -1410,7 +1433,7 @@ impl<'a> Parser<'a> {
         }
 
         self.advance();
-        Ok(InitializerKind::Aggregate(elements))
+        Ok(elements)
     }
 
     /// ```bnf
@@ -2400,8 +2423,6 @@ impl<'a> Parser<'a> {
                 stmts.push(Stmt::expr(expr, offset));
             },
             InitializerKind::Aggregate(children) => {
-                debug_assert!(self.types.as_array(init.ty).is_some(), "not an array");
-
                 for (i, child) in children.into_iter().enumerate() {
                     indices.push(i);
                     self.new_local_initializer(local_id, child, indices, stmts)?;

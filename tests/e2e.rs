@@ -519,6 +519,15 @@ fn test_initializer() {
     f.assert(b'd', r#"({ char x[2][4]={"abc","def"}; x[1][0]; })"#);
     f.assert(b'f', r#"({ char x[2][4]={"abc","def"}; x[1][2]; })"#);
 
+    f.assert(4, "({ int x[]={1,2,3,4}; x[3]; })");
+    f.assert(16, "({ int x[]={1,2,3,4}; sizeof(x); })");
+    f.assert(4, r#"({ char x[]="foo"; sizeof(x); })"#);
+
+    f.assert(4, r#"({ typedef char T[]; T x="foo"; T y="x"; sizeof(x); })"#);
+    f.assert(2, r#"({ typedef char T[]; T x="foo"; T y="x"; sizeof(y); })"#);
+    f.assert(2, r#"({ typedef char T[]; T x="x"; T y="foo"; sizeof(x); })"#);
+    f.assert(4, r#"({ typedef char T[]; T x="x"; T y="foo"; sizeof(y); })"#);
+
     f.finish();
     f.run("initializer");
 }
