@@ -518,6 +518,7 @@ fn test_initializer() {
     f.line("struct {int a[2];} g40[2] = {{1, 2}, 3, 4};");
     f.line("struct {int a[2];} g41[2] = {1, 2, 3, 4};");
     f.line("char g43[][4] = {'f', 'o', 'o', 0, 'b', 'a', 'r', 0};");
+    f.line(r#"char *g44 = {"foo"};"#);
     f.main();
 
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
@@ -649,6 +650,7 @@ fn test_initializer() {
 
     f.assert(0, r#"strcmp(g43[0], "foo")"#);
     f.assert(0, r#"strcmp(g43[1], "bar")"#);
+    f.assert(0, r#"strcmp(g44, "foo")"#);
 
     f.finish();
     f.run("initializer");

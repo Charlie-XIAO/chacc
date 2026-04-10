@@ -1349,6 +1349,7 @@ impl<'a> Parser<'a> {
     ///   | <array-initializer>
     ///   | <struct-initializer>
     ///   | <union-initializer>
+    ///   | "{" <initializer> "}"
     ///   | <assign>
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
@@ -1407,6 +1408,13 @@ impl<'a> Parser<'a> {
                 ty,
                 kind: InitializerKind::Aggregate(elements),
             });
+        }
+
+        if self.current().is_punct("{") {
+            self.advance();
+            let init = self.parse_initializer(ty)?;
+            self.skip_punct("}")?;
+            return Ok(init);
         }
 
         Ok(Initializer {

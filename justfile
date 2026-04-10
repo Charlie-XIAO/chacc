@@ -12,6 +12,7 @@ _default:
 
 build:
     cargo build --release
+    @stat -c %s ./target/release/chacc | numfmt --to=iec
 
 fmt:
     cargo +nightly fmt
