@@ -499,7 +499,7 @@ fn test_initializer() {
     f.line("int g9[3] = {0, 1, 2};");
     f.line("struct {char a; int b;} g11[2] = {{1, 2}, {3, 4}};");
     f.line("struct {int a[2];} g12[2] = {{{1, 2}}};");
-    f.line("union { int a; char b[8]; } g13[2] = {{0x01020304}, {0x05060708}};");
+    f.line("union { int a; char b[8]; } g13[2] = {0x01020304, 0x05060708};");
     f.line(r#"char g17[] = "foobar";"#);
     f.line(r#"char g18[10] = "foobar";"#);
     f.line(r#"char g19[3] = "foobar";"#);
@@ -515,6 +515,9 @@ fn test_initializer() {
     f.line("long g29 = (long)(long)g26;");
     f.line("struct { struct { int a[3]; } a; } g30 = {{{1,2,3}}};");
     f.line("int *g31=g30.a.a;");
+    f.line("struct {int a[2];} g40[2] = {{1, 2}, 3, 4};");
+    f.line("struct {int a[2];} g41[2] = {1, 2, 3, 4};");
+    f.line("char g43[][4] = {'f', 'o', 'o', 0, 'b', 'a', 'r', 0};");
     f.main();
 
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
@@ -627,6 +630,25 @@ fn test_initializer() {
     f.assert(1, "g31[0]");
     f.assert(2, "g31[1]");
     f.assert(3, "g31[2]");
+
+    f.assert(1, "g40[0].a[0]");
+    f.assert(2, "g40[0].a[1]");
+    f.assert(3, "g40[1].a[0]");
+    f.assert(4, "g40[1].a[1]");
+
+    f.assert(1, "g41[0].a[0]");
+    f.assert(2, "g41[0].a[1]");
+    f.assert(3, "g41[1].a[0]");
+    f.assert(4, "g41[1].a[1]");
+
+    f.assert(0, "({ int x[2][3]={0,1,2,3,4,5}; x[0][0]; })");
+    f.assert(3, "({ int x[2][3]={0,1,2,3,4,5}; x[1][0]; })");
+
+    f.assert(0, "({ struct {int a; int b;} x[2]={0,1,2,3}; x[0].a; })");
+    f.assert(2, "({ struct {int a; int b;} x[2]={0,1,2,3}; x[1].a; })");
+
+    f.assert(0, r#"strcmp(g43[0], "foo")"#);
+    f.assert(0, r#"strcmp(g43[1], "bar")"#);
 
     f.finish();
     f.run("initializer");

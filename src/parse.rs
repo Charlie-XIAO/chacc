@@ -1377,15 +1377,24 @@ impl<'a> Parser<'a> {
 
         if let Some(sou) = self.types.as_struct_or_union(ty).cloned() {
             if !self.current().is_punct("{") {
-                let mut assign = self.parse_assign()?;
-                self.infer_type(&mut assign)?;
-                if assign.expect_ty() != ty {
-                    return Err(self.error_current("invalid initializer"));
+                // Check whether this is initializing a struct/union with
+                // another struct/union of **exactly** the same type
+                let (is_copy_init, _) = self.speculate(|this| {
+                    let mut expr = this.parse_assign()?;
+                    this.infer_type(&mut expr)?;
+                    Ok(expr.expect_ty() == ty)
+                })?;
+
+                if is_copy_init {
+                    let mut assign = self.parse_assign()?;
+                    self.infer_type(&mut assign)?;
+                    debug_assert_eq!(assign.expect_ty(), ty);
+
+                    return Ok(Initializer {
+                        ty,
+                        kind: InitializerKind::Expr(assign),
+                    });
                 }
-                return Ok(Initializer {
-                    ty,
-                    kind: InitializerKind::Expr(assign),
-                });
             }
 
             let elements = if sou.is_struct {
@@ -1462,22 +1471,34 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-initializer> ::= "{" <initializer> ("," <initializer>)* "}"
+    /// <array-initializer> ::=
+    ///   "{" <initializer> ("," <initializer>)* "}"
+    ///   | <initializer> ("," <initializer>)*
     /// ```
     fn parse_array_initializer(&mut self, array: &ArrayType) -> Result<Vec<Initializer>> {
-        self.skip_punct("{")?;
+        let braced = self.current().is_punct("{");
+        if braced {
+            self.advance();
+        }
 
         let mut elements = Vec::with_capacity(array.len.unwrap_or(0));
         let mut i = 0;
-        while !self.current().is_punct("}") {
+        loop {
+            if braced && self.current().is_punct("}") {
+                break;
+            }
+            let has_space = array.len.is_none_or(|len| i < len);
+            if !braced && !has_space {
+                // In flattened form, once the array is full, the remaining
+                // tokens are no longer considered excess elements of this
+                // array, so we have to break rather than keep consuming
+                break;
+            }
             if i > 0 {
                 self.skip_punct(",")?;
             }
 
-            if array.len.is_none_or(|len| i < len) {
-                // Note that for incomplete array (with unspecified length), it
-                // will be later completed according to the number of elements
-                // so we should always push in that case
+            if has_space {
                 elements.push(self.parse_initializer(array.base)?);
             } else {
                 self.warn_current("excess elements in array initializer");
@@ -1486,20 +1507,36 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        self.advance();
+        if braced {
+            self.advance();
+        }
         Ok(elements)
     }
 
     /// ```bnf
-    /// <struct-initializer> ::= "{" <initializer> ("," <initializer>)* "}"
+    /// <struct-initializer> ::=
+    ///   "{" <initializer> ("," <initializer>)* "}"
+    ///   | <initializer> ("," <initializer>)*
     /// ```
     fn parse_struct_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
-        self.skip_punct("{")?;
+        let braced = self.current().is_punct("{");
+        if braced {
+            self.advance();
+        }
 
         let members = sou.members.clone().unwrap_or_default();
         let mut elements = Vec::with_capacity(members.len());
         let mut i = 0;
-        while !self.current().is_punct("}") {
+        loop {
+            if braced && self.current().is_punct("}") {
+                break;
+            }
+            if !braced && i >= members.len() {
+                // In flattened form, once all members are filled, the remaining
+                // tokens are no longer considered excess elements of this
+                // struct/union, so we have to break rather than keep consuming
+                break;
+            }
             if i > 0 {
                 self.skip_punct(",")?;
             }
@@ -1513,15 +1550,20 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        self.advance();
+        if braced {
+            self.advance();
+        }
         Ok(elements)
     }
 
     /// ```bnf
-    /// <union-initializer> ::= "{" <initializer> "}"
+    /// <union-initializer> ::= "{" <initializer> "}" | <initializer>
     /// ```
     fn parse_union_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
-        self.skip_punct("{")?;
+        let braced = self.current().is_punct("{");
+        if braced {
+            self.advance();
+        }
 
         let mut elements = Vec::new();
         // Union initializer takes only one initializer and initializes the
@@ -1530,7 +1572,9 @@ impl<'a> Parser<'a> {
             elements.push(self.parse_initializer(member.ty)?);
         }
 
-        self.skip_punct("}")?;
+        if braced {
+            self.skip_punct("}")?;
+        }
         Ok(elements)
     }
 
