@@ -213,13 +213,13 @@ impl<'a> Codegen<'a> {
     /// Generate assembly for global variables.
     fn gen_globals(&mut self) -> Result<()> {
         for global in &self.globals {
-            writeln!(self.out, "  .data")?;
             writeln!(self.out, "  .globl {}", global.name)?;
-            writeln!(self.out, "{}:", global.name)?;
 
             if let Some(GlobalInitData { bytes, relocations }) = &global.init_data {
-                let mut pos = 0;
+                writeln!(self.out, "  .data")?;
+                writeln!(self.out, "{}:", global.name)?;
 
+                let mut pos = 0;
                 for reloc in relocations.iter() {
                     while pos < reloc.offset {
                         writeln!(self.out, "  .byte {}", bytes[pos])?;
@@ -238,6 +238,8 @@ impl<'a> Codegen<'a> {
                     pos += 1;
                 }
             } else {
+                writeln!(self.out, "  .bss")?;
+                writeln!(self.out, "{}:", global.name)?;
                 writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
             }
         }
