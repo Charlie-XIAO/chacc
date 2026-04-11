@@ -311,6 +311,29 @@ fn test_cast() {
 
 #[rustfmt::skip]
 #[test]
+fn test_compound_literal() {
+    let mut f = Fixture::new();
+    f.line("typedef struct Tree {int val; struct Tree *lhs; struct Tree *rhs;} Tree;");
+    f.line("Tree *tree = &(Tree){1, &(Tree){2, &(Tree){3,0,0}, &(Tree){4,0,0}}, 0};");
+    f.main();
+
+    f.assert(1, "(int){1}");
+    f.assert(2, "((int[]){0,1,2})[2]");
+    f.assert("'a'", "((struct {char a; int b;}){'a', 3}).a");
+    f.assert(3, "({ int x=3; (int){x}; })");
+    f.line("(int){3} = 5;");
+
+    f.assert(1, "tree->val");
+    f.assert(2, "tree->lhs->val");
+    f.assert(3, "tree->lhs->lhs->val");
+    f.assert(4, "tree->lhs->rhs->val");
+
+    f.finish();
+    f.run("compound_literal");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_constexpr() {
     let mut f = Fixture::new();
     f.main();
@@ -993,7 +1016,7 @@ fn test_union() {
 
 #[rustfmt::skip]
 #[test]
-fn test_usualconv() {
+fn test_usual_conv() {
     let mut f = Fixture::new();
     f.main();
 
@@ -1020,7 +1043,7 @@ fn test_usualconv() {
     f.assert(5, "({ struct t {char a;} x, y; x.a=5; y=x; y.a; })");
 
     f.finish();
-    f.run("usualconv");
+    f.run("usual_conv");
 }
 
 #[rustfmt::skip]

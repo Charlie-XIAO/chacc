@@ -433,6 +433,22 @@ impl<'a> Codegen<'a> {
                 self.gen_addr(rhs)?;
                 Ok(())
             },
+            NodeKind::StmtExpr(body) => {
+                let Some((last, prefix)) = body.split_last() else {
+                    return Err(self
+                        .source
+                        .error_at(node.offset, "invalid use of void expression as lvalue"));
+                };
+                for stmt in prefix {
+                    self.gen_stmt(stmt)?;
+                }
+                let StmtKind::Expr(expr) = &last.kind else {
+                    return Err(self
+                        .source
+                        .error_at(node.offset, "invalid use of void expression as lvalue"));
+                };
+                self.gen_addr(expr)
+            },
             NodeKind::Member { parent, member } => {
                 self.gen_addr(parent)?;
                 writeln!(self.out, "  add ${}, %rax", member.offset)?;

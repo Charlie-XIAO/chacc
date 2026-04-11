@@ -2138,9 +2138,15 @@ impl<'a> Parser<'a> {
             if self.at_typename() {
                 let ty = self.parse_typename()?;
                 self.skip_punct(")")?;
-                let mut expr = self.parse_cast()?;
-                self.infer_type(&mut expr)?;
-                return Ok(Node::cast(expr, ty, offset));
+
+                // Compound literal also starts with "(" <typename> ")" (see
+                // <unary> then <postfix>), and "{" is the characteristic that
+                // tells compound literals apart
+                if !self.current().is_punct("{") {
+                    let mut expr = self.parse_cast()?;
+                    self.infer_type(&mut expr)?;
+                    return Ok(Node::cast(expr, ty, offset));
+                }
             }
 
             self.pos = pos;
@@ -2207,9 +2213,32 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <postfix> ::=
-    ///   <primary> ("[" <expr> "]" | "." <ident> | "->" <ident> | "++" | "--")*
+    ///   "(" <typename> ")" "{" <initializer> "}"
+    ///   | <primary> ("[" <expr> "]" | ("." | "->") <ident> | "++" | "--")*
     /// ```
     fn parse_postfix(&mut self) -> Result<Node> {
+        let (is_compound_literal, _) = self.speculate(|parser| {
+            if !parser.current().is_punct("(") {
+                return Ok(false);
+            }
+            parser.advance();
+            if !parser.at_typename() {
+                return Ok(false);
+            }
+            let _ = parser.parse_typename()?;
+            parser.skip_punct(")")?;
+            Ok(parser.current().is_punct("{"))
+        })?;
+
+        if is_compound_literal {
+            let offset = self.current().offset;
+            self.skip_punct("(")?;
+            let ty = self.parse_typename()?;
+            self.skip_punct(")")?;
+            let init = self.parse_initializer(ty)?;
+            return self.new_compound_literal(init, offset);
+        }
+
         let mut node = self.parse_primary()?;
 
         loop {
@@ -2958,6 +2987,35 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Build a compound literal expression node.
+    ///
+    /// Inside a function, this is desugared into a statement expression, which
+    /// makes a temporary variable, initializes it, and use it as the result.
+    /// Otherwise (at file scope), this is desugared into an initialized hidden
+    /// global object.
+    fn new_compound_literal(&mut self, init: Initializer, offset: usize) -> Result<Node> {
+        if self.types.is_incomplete(init.ty) {
+            return Err(self
+                .source
+                .error_at(offset, "compound literal has incomplete type"));
+        }
+
+        if self.active_function.is_none() {
+            let label = self.unique_label();
+            let ty = init.ty;
+            let storage = GlobalStorage::Data(self.new_global_init(init)?);
+            let global_id = self.create_global(label, ty, None, storage);
+            return Ok(Node::entity(EntityRef::Global(global_id), offset));
+        }
+
+        let tmp_id = self.create_local("", init.ty, None);
+        let tmp = EntityRef::Local(tmp_id);
+        let mut stmts = Vec::new();
+        self.new_local_init(tmp_id, init, offset, &mut stmts)?;
+        stmts.push(Stmt::expr(Node::entity(tmp, offset), offset));
+        Ok(Node::stmt_expr(stmts, offset))
+    }
+
     /// Apply a cast on the given node to the given type.
     fn apply_cast(&mut self, node: &mut Node, ty: Type) -> Result<()> {
         let offset = node.offset;
@@ -3145,6 +3203,9 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Member { member, .. } => member.ty,
             NodeKind::StmtExpr(body) => {
+                for stmt in body.iter_mut() {
+                    self.infer_type_stmt(stmt)?;
+                }
                 if let Some(stmt) = body.last_mut()
                     && let StmtKind::Expr(expr) = &mut stmt.kind
                 {
