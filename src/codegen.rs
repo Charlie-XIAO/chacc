@@ -218,14 +218,22 @@ impl<'a> Codegen<'a> {
             match &global.storage {
                 GlobalStorage::Decl => {},
                 GlobalStorage::Zero => {
-                    writeln!(self.out, "  .globl {}", global.name)?;
+                    if global.is_static {
+                        writeln!(self.out, "  .local {}", global.name)?;
+                    } else {
+                        writeln!(self.out, "  .globl {}", global.name)?;
+                    }
                     writeln!(self.out, "  .bss")?;
                     writeln!(self.out, "  .align {align}")?;
                     writeln!(self.out, "{}:", global.name)?;
                     writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
                 },
                 GlobalStorage::Data(GlobalInitData { bytes, relocations }) => {
-                    writeln!(self.out, "  .globl {}", global.name)?;
+                    if global.is_static {
+                        writeln!(self.out, "  .local {}", global.name)?;
+                    } else {
+                        writeln!(self.out, "  .globl {}", global.name)?;
+                    }
                     writeln!(self.out, "  .data")?;
                     writeln!(self.out, "  .align {align}")?;
                     writeln!(self.out, "{}:", global.name)?;

@@ -88,6 +88,7 @@ pub struct GlobalVar {
     /// Optional alignment override via "_Alignas".
     pub align: Option<i64>,
     pub storage: GlobalStorage,
+    pub is_static: bool,
 }
 
 /// A local variable stored in a function's stack frame.

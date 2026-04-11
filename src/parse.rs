@@ -1052,7 +1052,6 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            // TODO: Fix static global variables being treated as non-static
             self.parse_global_variable(declspec)?;
         }
 
@@ -1159,6 +1158,7 @@ impl<'a> Parser<'a> {
                 ty,
                 declspec.align,
                 storage,
+                declspec.storage_class == Some(StorageClass::Static),
                 declarator.offset,
             )?;
             let global = &self.globals[global_id];
@@ -1425,7 +1425,6 @@ impl<'a> Parser<'a> {
                         self.parse_typedef_tail(declspec.ty)?;
                         continue;
                     }
-                    // TODO: Fix static local variables being treated as non-static
                     self.parse_declaration(declspec)?
                 } else {
                     self.parse_stmt()?
@@ -1498,6 +1497,7 @@ impl<'a> Parser<'a> {
                     declarator.ty,
                     declspec.align,
                     GlobalStorage::Decl,
+                    false,
                     declarator.offset,
                 )?;
                 continue;
@@ -1521,7 +1521,7 @@ impl<'a> Parser<'a> {
                 }
 
                 let label = self.unique_label();
-                let global_id = self.create_global(label, ty, declspec.align, storage);
+                let global_id = self.create_global(label, ty, declspec.align, storage, true);
 
                 // Though "create_global" already pushes into current scope, it
                 // is for the anonymous label and we need to push the actual
@@ -2413,6 +2413,7 @@ impl<'a> Parser<'a> {
                     bytes: content,
                     relocations: Default::default(),
                 }),
+                true,
             );
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
@@ -2602,6 +2603,7 @@ impl<'a> Parser<'a> {
         ty: Type,
         align: Option<i64>,
         storage: GlobalStorage,
+        is_static: bool,
     ) -> usize {
         self.disallow_speculation();
 
@@ -2611,6 +2613,7 @@ impl<'a> Parser<'a> {
             ty,
             align,
             storage,
+            is_static,
         });
 
         let id = self.globals.len() - 1;
@@ -2626,6 +2629,7 @@ impl<'a> Parser<'a> {
         ty: Type,
         align: Option<i64>,
         storage: GlobalStorage,
+        is_static: bool,
         offset: usize,
     ) -> Result<usize> {
         self.disallow_speculation();
@@ -2644,6 +2648,18 @@ impl<'a> Parser<'a> {
                 .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
             global.align = global.align.max(align);
 
+            if global.is_static {
+                if !is_static && !matches!(storage, GlobalStorage::Decl) {
+                    return Err(self
+                        .source
+                        .error_at(offset, "non-static declaration follows static declaration"));
+                }
+            } else if is_static {
+                return Err(self
+                    .source
+                    .error_at(offset, "static declaration follows non-static declaration"));
+            }
+
             if global.storage.merge(storage) {
                 return Err(self
                     .source
@@ -2653,7 +2669,7 @@ impl<'a> Parser<'a> {
             return Ok(global_id);
         }
 
-        Ok(self.create_global(name, ty, align, storage))
+        Ok(self.create_global(name, ty, align, storage, is_static))
     }
 
     /// Create a new function declaration.
@@ -3019,7 +3035,7 @@ impl<'a> Parser<'a> {
             let label = self.unique_label();
             let ty = init.ty;
             let storage = GlobalStorage::Data(self.new_global_init(init)?);
-            let global_id = self.create_global(label, ty, None, storage);
+            let global_id = self.create_global(label, ty, None, storage, true);
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
         }
 

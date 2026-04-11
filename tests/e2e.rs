@@ -1054,6 +1054,7 @@ fn test_usual_conv() {
 fn test_variable() {
     let mut f = Fixture::new();
     f.line("int g1, g2[4];");
+    f.line("static int g3 = 3;");
     f.main();
 
     f.assert(3, "({ int a; a=3; a; })");
@@ -1116,6 +1117,8 @@ fn test_variable() {
     f.assert(4, "({ char x[3]; char (*y)[3]=x; y[0][0]=4; y[0][0]; })");
 
     f.line("{ void *x; }");
+
+    f.assert(3, "g3");
 
     f.finish();
     f.run("variable");
