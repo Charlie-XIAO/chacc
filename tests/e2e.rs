@@ -438,6 +438,15 @@ fn test_extern() {
     f.assert(5, "ext1");
     f.assert(5, "*ext2");
 
+    f.line("extern int ext3;");
+    f.assert(7, "ext3");
+
+    f.line("int ext_fn1(int x);");
+    f.assert(5, "ext_fn1(5)");
+
+    f.line("extern int ext_fn2(int x);");
+    f.assert(8, "ext_fn2(8)");
+
     f.finish();
     f.run("extern");
 }

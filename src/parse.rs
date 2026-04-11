@@ -1418,6 +1418,18 @@ impl<'a> Parser<'a> {
 
             let declarator = self.parse_declarator(declspec.ty)?;
 
+            if self.types.is_func(declarator.ty) {
+                if self.current().is_punct("=") {
+                    return Err(self.source.error_at(
+                        declarator.offset,
+                        "function declaration cannot be initialized",
+                    ));
+                }
+
+                self.declare_func_decl(declarator.name, declarator.ty, declarator.offset)?;
+                continue;
+            }
+
             if declspec.storage_class == Some(StorageClass::Extern) {
                 if self.current().is_punct("=") {
                     return Err(self.source.error_at(
@@ -1426,16 +1438,12 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
-                if self.types.is_func(declarator.ty) {
-                    self.declare_func_decl(declarator.name, declarator.ty, declarator.offset)?;
-                } else {
-                    self.declare_global(
-                        declarator.name,
-                        declarator.ty,
-                        GlobalStorage::Decl,
-                        declarator.offset,
-                    )?;
-                }
+                self.declare_global(
+                    declarator.name,
+                    declarator.ty,
+                    GlobalStorage::Decl,
+                    declarator.offset,
+                )?;
                 continue;
             }
 
