@@ -1122,7 +1122,8 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <global-variable> ::= <declarator> ("," <declarator>)* ";"
+    /// <global-variable> ::= <declarator-init> ("," <declarator-init>)* ";"
+    /// <declarator-init> ::= <declarator> ("=" <initializer>)?
     /// ```
     fn parse_global_variable(&mut self, declspec: Declspec) -> Result<()> {
         self.disallow_speculation();
