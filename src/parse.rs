@@ -1177,7 +1177,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <stmt> ::=
-    ///   "return" <expr> ";"
+    ///   "return" <expr>? ";"
     ///   | "if" "(" <expr> ")" <stmt> ("else" <stmt>)?
     ///   | "switch" "(" <expr> ")" <stmt>
     ///   | "case" <constexpr> ":" <stmt>
@@ -1196,13 +1196,28 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Return) {
             self.advance();
-            let mut expr = self.parse_expr()?;
-            self.skip_punct(";")?;
-
             let func_ty = self.functions[self.active_function.unwrap()].ty;
             let return_ty = self.types.as_func(func_ty).unwrap().return_ty;
-            self.apply_cast(&mut expr, return_ty)?;
-            return Ok(Stmt::return_(expr, offset));
+
+            if self.current().is_punct(";") {
+                if return_ty != Type::Void {
+                    self.source
+                        .warn_at(offset, "return with no value in a non-void function");
+                }
+                self.advance();
+                return Ok(Stmt::return_(None, offset));
+            }
+
+            let mut expr = self.parse_expr()?;
+            self.skip_punct(";")?;
+            if return_ty == Type::Void {
+                self.source
+                    .warn_at(expr.offset, "return with a value in a void function");
+                self.apply_cast(&mut expr, Type::Void)?;
+            } else {
+                self.apply_cast(&mut expr, return_ty)?;
+            }
+            return Ok(Stmt::return_(Some(expr), offset));
         }
 
         if self.current().is_keyword(Keyword::If) {
@@ -3041,7 +3056,12 @@ impl<'a> Parser<'a> {
     /// Infer types for a statement subtree.
     fn infer_type_stmt(&mut self, stmt: &mut Stmt) -> Result<()> {
         match &mut stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Return(expr) => self.infer_type(expr)?,
+            StmtKind::Expr(expr) => self.infer_type(expr)?,
+            StmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    self.infer_type(expr)?;
+                }
+            },
             StmtKind::Loop {
                 init,
                 cond,
@@ -3237,7 +3257,12 @@ impl<'a> Parser<'a> {
     ) -> Result<()> {
         let offset = stmt.offset;
         match &stmt.kind {
-            StmtKind::Expr(node) | StmtKind::Return(node) => self.collect_labels(node, labels)?,
+            StmtKind::Expr(node) => self.collect_labels(node, labels)?,
+            StmtKind::Return(node) => {
+                if let Some(node) = node {
+                    self.collect_labels(node, labels)?;
+                }
+            },
             StmtKind::Loop {
                 init,
                 cond,
@@ -3345,7 +3370,12 @@ impl<'a> Parser<'a> {
         labels: &FxHashMap<SmolStr, SmolStr>,
     ) -> Result<()> {
         match &mut stmt.kind {
-            StmtKind::Expr(node) | StmtKind::Return(node) => self.resolve_gotos(node, labels)?,
+            StmtKind::Expr(node) => self.resolve_gotos(node, labels)?,
+            StmtKind::Return(node) => {
+                if let Some(node) = node {
+                    self.resolve_gotos(node, labels)?;
+                }
+            },
             StmtKind::Loop {
                 init,
                 cond,

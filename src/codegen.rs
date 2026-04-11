@@ -313,7 +313,9 @@ impl<'a> Codegen<'a> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr)?,
             StmtKind::Return(expr) => {
-                self.gen_expr(expr)?;
+                if let Some(expr) = expr {
+                    self.gen_expr(expr)?;
+                }
                 writeln!(self.out, "  jmp .L.return.{}", self.function().name.clone())?;
             },
             StmtKind::Loop {

@@ -442,7 +442,7 @@ pub enum StmtKind {
     /// An expression statement.
     Expr(Node),
     /// A return statement.
-    Return(Node),
+    Return(Option<Node>),
     /// A for-loop or while-loop statement.
     Loop {
         /// Initialization statement, only used optionally for for-loops.
@@ -509,7 +509,7 @@ impl Stmt {
     }
 
     /// Construct a return statement.
-    pub fn return_(expr: Node, offset: usize) -> Self {
+    pub fn return_(expr: Option<Node>, offset: usize) -> Self {
         Self {
             offset,
             kind: StmtKind::Return(expr),
