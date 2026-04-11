@@ -429,6 +429,21 @@ fn test_enum() {
 
 #[rustfmt::skip]
 #[test]
+fn test_extern() {
+    let mut f = Fixture::new();
+    f.line("extern int ext1;");
+    f.line("extern int *ext2;");
+    f.main();
+
+    f.assert(5, "ext1");
+    f.assert(5, "*ext2");
+
+    f.finish();
+    f.run("extern");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_function() {
     let mut f = Fixture::new();
     f.line("int ret3(void) { return 3; return 5; }");

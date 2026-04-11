@@ -7,8 +7,8 @@ use std::path::Path;
 use smol_str::{SmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, EntityRef, Function, GlobalInitData, GlobalVar, LocalVar, Node, NodeKind, Program,
-    Stmt, StmtKind,
+    BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
+    NodeKind, Program, Stmt, StmtKind,
 };
 use crate::error::Result;
 use crate::source::Source;
@@ -213,36 +213,40 @@ impl<'a> Codegen<'a> {
     /// Generate assembly for global variables.
     fn gen_globals(&mut self) -> Result<()> {
         for global in &self.globals {
-            writeln!(self.out, "  .globl {}", global.name)?;
+            match &global.storage {
+                GlobalStorage::Decl => {},
+                GlobalStorage::Zero => {
+                    writeln!(self.out, "  .globl {}", global.name)?;
+                    writeln!(self.out, "  .bss")?;
+                    writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
+                    writeln!(self.out, "{}:", global.name)?;
+                    writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
+                },
+                GlobalStorage::Data(GlobalInitData { bytes, relocations }) => {
+                    writeln!(self.out, "  .globl {}", global.name)?;
+                    writeln!(self.out, "  .data")?;
+                    writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
+                    writeln!(self.out, "{}:", global.name)?;
 
-            if let Some(GlobalInitData { bytes, relocations }) = &global.init_data {
-                writeln!(self.out, "  .data")?;
-                writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
-                writeln!(self.out, "{}:", global.name)?;
+                    let mut pos = 0;
+                    for reloc in relocations.iter() {
+                        while pos < reloc.offset {
+                            writeln!(self.out, "  .byte {}", bytes[pos])?;
+                            pos += 1;
+                        }
+                        if reloc.addend == 0 {
+                            writeln!(self.out, "  .quad {}", reloc.label)?;
+                        } else {
+                            writeln!(self.out, "  .quad {}{:+}", reloc.label, reloc.addend)?;
+                        }
+                        pos += 8;
+                    }
 
-                let mut pos = 0;
-                for reloc in relocations.iter() {
-                    while pos < reloc.offset {
+                    while pos < bytes.len() {
                         writeln!(self.out, "  .byte {}", bytes[pos])?;
                         pos += 1;
                     }
-                    if reloc.addend == 0 {
-                        writeln!(self.out, "  .quad {}", reloc.label)?;
-                    } else {
-                        writeln!(self.out, "  .quad {}{:+}", reloc.label, reloc.addend)?;
-                    }
-                    pos += 8;
-                }
-
-                while pos < bytes.len() {
-                    writeln!(self.out, "  .byte {}", bytes[pos])?;
-                    pos += 1;
-                }
-            } else {
-                writeln!(self.out, "  .bss")?;
-                writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
-                writeln!(self.out, "{}:", global.name)?;
-                writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
+                },
             }
         }
         Ok(())

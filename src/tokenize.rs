@@ -29,6 +29,7 @@ pub enum Keyword {
     Union,
     Typedef,
     Static,
+    Extern,
     Goto,
     Break,
     Continue,
@@ -137,6 +138,7 @@ impl<'a> Token<'a> {
                     | Keyword::Union
                     | Keyword::Typedef
                     | Keyword::Static
+                    | Keyword::Extern
             )
         )
     }

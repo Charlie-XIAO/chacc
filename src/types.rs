@@ -315,6 +315,31 @@ impl TypeStore {
         }
         Type::Int
     }
+
+    /// Merge two declarations of the same type.
+    ///
+    /// This method returns `None` except for the following supported cases:
+    ///
+    /// - **Exactly** the same type, which will be returned as is;
+    /// - An incomplete array type and a complete array type with the same base,
+    ///   where the complete one will be returned.
+    pub fn merge(&self, this: Type, other: Type) -> Option<Type> {
+        if this == other {
+            return Some(this);
+        }
+
+        let this_array = self.as_array(this)?;
+        let other_array = self.as_array(other)?;
+        if this_array.base != other_array.base {
+            return None;
+        }
+
+        match (this_array.len, other_array.len) {
+            (None, Some(_)) => Some(other),
+            (Some(_), None) => Some(this),
+            _ => None,
+        }
+    }
 }
 
 impl Type {

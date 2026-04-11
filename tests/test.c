@@ -13,3 +13,6 @@ void assert(int expected, int actual, char *code) {
 static int static_fn() {
   return 5;
 }
+
+int ext1 = 5;
+int *ext2 = &ext1;

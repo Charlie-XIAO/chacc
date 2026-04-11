@@ -8,8 +8,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::ast::{
-    BinaryOp, EntityRef, Function, GlobalInitData, GlobalVar, LocalVar, Node, NodeKind, Program,
-    Relocation, Stmt, StmtKind,
+    BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
+    NodeKind, Program, Relocation, Stmt, StmtKind,
 };
 use crate::error::{Error, Result};
 use crate::source::Source;
@@ -70,6 +70,7 @@ enum InitializerKind {
 enum StorageClass {
     Typedef,
     Static,
+    Extern,
 }
 
 /// The parsing context for declaration specifiers.
@@ -388,6 +389,7 @@ impl<'a> Parser<'a> {
     /// <declspec-atom> ::=
     ///   "typedef"
     ///   | "static"
+    ///   | "extern"
     ///   | "void"
     ///   | "_Bool"
     ///   | "char"
@@ -491,7 +493,7 @@ impl<'a> Parser<'a> {
                     None => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Typedef | Keyword::Static) => {
+                Some(Keyword::Typedef | Keyword::Static | Keyword::Extern) => {
                     if !context.allows_storage_class() {
                         return Err(self.source.error_at(
                             offset,
@@ -507,6 +509,7 @@ impl<'a> Parser<'a> {
                     storage_class = Some(match keyword.unwrap() {
                         Keyword::Typedef => StorageClass::Typedef,
                         Keyword::Static => StorageClass::Static,
+                        Keyword::Extern => StorageClass::Extern,
                         _ => unreachable!(),
                     });
                 },
@@ -1017,7 +1020,7 @@ impl<'a> Parser<'a> {
             }
 
             // TODO: Fix static global variables being treated as non-static
-            self.parse_global_variable(declspec.ty)?;
+            self.parse_global_variable(declspec)?;
         }
 
         Ok(Program {
@@ -1088,7 +1091,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <global-variable> ::= <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_global_variable(&mut self, base_ty: Type) -> Result<()> {
+    fn parse_global_variable(&mut self, declspec: Declspec) -> Result<()> {
         self.disallow_speculation();
         let mut first = true;
 
@@ -1098,29 +1101,34 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(base_ty)?;
+            let declarator = self.parse_declarator(declspec.ty)?;
             if self.types.is_func(declarator.ty) {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "expected a global variable"));
             }
-            let global_id = self.create_global(declarator.name, declarator.ty, None);
-            let mut ty = self.globals[global_id].ty;
 
-            if self.current().is_punct("=") {
+            let mut ty = declarator.ty;
+            let storage = if self.current().is_punct("=") {
                 self.advance();
                 let init = self.parse_initializer(ty)?;
                 ty = init.ty;
-                let init_data = self.new_global_init(init)?;
-                self.globals[global_id].init_data = Some(init_data);
-            }
+                GlobalStorage::Data(self.new_global_init(init)?)
+            } else if declspec.storage_class == Some(StorageClass::Extern) {
+                GlobalStorage::Decl
+            } else {
+                GlobalStorage::Zero
+            };
 
-            if self.types.is_incomplete(ty) {
+            let global_id = self.declare_global(declarator.name, ty, storage, declarator.offset)?;
+            let global = &self.globals[global_id];
+
+            if !matches!(global.storage, GlobalStorage::Decl) && self.types.is_incomplete(global.ty)
+            {
                 return Err(self
                     .source
                     .error_at(declarator.offset, "variable has incomplete type"));
             }
-            self.globals[global_id].ty = ty;
         }
 
         self.skip_punct(";")?;
@@ -1255,7 +1263,7 @@ impl<'a> Parser<'a> {
 
             let init = Box::new(if self.at_typename() {
                 let declspec = self.parse_declspec(DeclspecContext::ForLoopInitializer)?;
-                self.parse_declaration(declspec.ty)?
+                self.parse_declaration(declspec)?
             } else {
                 self.parse_expr_stmt()?
             });
@@ -1363,7 +1371,7 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     // TODO: Fix static local variables being treated as non-static
-                    self.parse_declaration(declspec.ty)?
+                    self.parse_declaration(declspec)?
                 } else {
                     self.parse_stmt()?
                 };
@@ -1397,7 +1405,7 @@ impl<'a> Parser<'a> {
     ///   <declspec> (<declarator-init> ("," <declarator-init>)*)? ";"
     /// <declarator-init> ::= <declarator> ("=" <initializer>)?
     /// ```
-    fn parse_declaration(&mut self, base_ty: Type) -> Result<Stmt> {
+    fn parse_declaration(&mut self, declspec: Declspec) -> Result<Stmt> {
         let offset = self.current().offset;
         let mut stmts = Vec::new();
         let mut first = true;
@@ -1408,7 +1416,29 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(base_ty)?;
+            let declarator = self.parse_declarator(declspec.ty)?;
+
+            if declspec.storage_class == Some(StorageClass::Extern) {
+                if self.current().is_punct("=") {
+                    return Err(self.source.error_at(
+                        declarator.offset,
+                        "extern declaration cannot be initialized",
+                    ));
+                }
+
+                if self.types.is_func(declarator.ty) {
+                    self.declare_func_decl(declarator.name, declarator.ty, declarator.offset)?;
+                } else {
+                    self.declare_global(
+                        declarator.name,
+                        declarator.ty,
+                        GlobalStorage::Decl,
+                        declarator.offset,
+                    )?;
+                }
+                continue;
+            }
+
             let local_id = self.create_local(declarator.name, declarator.ty);
 
             let mut ty = self.locals[local_id].ty;
@@ -2408,7 +2438,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: impl Into<SmolStr>,
         ty: Type,
-        init_data: Option<GlobalInitData>,
+        storage: GlobalStorage,
     ) -> usize {
         self.disallow_speculation();
 
@@ -2416,7 +2446,7 @@ impl<'a> Parser<'a> {
         self.globals.push(GlobalVar {
             name: name.clone(),
             ty,
-            init_data,
+            storage,
         });
 
         let id = self.globals.len() - 1;
@@ -2433,11 +2463,46 @@ impl<'a> Parser<'a> {
         self.create_global(
             name,
             ty,
-            Some(GlobalInitData {
+            GlobalStorage::Data(GlobalInitData {
                 bytes,
                 relocations: Default::default(),
             }),
         )
+    }
+
+    /// Declare a new global variable.
+    fn declare_global(
+        &mut self,
+        name: SmolStr,
+        ty: Type,
+        storage: GlobalStorage,
+        offset: usize,
+    ) -> Result<usize> {
+        self.disallow_speculation();
+
+        if let Some(ident) = self.find_ident(&name) {
+            let OrdinaryIdent::Entity(EntityRef::Global(global_id)) = ident else {
+                return Err(self
+                    .source
+                    .error_at(offset, "redeclared as a different kind of symbol"));
+            };
+
+            let ty = self
+                .types
+                .merge(self.globals[global_id].ty, ty)
+                .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
+            self.globals[global_id].ty = ty;
+
+            if self.globals[global_id].storage.merge(storage) {
+                return Err(self
+                    .source
+                    .error_at(offset, "redefinition of global variable"));
+            }
+            self.push_scope_ident(name, OrdinaryIdent::Entity(EntityRef::Global(global_id)));
+            return Ok(global_id);
+        }
+
+        Ok(self.create_global(name, ty, storage))
     }
 
     /// Create a new function declaration.
@@ -2461,6 +2526,23 @@ impl<'a> Parser<'a> {
         let entity = OrdinaryIdent::Entity(EntityRef::Function(id));
         self.push_scope_ident(name, entity);
         id
+    }
+
+    /// Declare a new function declaration.
+    fn declare_func_decl(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<usize> {
+        self.disallow_speculation();
+
+        if let Some(ident) = self.find_ident(&name) {
+            let OrdinaryIdent::Entity(EntityRef::Function(func_id)) = ident else {
+                return Err(self
+                    .source
+                    .error_at(offset, "redeclared as a different kind of symbol"));
+            };
+            self.push_scope_ident(name, OrdinaryIdent::Entity(EntityRef::Function(func_id)));
+            return Ok(func_id);
+        }
+
+        Ok(self.create_function_decl(name, ty))
     }
 
     /// Build an addition node with pointer scaling.

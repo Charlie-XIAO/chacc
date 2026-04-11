@@ -46,12 +46,46 @@ pub struct GlobalInitData {
     pub relocations: Rc<[Relocation]>,
 }
 
+/// Storage state of a global variable.
+#[derive(Debug)]
+pub enum GlobalStorage {
+    /// Declaration only, no storage.
+    Decl,
+    /// Zero-initialized storage.
+    Zero,
+    /// Explicit static intialization data.
+    Data(GlobalInitData),
+}
+
+impl GlobalStorage {
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Decl => 0,
+            Self::Zero => 1,
+            Self::Data(_) => 2,
+        }
+    }
+
+    /// Merge another state into this one.
+    ///
+    /// This returns true if there is a redefinition error.
+    pub fn merge(&mut self, other: Self) -> bool {
+        if matches!(self, Self::Data(_)) && matches!(other, Self::Data(_)) {
+            return true;
+        }
+        if other.rank() > self.rank() {
+            *self = other;
+        }
+        false
+    }
+}
+
 /// A global variable defined in [`Program`].
 #[derive(Debug)]
 pub struct GlobalVar {
     pub name: SmolStr,
     pub ty: Type,
-    pub init_data: Option<GlobalInitData>,
+    pub storage: GlobalStorage,
 }
 
 /// A local variable stored in a function's stack frame.
