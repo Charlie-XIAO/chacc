@@ -59,6 +59,8 @@ pub struct FuncType {
 pub struct Member {
     pub ty: Type,
     pub name: SmolStr,
+    /// Optional alignment override via "_Alignas".
+    pub align: Option<i64>,
     /// The byte offset of the member in the struct.
     pub offset: usize,
 }
@@ -177,7 +179,7 @@ impl TypeStore {
 
         if is_struct {
             for member in members.iter_mut() {
-                let member_align = self.align(member.ty);
+                let member_align = self.eff_align(member.align, member.ty);
                 offset = align_to(offset, member_align); // Field alignment
                 member.offset = offset as usize;
                 offset += self.size(member.ty);
@@ -186,7 +188,7 @@ impl TypeStore {
         } else {
             for member in members.iter() {
                 offset = offset.max(self.size(member.ty));
-                align = align.max(self.align(member.ty));
+                align = align.max(self.eff_align(member.align, member.ty));
             }
         }
 
@@ -216,6 +218,11 @@ impl TypeStore {
             Type::Long => 8,
             Type::Stored(_) => self.get(ty).unwrap().align,
         }
+    }
+
+    /// Return the effective byte alignment of the type with optional override.
+    pub fn eff_align(&self, align_override: Option<i64>, ty: Type) -> i64 {
+        align_override.unwrap_or_else(|| self.align(ty))
     }
 
     /// Return the size of the type in bytes.

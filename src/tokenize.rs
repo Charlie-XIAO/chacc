@@ -16,6 +16,12 @@ pub enum Keyword {
     Else,
     For,
     While,
+    Goto,
+    Break,
+    Continue,
+    Switch,
+    Case,
+    Default,
     Void,
     #[strum(serialize = "_Bool")]
     Bool,
@@ -30,12 +36,10 @@ pub enum Keyword {
     Typedef,
     Static,
     Extern,
-    Goto,
-    Break,
-    Continue,
-    Switch,
-    Case,
-    Default,
+    #[strum(serialize = "_Alignof")]
+    Alignof,
+    #[strum(serialize = "_Alignas")]
+    Alignas,
 }
 
 /// Token kinds recognized by the tokenizer.
@@ -139,6 +143,7 @@ impl<'a> Token<'a> {
                     | Keyword::Typedef
                     | Keyword::Static
                     | Keyword::Extern
+                    | Keyword::Alignas
             )
         )
     }

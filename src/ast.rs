@@ -85,6 +85,8 @@ impl GlobalStorage {
 pub struct GlobalVar {
     pub name: SmolStr,
     pub ty: Type,
+    /// Optional alignment override via "_Alignas".
+    pub align: Option<i64>,
     pub storage: GlobalStorage,
 }
 
@@ -93,6 +95,8 @@ pub struct GlobalVar {
 pub struct LocalVar {
     pub _name: SmolStr,
     pub ty: Type,
+    /// Optional alignment override via "_Alignas".
+    pub align: Option<i64>,
     /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i64,
 }

@@ -120,6 +120,49 @@ impl Fixture {
 
 #[rustfmt::skip]
 #[test]
+fn test_alignof() {
+    let mut f = Fixture::new();
+    f.line("int _Alignas(512) g1;");
+    f.line("int _Alignas(512) g2;");
+    f.line("char g3;");
+    f.line("int g4;");
+    f.line("long g5;");
+    f.line("char g6;");
+    f.main();
+
+    f.assert(1, "_Alignof(char)");
+    f.assert(2, "_Alignof(short)");
+    f.assert(4, "_Alignof(int)");
+    f.assert(8, "_Alignof(long)");
+    f.assert(8, "_Alignof(long long)");
+    f.assert(1, "_Alignof(char[3])");
+    f.assert(4, "_Alignof(int[3])");
+    f.assert(1, "_Alignof(struct {char a; char b;}[2])");
+    f.assert(8, "_Alignof(struct {char a; long b;}[2])");
+
+    f.assert(1, "({ _Alignas(char) char x, y; &y-&x; })");
+    f.assert(8, "({ _Alignas(long) char x, y; &y-&x; })");
+    f.assert(32, "({ _Alignas(32) char x, y; &y-&x; })");
+    f.assert(32, "({ _Alignas(32) int *x, *y; ((char *)&y)-((char *)&x); })");
+    f.assert(16, "({ struct { _Alignas(16) char x, y; } a; &a.y-&a.x; })");
+    f.assert(8, "({ struct T { _Alignas(8) char a; }; _Alignof(struct T); })");
+
+    f.assert(0, "(long)(char *)&g1 % 512");
+    f.assert(0, "(long)(char *)&g2 % 512");
+    f.assert(0, "(long)(char *)&g4 % 4");
+    f.assert(0, "(long)(char *)&g5 % 8");
+
+    f.assert(1, "({ char x; _Alignof(x); })");
+    f.assert(4, "({ int x; _Alignof(x); })");
+    f.assert(1, "({ char x; _Alignof x; })");
+    f.assert(4, "({ int x; _Alignof x; })");
+
+    f.finish();
+    f.run("alignof");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_arith() {
     let mut f = Fixture::new();
     f.main();

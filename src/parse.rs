@@ -91,14 +91,22 @@ enum DeclspecContext {
 }
 
 impl DeclspecContext {
-    fn allows_storage_class(self) -> bool {
+    fn allows_storage_class(&self) -> bool {
         matches!(self, Self::FileScopeDecl | Self::BlockScopeDecl)
+    }
+
+    fn allows_alignas(&self) -> bool {
+        matches!(
+            self,
+            Self::FileScopeDecl | Self::BlockScopeDecl | Self::MemberDecl(_)
+        )
     }
 }
 
 /// A declaration specifier.
 struct Declspec {
     ty: Type,
+    align: Option<i64>,
     storage_class: Option<StorageClass>,
 }
 
@@ -417,6 +425,7 @@ impl<'a> Parser<'a> {
         let mut spec = None;
         let mut long_count = 0;
         let mut storage_class = None;
+        let mut align = None;
 
         while self.at_typename() {
             let offset = self.current().offset;
@@ -513,6 +522,25 @@ impl<'a> Parser<'a> {
                         _ => unreachable!(),
                     });
                 },
+                Some(Keyword::Alignas) => {
+                    if !context.allows_alignas() {
+                        return Err(self.source.error_at(
+                            offset,
+                            format_smolstr!("'_Alignas' is not allowed in {context}"),
+                        ));
+                    }
+
+                    // Multiple "_Alignas" is allowed, and only the strictest
+                    // requirement is kept
+                    self.skip_punct("(")?;
+                    align = align.max(Some(if self.at_typename() {
+                        let ty = self.parse_typename()?;
+                        self.types.align(ty)
+                    } else {
+                        self.parse_constexpr()?
+                    }));
+                    self.skip_punct(")")?;
+                },
                 _ => match typedef_ty {
                     Some(ty) if spec.is_none() => spec = Some(TypeSpec::Other(ty)),
                     Some(_) => unreachable!(), // Early break'ed
@@ -539,7 +567,11 @@ impl<'a> Parser<'a> {
             TypeSpec::Other(ty) => ty,
         };
 
-        Ok(Declspec { ty, storage_class })
+        Ok(Declspec {
+            ty,
+            storage_class,
+            align,
+        })
     }
 
     /// ```bnf
@@ -905,6 +937,7 @@ impl<'a> Parser<'a> {
                 members.push(Member {
                     name: declarator.name,
                     ty: declarator.ty,
+                    align: declspec.align,
                     offset: 0, // union requires 0; struct fills in later
                 });
             }
@@ -1120,7 +1153,13 @@ impl<'a> Parser<'a> {
                 GlobalStorage::Zero
             };
 
-            let global_id = self.declare_global(declarator.name, ty, storage, declarator.offset)?;
+            let global_id = self.declare_global(
+                declarator.name,
+                ty,
+                declspec.align,
+                storage,
+                declarator.offset,
+            )?;
             let global = &self.globals[global_id];
 
             if !matches!(global.storage, GlobalStorage::Decl) && self.types.is_incomplete(global.ty)
@@ -1441,13 +1480,14 @@ impl<'a> Parser<'a> {
                 self.declare_global(
                     declarator.name,
                     declarator.ty,
+                    declspec.align,
                     GlobalStorage::Decl,
                     declarator.offset,
                 )?;
                 continue;
             }
 
-            let local_id = self.create_local(declarator.name, declarator.ty);
+            let local_id = self.create_local(declarator.name, declarator.ty, declspec.align);
 
             let mut ty = self.locals[local_id].ty;
             if self.current().is_punct("=") {
@@ -2189,8 +2229,8 @@ impl<'a> Parser<'a> {
     /// <primary> ::=
     ///   "(" "{" <compound-stmt> ")"
     ///   | "(" <expr> ")"
-    ///   | "sizeof" "(" <typename> ")"
-    ///   | "sizeof" <unary>
+    ///   | "sizeof" ("(" <typename> ")" | <unary>)
+    ///   | "_Alignof" ("(" <typename> ")" | <unary>)
     ///   | <func-call>
     ///   | <ident>
     ///   | <str>
@@ -2229,7 +2269,7 @@ impl<'a> Parser<'a> {
                     if self.types.is_incomplete(ty) {
                         return Err(self
                             .source
-                            .error_at(offset, "cannot apply sizeof to incomplete type"));
+                            .error_at(offset, "cannot apply 'sizeof' to incomplete type"));
                     }
                     return Ok(Node::num(self.types.size(ty), offset, false));
                 }
@@ -2240,6 +2280,35 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.size(operand.expect_ty());
+            return Ok(Node::num(size, offset, false));
+        }
+
+        if self.current().is_keyword(Keyword::Alignof) {
+            self.advance();
+
+            if self.current().is_punct("(") {
+                let pos = self.pos;
+                self.advance();
+
+                if self.at_typename() {
+                    let offset = self.current().offset;
+                    let ty = self.parse_typename()?;
+                    self.skip_punct(")")?;
+
+                    if self.types.is_incomplete(ty) {
+                        return Err(self
+                            .source
+                            .error_at(offset, "cannot apply '_Alignof' to incomplete type"));
+                    }
+                    return Ok(Node::num(self.types.align(ty), offset, false));
+                }
+
+                self.pos = pos;
+            }
+
+            let mut operand = self.parse_unary()?;
+            self.infer_type(&mut operand)?;
+            let size = self.types.align(operand.expect_ty());
             return Ok(Node::num(size, offset, false));
         }
 
@@ -2410,13 +2479,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, align: Option<i64>) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
         self.locals.push(LocalVar {
             _name: name.clone(),
             ty,
+            align,
             offset: 0, // Assigned during codegen
         });
 
@@ -2434,7 +2504,7 @@ impl<'a> Parser<'a> {
         let mut param_ids = Vec::with_capacity(params.len());
 
         for param in params.into_iter().rev() {
-            param_ids.push(self.create_local(param.name, param.ty));
+            param_ids.push(self.create_local(param.name, param.ty, None));
         }
 
         param_ids.reverse();
@@ -2446,6 +2516,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: impl Into<SmolStr>,
         ty: Type,
+        align: Option<i64>,
         storage: GlobalStorage,
     ) -> usize {
         self.disallow_speculation();
@@ -2454,6 +2525,7 @@ impl<'a> Parser<'a> {
         self.globals.push(GlobalVar {
             name: name.clone(),
             ty,
+            align,
             storage,
         });
 
@@ -2471,6 +2543,7 @@ impl<'a> Parser<'a> {
         self.create_global(
             name,
             ty,
+            None,
             GlobalStorage::Data(GlobalInitData {
                 bytes,
                 relocations: Default::default(),
@@ -2483,6 +2556,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: SmolStr,
         ty: Type,
+        align: Option<i64>,
         storage: GlobalStorage,
         offset: usize,
     ) -> Result<usize> {
@@ -2495,13 +2569,14 @@ impl<'a> Parser<'a> {
                     .error_at(offset, "redeclared as a different kind of symbol"));
             };
 
-            let ty = self
+            let global = &mut self.globals[global_id];
+            global.ty = self
                 .types
-                .merge(self.globals[global_id].ty, ty)
+                .merge(global.ty, ty)
                 .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
-            self.globals[global_id].ty = ty;
+            global.align = global.align.max(align);
 
-            if self.globals[global_id].storage.merge(storage) {
+            if global.storage.merge(storage) {
                 return Err(self
                     .source
                     .error_at(offset, "redefinition of global variable"));
@@ -2510,7 +2585,7 @@ impl<'a> Parser<'a> {
             return Ok(global_id);
         }
 
-        Ok(self.create_global(name, ty, storage))
+        Ok(self.create_global(name, ty, align, storage))
     }
 
     /// Create a new function declaration.
@@ -2654,7 +2729,7 @@ impl<'a> Parser<'a> {
 
         // (typeof lhs) *tmp;
         let lhs_ty = self.types.ptr(lhs.expect_ty());
-        let tmp = EntityRef::Local(self.create_local("", lhs_ty));
+        let tmp = EntityRef::Local(self.create_local("", lhs_ty, None));
 
         // tmp = &lhs;
         let assign1 = Node::assign(Node::entity(tmp, offset), Node::addr(lhs, offset), offset);

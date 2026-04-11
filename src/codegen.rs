@@ -213,19 +213,21 @@ impl<'a> Codegen<'a> {
     /// Generate assembly for global variables.
     fn gen_globals(&mut self) -> Result<()> {
         for global in &self.globals {
+            let align = self.types.eff_align(global.align, global.ty);
+
             match &global.storage {
                 GlobalStorage::Decl => {},
                 GlobalStorage::Zero => {
                     writeln!(self.out, "  .globl {}", global.name)?;
                     writeln!(self.out, "  .bss")?;
-                    writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
+                    writeln!(self.out, "  .align {align}")?;
                     writeln!(self.out, "{}:", global.name)?;
                     writeln!(self.out, "  .zero {}", self.types.size(global.ty))?;
                 },
                 GlobalStorage::Data(GlobalInitData { bytes, relocations }) => {
                     writeln!(self.out, "  .globl {}", global.name)?;
                     writeln!(self.out, "  .data")?;
-                    writeln!(self.out, "  .align {}", self.types.align(global.ty))?;
+                    writeln!(self.out, "  .align {align}")?;
                     writeln!(self.out, "{}:", global.name)?;
 
                     let mut pos = 0;
@@ -765,7 +767,7 @@ impl<'a> Codegen<'a> {
         // The first parsed local stays closest to `%rbp`
         for local in locals.iter_mut().rev() {
             offset += self.types.size(local.ty);
-            offset = align_to(offset, self.types.align(local.ty));
+            offset = align_to(offset, self.types.eff_align(local.align, local.ty));
             local.offset = -offset;
         }
 
