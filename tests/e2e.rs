@@ -516,6 +516,7 @@ fn test_function() {
     f.line("_Bool bool_fn_sub(_Bool x) { return x - 1; }");
     f.line("static int static_fn(void) { return 3; }");
     f.line("int param_decay(int x[]) { return x[0]; }");
+    f.line("int counter() { static int i; static int j = 1+1; return i++ + j++; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -550,6 +551,10 @@ fn test_function() {
     f.assert(3, "static_fn()");
 
     f.assert(3, "({ int x[2]; x[0]=3; param_decay(x); })");
+
+    f.assert(2, "counter()");
+    f.assert(4, "counter()");
+    f.assert(6, "counter()");
 
     f.finish();
     f.run("function");

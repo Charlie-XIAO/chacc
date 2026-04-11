@@ -1487,6 +1487,36 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if declspec.storage_class == Some(StorageClass::Static) {
+                let mut ty = declarator.ty;
+                let storage = if self.current().is_punct("=") {
+                    self.advance();
+                    let init = self.parse_initializer(ty)?;
+                    ty = init.ty;
+                    GlobalStorage::Data(self.new_global_init(init)?)
+                } else {
+                    GlobalStorage::Zero
+                };
+
+                if self.types.is_incomplete(ty) {
+                    return Err(self
+                        .source
+                        .error_at(declarator.offset, "variable has incomplete type"));
+                }
+
+                let label = self.unique_label();
+                let global_id = self.create_global(label, ty, declspec.align, storage);
+
+                // Though "create_global" already pushes into current scope, it
+                // is for the anonymous label and we need to push the actual
+                // name referencing it
+                self.push_scope_ident(
+                    declarator.name,
+                    OrdinaryIdent::Entity(EntityRef::Global(global_id)),
+                );
+                continue;
+            }
+
             let local_id = self.create_local(declarator.name, declarator.ty, declspec.align);
 
             let mut ty = self.locals[local_id].ty;
@@ -2329,7 +2359,16 @@ impl<'a> Parser<'a> {
 
         if let Some(content) = self.current().as_str() {
             let ty = self.types.array(Type::Char, Some(content.len()));
-            let global_id = self.create_anon_global(ty, content);
+            let label = self.unique_label();
+            let global_id = self.create_global(
+                label,
+                ty,
+                None,
+                GlobalStorage::Data(GlobalInitData {
+                    bytes: content,
+                    relocations: Default::default(),
+                }),
+            );
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
         }
@@ -2533,22 +2572,6 @@ impl<'a> Parser<'a> {
         let entity = OrdinaryIdent::Entity(EntityRef::Global(id));
         self.push_scope_ident(name, entity);
         id
-    }
-
-    /// Create a new anonymous global variable.
-    fn create_anon_global(&mut self, ty: Type, bytes: Rc<[u8]>) -> usize {
-        self.disallow_speculation();
-
-        let name = self.unique_label();
-        self.create_global(
-            name,
-            ty,
-            None,
-            GlobalStorage::Data(GlobalInitData {
-                bytes,
-                relocations: Default::default(),
-            }),
-        )
     }
 
     /// Declare a new global variable.
