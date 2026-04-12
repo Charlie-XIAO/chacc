@@ -333,6 +333,7 @@ impl<'a> Codegen<'a> {
                 body,
                 brk_label,
                 cont_label,
+                do_while: false,
             } => {
                 let label = self.take_label();
                 if let Some(init) = init {
@@ -350,6 +351,28 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(inc)?;
                 }
                 writeln!(self.out, "  jmp .L.begin.{label}")?;
+                writeln!(self.out, "{brk_label}:")?;
+            },
+            StmtKind::Loop {
+                init,
+                cond,
+                inc,
+                body,
+                brk_label,
+                cont_label,
+                do_while: true,
+            } => {
+                debug_assert!(init.is_none(), "do-while has no initialization statement");
+                debug_assert!(inc.is_none(), "do-while has no loop increment");
+                let cond = cond.as_ref().expect("do-while must have a condition");
+
+                let label = self.take_label();
+                writeln!(self.out, ".L.begin.{label}:")?;
+                self.gen_stmt(body)?;
+                writeln!(self.out, "{cont_label}:")?;
+                self.gen_expr(cond)?;
+                self.cmp_zero(cond.expect_ty())?;
+                writeln!(self.out, "  jne .L.begin.{label}")?;
                 writeln!(self.out, "{brk_label}:")?;
             },
             StmtKind::If {

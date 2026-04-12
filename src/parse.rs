@@ -238,6 +238,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Assume and skip a specific keyword.
+    fn skip_keyword(&mut self, expected: Keyword) -> Result<()> {
+        if !self.current().is_keyword(expected) {
+            return Err(self.error_current(format_smolstr!("expected '{expected}'")));
+        }
+        self.advance();
+        Ok(())
+    }
+
     /// Assume and consume an identifier.
     fn consume_ident(&mut self) -> Result<&'a str> {
         let Some(ident) = self.current().as_ident() else {
@@ -1215,6 +1224,7 @@ impl<'a> Parser<'a> {
     ///   | "default" ":" <stmt>
     ///   | "for" "(" <expr-stmt> <expr>? ";" <expr>? ")" <stmt>
     ///   | "while" "(" <expr> ")" <stmt>
+    ///   | "do" <stmt> "while" "(" <expr> ")" ";"
     ///   | "goto" <ident> ";"
     ///   | "break" ";"
     ///   | "continue" ";"
@@ -1395,7 +1405,33 @@ impl<'a> Parser<'a> {
             self.active_brk_label = prev_brk_label;
             self.active_cont_label = prev_cont_label;
 
-            return Ok(Stmt::while_(cond, body, brk_label, cont_label, offset));
+            return Ok(Stmt::while_(
+                cond, body, false, brk_label, cont_label, offset,
+            ));
+        }
+
+        if self.current().is_keyword(Keyword::Do) {
+            self.advance();
+
+            let brk_label = self.unique_label();
+            let cont_label = self.unique_label();
+            let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
+            let prev_cont_label = self.active_cont_label.replace(cont_label.clone());
+
+            let body = Box::new(self.parse_stmt()?);
+
+            self.active_brk_label = prev_brk_label;
+            self.active_cont_label = prev_cont_label;
+
+            self.skip_keyword(Keyword::While)?;
+            self.skip_punct("(")?;
+            let cond = self.parse_expr()?;
+            self.skip_punct(")")?;
+            self.skip_punct(";")?;
+
+            return Ok(Stmt::while_(
+                cond, body, true, brk_label, cont_label, offset,
+            ));
         }
 
         if self.current().is_keyword(Keyword::Goto) {

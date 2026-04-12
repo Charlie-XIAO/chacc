@@ -444,7 +444,7 @@ pub enum StmtKind {
     Expr(Node),
     /// A return statement.
     Return(Option<Node>),
-    /// A for-loop or while-loop statement.
+    /// A loop statement.
     Loop {
         /// Initialization statement, only used optionally for for-loops.
         init: Option<Box<Stmt>>,
@@ -454,6 +454,8 @@ pub enum StmtKind {
         inc: Option<Node>,
         /// Loop body.
         body: Box<Stmt>,
+        /// Whether this is a do-while loop.
+        do_while: bool,
         brk_label: SmolStr,
         cont_label: SmolStr,
     },
@@ -542,16 +544,18 @@ impl Stmt {
                 cond,
                 inc,
                 body,
+                do_while: false,
                 brk_label,
                 cont_label,
             },
         }
     }
 
-    /// Construct a while-loop statement.
+    /// Construct a while-loop or do-while statement.
     pub fn while_(
         cond: Node,
         body: Box<Stmt>,
+        do_while: bool,
         brk_label: SmolStr,
         cont_label: SmolStr,
         offset: usize,
@@ -563,6 +567,7 @@ impl Stmt {
                 cond: Some(cond),
                 inc: None,
                 body,
+                do_while,
                 brk_label,
                 cont_label,
             },
