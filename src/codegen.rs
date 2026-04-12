@@ -571,7 +571,20 @@ impl<'a> Codegen<'a> {
                 }
 
                 writeln!(self.out, "  mov $0, %rax")?;
-                writeln!(self.out, "  call {name}")?;
+
+                // After the prologue and local allocation, we have made the
+                // frame size a multiple of 16; each temporary push subtracts
+                // 8 bytes, so an even depth would still be 16-byte aligned but
+                // an odd depth would not, in which case we must subtract 8
+                // bytes to realign %rsp before calling and then add it back
+                let depth = self.function().depth;
+                if depth % 2 == 0 {
+                    writeln!(self.out, "  call {name}")?;
+                } else {
+                    writeln!(self.out, "  sub $8, %rsp")?;
+                    writeln!(self.out, "  call {name}")?;
+                    writeln!(self.out, "  add $8, %rsp")?;
+                }
             },
             NodeKind::Addr(expr) => self.gen_addr(expr)?,
             NodeKind::Deref(expr) => {
