@@ -548,6 +548,7 @@ fn test_function() {
     f.line("_Bool true_fn();");
     f.line("char char_fn();");
     f.line("short short_fn();");
+    f.line("int add_all(int n, ...);");
     f.main();
 
     f.assert(3, "ret3()");
@@ -593,6 +594,11 @@ fn test_function() {
     f.assert(0, "false_fn()");
     f.assert(3, "char_fn()");
     f.assert(5, "short_fn()");
+
+    f.assert(6, "add_all(3,1,2,3)");
+    f.assert(5, "add_all(4,1,2,3,-1)");
+
+    f.assert(0, r#"({ char buf[100]; sprintf(buf, "%d %d %s", 1, 2, "foo"); strcmp("1 2 foo", buf); })"#);
 
     f.finish();
     f.run("function");

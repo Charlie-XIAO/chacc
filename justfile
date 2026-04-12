@@ -28,6 +28,8 @@ doc *flags:
 
 ci: fmt lint test
 
+all: ci doc build
+
 compile code:
     #!/usr/bin/env bash
     set -eou pipefail

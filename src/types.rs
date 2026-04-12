@@ -52,6 +52,7 @@ pub struct ArrayType {
 pub struct FuncType {
     pub return_ty: Type,
     pub params: Rc<[Type]>,
+    pub is_variadic: bool,
 }
 
 /// A member of a struct.
@@ -116,11 +117,12 @@ impl TypeStore {
     }
 
     /// Construct a function type with the given return type and parameters.
-    pub fn func(&mut self, return_ty: Type, params: Vec<Type>) -> Type {
+    pub fn func(&mut self, return_ty: Type, params: Vec<Type>, is_variadic: bool) -> Type {
         self.push(
             TypeKind::Func(FuncType {
                 return_ty,
                 params: params.into(),
+                is_variadic,
             }),
             0, // Not applicable
             0, // Not applicable
@@ -325,6 +327,7 @@ impl TypeStore {
             },
             (TypeKind::Func(left), TypeKind::Func(right)) => {
                 self.same_type(left.return_ty, right.return_ty)
+                    && left.is_variadic == right.is_variadic
                     && left.params.len() == right.params.len()
                     && left
                         .params

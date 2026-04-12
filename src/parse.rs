@@ -694,16 +694,23 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <func-params> ::= ("void" | <param> ("," <param>)*)? ")"
+    /// <func-params> ::= ("void" | <param> ("," <param>)* ("," "...")?)? ")"
     /// <param> ::= <declspec> <declarator>
     /// ```
     fn parse_func_params(&mut self, return_ty: Type) -> Result<(Type, Vec<Parameter>)> {
         let mut params = Vec::new();
         let mut param_names = FxHashSet::default();
+        let mut is_variadic = false;
 
         while !self.current().is_punct(")") {
             if !params.is_empty() {
                 self.skip_punct(",")?;
+            }
+
+            if self.current().is_punct("...") {
+                is_variadic = true;
+                self.advance();
+                break;
             }
 
             let offset = self.current().offset;
@@ -712,7 +719,7 @@ impl<'a> Parser<'a> {
             if params.is_empty() && declspec.ty == Type::Void {
                 if self.current().is_punct(")") {
                     self.advance();
-                    return Ok((self.types.func(return_ty, Vec::new()), Vec::new()));
+                    return Ok((self.types.func(return_ty, Vec::new(), false), Vec::new()));
                 }
                 if self.current().is_punct(",") {
                     return Err(self
@@ -757,7 +764,7 @@ impl<'a> Parser<'a> {
 
         self.skip_punct(")")?;
         let param_tys = params.iter().map(|param| param.ty).collect();
-        Ok((self.types.func(return_ty, param_tys), params))
+        Ok((self.types.func(return_ty, param_tys, is_variadic), params))
     }
 
     /// ```bnf
@@ -2558,6 +2565,8 @@ impl<'a> Parser<'a> {
             }
 
             let mut arg = self.parse_assign()?;
+            self.infer_type(&mut arg)?;
+
             if let Some(param_ty) = param_tys.next() {
                 if self.types.as_struct_or_union(param_ty).is_some() {
                     return Err(self.source.error_at(
@@ -2566,8 +2575,22 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.apply_cast(&mut arg, param_ty)?;
+            } else {
+                if !func.is_variadic {
+                    return Err(self.source.error_at(arg.offset, "too many arguments"));
+                }
+                // Variadic function call applies default argument promotions
+                let ty = arg.expect_ty();
+                if ty.is_integer() && self.types.size(ty) < 4 {
+                    self.apply_cast(&mut arg, Type::Int)?;
+                }
             }
+
             args.push(arg);
+        }
+
+        if param_tys.next().is_some() {
+            return Err(self.error_current("too few arguments"));
         }
 
         self.skip_punct(")")?;
