@@ -113,15 +113,21 @@ struct Declspec {
 /// An ordinary identifier.
 #[derive(Debug, Copy, Clone)]
 enum OrdinaryIdent {
-    Entity(EntityRef),
+    Local(usize),
+    /// A global variable.
+    ///
+    /// The second argument represents whether it has linkage, i.e., whether it
+    /// can be declared via "extern".
+    Global(usize, bool),
+    Function(usize),
     Typedef(Type),
-    EnumConst(i64),
+    Enumerator(i64),
 }
 
 impl OrdinaryIdent {
-    fn into_entity(self) -> Option<EntityRef> {
+    fn into_function(self) -> Option<usize> {
         match self {
-            OrdinaryIdent::Entity(entity) => Some(entity),
+            OrdinaryIdent::Function(id) => Some(id),
             _ => None,
         }
     }
@@ -987,6 +993,13 @@ impl<'a> Parser<'a> {
                 }
                 return Ok(ty);
             }
+
+            if let Some(ty) = self.find_tag_current(tag) {
+                if ty == Type::Enum {
+                    return Err(self.source.error_at(offset, "redeclaration of enum tag"));
+                }
+                return Err(self.source.error_at(offset, "defined as wrong kind of tag"));
+            }
         }
 
         self.skip_punct("{")?;
@@ -999,13 +1012,25 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
+            let offset = self.current().offset;
             let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
                 val = self.parse_constexpr()?;
             }
 
-            self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::EnumConst(val));
+            if let Some(ident) = self.find_ident_current(name) {
+                return match ident {
+                    OrdinaryIdent::Enumerator(_) => {
+                        Err(self.source.error_at(offset, "redeclaration of enumerator"))
+                    },
+                    _ => Err(self
+                        .source
+                        .error_at(offset, "redeclared as a different kind of symbol")),
+                };
+            }
+
+            self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::Enumerator(val));
             val += 1;
         }
 
@@ -1088,10 +1113,16 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("expected a function"));
         }
 
-        let func_id = self.create_function_decl(declarator.name.clone(), declarator.ty);
+        let func_id =
+            self.declare_function(declarator.name.clone(), declarator.ty, declarator.offset)?;
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
+        }
+        if self.functions[func_id].body.is_some() {
+            return Err(self
+                .source
+                .error_at(declarator.offset, "redefinition of function"));
         }
 
         self.active_function = Some(func_id);
@@ -1472,6 +1503,30 @@ impl<'a> Parser<'a> {
 
             let declarator = self.parse_declarator(declspec.ty)?;
 
+            // Check whether this declaration would conflict with an existing
+            // binding in the current scope; this should (and should only) be
+            // called before introducing a block-scope object with no linkage
+            let check_no_linkage_decl_conflict = || {
+                let Some(ident) = self.find_ident_current(&declarator.name) else {
+                    return Ok(());
+                };
+
+                match ident {
+                    OrdinaryIdent::Global(_, true) => Err(self.source.error_at(
+                        declarator.offset,
+                        "declaration with no linkage follows extern declaration",
+                    )),
+                    OrdinaryIdent::Local(_) | OrdinaryIdent::Global(..) => Err(self
+                        .source
+                        .error_at(declarator.offset, "redefinition of local variable")),
+                    _ => Err(self.source.error_at(
+                        declarator.offset,
+                        "redeclared as a different kind of symbol",
+                    )),
+                }
+            };
+
+            // Block-scope function declaration, e.g., "int f(int);"
             if self.types.is_func(declarator.ty) {
                 if self.current().is_punct("=") {
                     return Err(self.source.error_at(
@@ -1480,10 +1535,11 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
-                self.declare_func_decl(declarator.name, declarator.ty, declarator.offset)?;
+                self.declare_function(declarator.name, declarator.ty, declarator.offset)?;
                 continue;
             }
 
+            // Block-scope extern object declaration
             if declspec.storage_class == Some(StorageClass::Extern) {
                 if self.current().is_punct("=") {
                     return Err(self.source.error_at(
@@ -1503,7 +1559,10 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            // Block-scope static object
             if declspec.storage_class == Some(StorageClass::Static) {
+                check_no_linkage_decl_conflict()?;
+
                 let mut ty = declarator.ty;
                 let storage = if self.current().is_punct("=") {
                     self.advance();
@@ -1520,18 +1579,17 @@ impl<'a> Parser<'a> {
                         .error_at(declarator.offset, "variable has incomplete type"));
                 }
 
+                // A block-scope static object is backed by a hidden global
+                // storage, then its spelled local name is bound to that storage
+                // (with no linkage)
                 let label = self.unique_label();
                 let global_id = self.create_global(label, ty, declspec.align, storage, true);
-
-                // Though "create_global" already pushes into current scope, it
-                // is for the anonymous label and we need to push the actual
-                // name referencing it
-                self.push_scope_ident(
-                    declarator.name,
-                    OrdinaryIdent::Entity(EntityRef::Global(global_id)),
-                );
+                self.push_scope_ident(declarator.name, OrdinaryIdent::Global(global_id, false));
                 continue;
             }
+
+            // Normal local object
+            check_no_linkage_decl_conflict()?;
 
             let local_id = self.create_local(declarator.name, declarator.ty, declspec.align);
 
@@ -2395,8 +2453,14 @@ impl<'a> Parser<'a> {
             self.advance();
 
             let node = match self.find_ident(name) {
-                Some(OrdinaryIdent::Entity(entity)) => Node::entity(entity, offset),
-                Some(OrdinaryIdent::EnumConst(val)) => Node::num(val, offset, false),
+                Some(OrdinaryIdent::Local(local_id)) => {
+                    Node::entity(EntityRef::Local(local_id), offset)
+                },
+                Some(OrdinaryIdent::Global(global_id, _)) => {
+                    Node::entity(EntityRef::Global(global_id), offset)
+                },
+                Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
+                Some(OrdinaryIdent::Enumerator(val)) => Node::num(val, offset, false),
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
             return Ok(node);
@@ -2435,15 +2499,12 @@ impl<'a> Parser<'a> {
         self.advance();
         self.skip_punct("(")?;
 
-        let entity = self
-            .find_ident(name)
-            .and_then(OrdinaryIdent::into_entity)
-            .ok_or_else(|| {
-                self.source
-                    .error_at(offset, "implicit declaration of a function")
-            })?;
-
-        let EntityRef::Function(func_id) = entity else {
+        let Some(ident) = self.find_ident(name) else {
+            return Err(self
+                .source
+                .error_at(offset, "implicit declaration of a function"));
+        };
+        let Some(func_id) = ident.into_function() else {
             return Err(self.source.error_at(offset, "not a function"));
         };
 
@@ -2490,6 +2551,26 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(base_ty)?;
+
+            if let Some(ident) = self.find_ident_current(&declarator.name) {
+                match ident {
+                    OrdinaryIdent::Typedef(ty) => {
+                        // Duplicate typedef with same type is allowed
+                        if ty != declarator.ty {
+                            return Err(self
+                                .source
+                                .error_at(declarator.offset, "conflicting types"));
+                        }
+                    },
+                    _ => {
+                        return Err(self.source.error_at(
+                            declarator.offset,
+                            "redeclared as a different kind of symbol",
+                        ));
+                    },
+                }
+            }
+
             let typedef = OrdinaryIdent::Typedef(declarator.ty);
             self.push_scope_ident(declarator.name, typedef);
         }
@@ -2548,6 +2629,11 @@ impl<'a> Parser<'a> {
         None
     }
 
+    /// Find an ordinary identifier in the current scope only.
+    fn find_ident_current(&self, name: &str) -> Option<OrdinaryIdent> {
+        self.scopes.last()?.idents.get(name).copied()
+    }
+
     /// Find a struct or union tag by name.
     fn find_tag(&self, tag: &str) -> Option<Type> {
         for frame in self.scopes.iter().rev() {
@@ -2576,7 +2662,7 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.locals.len() - 1;
-        let entity = OrdinaryIdent::Entity(EntityRef::Local(id));
+        let entity = OrdinaryIdent::Local(id);
         self.push_scope_ident(name, entity);
         id
     }
@@ -2617,12 +2703,19 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.globals.len() - 1;
-        let entity = OrdinaryIdent::Entity(EntityRef::Global(id));
+        let entity = OrdinaryIdent::Global(id, true);
         self.push_scope_ident(name, entity);
         id
     }
 
     /// Declare a new global variable.
+    ///
+    /// This is similar to [`create_global`], but it attempts to reuse an
+    /// existing global declaration with the same name, if any and if
+    /// compatible. Note also that the caller should specify `storage` as
+    /// [`GlobalStorage::Decl`] only for "extern".
+    ///
+    /// [`create_global`]: Self::create_global
     fn declare_global(
         &mut self,
         name: SmolStr,
@@ -2634,49 +2727,71 @@ impl<'a> Parser<'a> {
     ) -> Result<usize> {
         self.disallow_speculation();
 
-        if let Some(ident) = self.find_ident(&name) {
-            let OrdinaryIdent::Entity(EntityRef::Global(global_id)) = ident else {
+        let global_id = match self.find_ident_current(&name) {
+            // Reuse same-scope linkage-bearing global declaration
+            Some(OrdinaryIdent::Global(global_id, true)) => Some(global_id),
+            // Conflict with same-scope object that has no linkage
+            Some(OrdinaryIdent::Global(_, false) | OrdinaryIdent::Local(_)) => {
+                return Err(self.source.error_at(
+                    offset,
+                    "extern declaration follows declaration with no linkage",
+                ));
+            },
+            Some(_) => {
                 return Err(self
                     .source
                     .error_at(offset, "redeclared as a different kind of symbol"));
-            };
+            },
+            // Reuse linkage-bearing globals from outer scopes if any
+            None => self.scopes.iter().rev().skip(1).find_map(|frame| {
+                let ident = frame.idents.get(&name).copied()?;
+                let OrdinaryIdent::Global(global_id, true) = ident else {
+                    return None;
+                };
+                Some(global_id)
+            }),
+        };
 
-            let global = &mut self.globals[global_id];
-            global.ty = self
-                .types
-                .merge(global.ty, ty)
-                .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
-            global.align = global.align.max(align);
+        let Some(global_id) = global_id else {
+            return Ok(self.create_global(name, ty, align, storage, is_static));
+        };
 
-            if global.is_static {
-                if !is_static && !matches!(storage, GlobalStorage::Decl) {
-                    return Err(self
-                        .source
-                        .error_at(offset, "non-static declaration follows static declaration"));
-                }
-            } else if is_static {
-                return Err(self
-                    .source
-                    .error_at(offset, "static declaration follows non-static declaration"));
-            }
+        let global = &mut self.globals[global_id];
+        global.align = global.align.max(align);
 
-            if global.storage.merge(storage) {
-                return Err(self
-                    .source
-                    .error_at(offset, "redefinition of global variable"));
-            }
-            self.push_scope_ident(name, OrdinaryIdent::Entity(EntityRef::Global(global_id)));
-            return Ok(global_id);
+        global.ty = self
+            .types
+            .merge(global.ty, ty)
+            .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
+
+        if global.is_static && !is_static && !matches!(storage, GlobalStorage::Decl) {
+            // A non-static extern can follow a static declaration
+            return Err(self
+                .source
+                .error_at(offset, "non-static declaration follows static declaration"));
+        }
+        if !global.is_static && is_static {
+            return Err(self
+                .source
+                .error_at(offset, "static declaration follows non-static declaration"));
         }
 
-        Ok(self.create_global(name, ty, align, storage, is_static))
+        if global.storage.merge(storage) {
+            return Err(self
+                .source
+                .error_at(offset, "redefinition of global variable"));
+        }
+
+        // Rebind the reused global in current scope
+        self.push_scope_ident(name, OrdinaryIdent::Global(global_id, true));
+        Ok(global_id)
     }
 
     /// Create a new function declaration.
     ///
     /// If the function is also defined (i.e., has a body), it needs to be
     /// filled in later, looked up via the returned ID.
-    fn create_function_decl(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+    fn create_function(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
@@ -2690,26 +2805,45 @@ impl<'a> Parser<'a> {
         });
 
         let id = self.functions.len() - 1;
-        let entity = OrdinaryIdent::Entity(EntityRef::Function(id));
+        let entity = OrdinaryIdent::Function(id);
         self.push_scope_ident(name, entity);
         id
     }
 
     /// Declare a new function declaration.
-    fn declare_func_decl(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<usize> {
+    ///
+    /// This is similar to [`create_function`], but it attempts to reuse an
+    /// existing function declaration with the same name, if any and if
+    /// compatible.
+    ///
+    /// [`create_function`]: Self::create_function
+    fn declare_function(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<usize> {
         self.disallow_speculation();
 
-        if let Some(ident) = self.find_ident(&name) {
-            let OrdinaryIdent::Entity(EntityRef::Function(func_id)) = ident else {
+        let func_id = match self.find_ident_current(&name) {
+            // Reuse same-scope function declaration
+            Some(OrdinaryIdent::Function(func_id)) => Some(func_id),
+            Some(_) => {
                 return Err(self
                     .source
                     .error_at(offset, "redeclared as a different kind of symbol"));
-            };
-            self.push_scope_ident(name, OrdinaryIdent::Entity(EntityRef::Function(func_id)));
-            return Ok(func_id);
-        }
+            },
+            // Reuse function declarations from outer scopes if any
+            None => self.scopes.iter().rev().skip(1).find_map(|frame| {
+                let ident = frame.idents.get(&name).copied()?;
+                let OrdinaryIdent::Function(func_id) = ident else {
+                    return None;
+                };
+                Some(func_id)
+            }),
+        };
 
-        Ok(self.create_function_decl(name, ty))
+        let Some(func_id) = func_id else {
+            return Ok(self.create_function(name, ty));
+        };
+
+        self.push_scope_ident(name, OrdinaryIdent::Function(func_id));
+        Ok(func_id)
     }
 
     /// Build an addition node with pointer scaling.
