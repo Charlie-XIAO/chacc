@@ -23,8 +23,8 @@ is no longer true.
 
 What remains deferred is narrower:
 
-- full function declaration compatibility
-- richer structural type compatibility beyond the current limited merge rules
+- full C function declaration compatibility
+- richer declaration compatibility beyond the current `same_type()` rules
 - more diagnostic quality such as previous-declaration notes
 
 ## What Is Implemented
@@ -47,8 +47,8 @@ Implemented behavior now includes:
 - block-scope duplicate locals are rejected
 - block-scope no-linkage declarations are checked before creating locals or
   static-local backing storage
-- typedef/typedef same-scope redeclaration is accepted only when the declared
-  type matches under the current equality rules
+- typedef/typedef same-scope redeclaration is accepted when the declared type
+  matches under `TypeStore::same_type()`
 - typedef/object, typedef/function, and other different-kind collisions are
   rejected in the current scope
 - enum tag redefinition in the current scope is rejected
@@ -60,6 +60,8 @@ Implemented behavior now includes:
   appropriate
 - repeated function declarations reuse an existing function symbol instead of
   creating duplicate function entries
+- repeated function declarations are now checked with `TypeStore::same_type()`
+  and reject obvious conflicting types
 - a second function body is rejected as `redefinition of function`
 
 This work also tightened the relationship between scope bindings and canonical
@@ -74,29 +76,37 @@ tables:
 
 ### Function Declaration Compatibility
 
-`declare_function()` currently reuses an existing function declaration by name,
-but it does **not** yet check that the new function type is compatible with the
-old one.
-
-That means this area is still only partially modeled. In particular, later work
-should decide how to handle cases like:
+`declare_function()` now performs a narrow compatibility check via
+`TypeStore::same_type()`, which is enough to reject obvious conflicts like:
 
 ```c
 int f(void);
 long f(void);   // conflicting
 ```
 
-and more subtle C function-compatibility rules once old-style declarations,
-variadics, and related cases matter.
+But this is still not full C function declaration compatibility. Later work
+should decide how to handle:
+
+```c
+int f();
+int f(int);
+```
+
+and more subtle rules once old-style declarations, variadics, and related cases
+matter.
 
 ### Broader Structural Type Compatibility
 
 Current type compatibility is still intentionally narrow:
 
-- `TypeStore::merge()` only supports:
-  - exact type identity
+- `TypeStore::same_type()` is structural only for:
+  - pointers
+  - arrays
+  - functions
+- struct and union types are still identity-based
+- `TypeStore::merge()` still supports only:
+  - same type under `same_type()`
   - incomplete/complete array redeclarations with the same base type
-- typedef duplicate checks still rely on current type-equality behavior
 
 So while the old redeclaration permissiveness is gone, the compiler still does
 not have a full structural declaration-compatibility subsystem.
@@ -136,9 +146,9 @@ The refactor settled on these design choices:
 
 The next realistic extension here is:
 
-1. add a structural type-equality / declaration-compatibility helper
-2. use it in `declare_function()`
-3. likely reuse it for typedef duplicate checks too
+1. extend `TypeStore::same_type()` toward real declaration compatibility
+2. decide how to model old-style / variadic function compatibility
+3. improve diagnostics with previous-declaration context
 
 That would extend the current redeclaration framework without undoing the
 cleanup that has already landed.

@@ -6,7 +6,7 @@ use smol_str::SmolStr;
 
 use crate::utils::align_to;
 
-/// A stable handle to a non-simple type stored in [`TypeStore`].
+/// A stable handle to a non-trivial type stored in [`TypeStore`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeId(usize);
 
@@ -22,7 +22,7 @@ pub enum Type {
     Int,
     Long,
     Enum,
-    /// A non-simple type stored in [`TypeStore`].
+    /// A non-trivial type stored in [`TypeStore`].
     Stored(TypeId),
 }
 
@@ -72,7 +72,7 @@ pub struct StructOrUnionType {
     pub members: Option<Rc<[Member]>>,
 }
 
-/// The global store of non-simple type definitions used by the parsed program.
+/// The global store of non-trivial type definitions used by the parsed program.
 #[derive(Debug, Default)]
 pub struct TypeStore {
     types: Vec<TypeData>,
@@ -302,6 +302,40 @@ impl TypeStore {
         )
     }
 
+    /// Return whether two types are the same.
+    ///
+    /// - Trivial types are compared directly.
+    /// - Pointer, array, and function types are compared structurally.
+    /// - Struct and union types are compared based on identity. In particular,
+    ///   two distinctly stored struct/union are treated as different types even
+    ///   if their members are all the same.
+    pub fn same_type(&self, this: Type, other: Type) -> bool {
+        if this == other {
+            return true;
+        }
+
+        let (Some(this), Some(other)) = (self.get(this), self.get(other)) else {
+            return false;
+        };
+
+        match (&this.kind, &other.kind) {
+            (TypeKind::Ptr(left), TypeKind::Ptr(right)) => self.same_type(*left, *right),
+            (TypeKind::Array(left), TypeKind::Array(right)) => {
+                left.len == right.len && self.same_type(left.base, right.base)
+            },
+            (TypeKind::Func(left), TypeKind::Func(right)) => {
+                self.same_type(left.return_ty, right.return_ty)
+                    && left.params.len() == right.params.len()
+                    && left
+                        .params
+                        .iter()
+                        .zip(right.params.iter())
+                        .all(|(this, other)| self.same_type(*this, *other))
+            },
+            _ => false,
+        }
+    }
+
     /// Coerce two operand types for a validated binary operation.
     ///
     /// This helper is intentionally `lhs`-biased. If exactly one operand is a
@@ -327,17 +361,18 @@ impl TypeStore {
     ///
     /// This method returns `None` except for the following supported cases:
     ///
-    /// - **Exactly** the same type, which will be returned as is;
+    /// - The same type under [`TypeStore::same_type`], which will be returned
+    ///   as `this`;
     /// - An incomplete array type and a complete array type with the same base,
     ///   where the complete one will be returned.
     pub fn merge(&self, this: Type, other: Type) -> Option<Type> {
-        if this == other {
+        if self.same_type(this, other) {
             return Some(this);
         }
 
         let this_array = self.as_array(this)?;
         let other_array = self.as_array(other)?;
-        if this_array.base != other_array.base {
+        if !self.same_type(this_array.base, other_array.base) {
             return None;
         }
 

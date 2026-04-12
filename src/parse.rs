@@ -2556,7 +2556,7 @@ impl<'a> Parser<'a> {
                 match ident {
                     OrdinaryIdent::Typedef(ty) => {
                         // Duplicate typedef with same type is allowed
-                        if ty != declarator.ty {
+                        if !self.types.same_type(ty, declarator.ty) {
                             return Err(self
                                 .source
                                 .error_at(declarator.offset, "conflicting types"));
@@ -2841,6 +2841,10 @@ impl<'a> Parser<'a> {
         let Some(func_id) = func_id else {
             return Ok(self.create_function(name, ty));
         };
+
+        if !self.types.same_type(self.functions[func_id].ty, ty) {
+            return Err(self.source.error_at(offset, "conflicting types"));
+        }
 
         self.push_scope_ident(name, OrdinaryIdent::Function(func_id));
         Ok(func_id)
