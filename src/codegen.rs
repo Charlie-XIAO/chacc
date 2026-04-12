@@ -578,7 +578,7 @@ impl<'a> Codegen<'a> {
                 // an odd depth would not, in which case we must subtract 8
                 // bytes to realign %rsp before calling and then add it back
                 let depth = self.function().depth;
-                if depth % 2 == 0 {
+                if depth.is_multiple_of(2) {
                     writeln!(self.out, "  call {name}")?;
                 } else {
                     writeln!(self.out, "  sub $8, %rsp")?;
