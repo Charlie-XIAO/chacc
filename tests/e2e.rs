@@ -544,6 +544,10 @@ fn test_function() {
     f.line("int param_decay(int x[]) { return x[0]; }");
     f.line("int counter() { static int i; static int j = 1+1; return i++ + j++; }");
     f.line("void ret_none() { return; }");
+    f.line("_Bool false_fn();");
+    f.line("_Bool true_fn();");
+    f.line("char char_fn();");
+    f.line("short short_fn();");
     f.main();
 
     f.assert(3, "ret3()");
@@ -584,6 +588,11 @@ fn test_function() {
     f.assert(6, "counter()");
 
     f.line("ret_none();");
+
+    f.assert(1, "true_fn()");
+    f.assert(0, "false_fn()");
+    f.assert(3, "char_fn()");
+    f.assert(5, "short_fn()");
 
     f.finish();
     f.run("function");

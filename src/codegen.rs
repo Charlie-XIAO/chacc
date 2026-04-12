@@ -585,6 +585,17 @@ impl<'a> Codegen<'a> {
                     writeln!(self.out, "  call {name}")?;
                     writeln!(self.out, "  add $8, %rsp")?;
                 }
+
+                // Per x86-64 psABI, for "_Bool", "char", and "short" return
+                // types, only the low 8 or 16 bits of %rax are guaranteed to
+                // hold the correct value across a call; hence we need to
+                // normalize the register to the declared return type here
+                match node.expect_ty() {
+                    Type::Bool => writeln!(self.out, "  movzx %al, %eax")?,
+                    Type::Char => writeln!(self.out, "  movsbl %al, %eax")?,
+                    Type::Short => writeln!(self.out, "  movswl %ax, %eax")?,
+                    _ => {},
+                }
             },
             NodeKind::Addr(expr) => self.gen_addr(expr)?,
             NodeKind::Deref(expr) => {
