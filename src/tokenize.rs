@@ -30,10 +30,11 @@ pub enum Keyword {
     Short,
     Int,
     Long,
-    Enum,
+    Signed,
     Sizeof,
     Struct,
     Union,
+    Enum,
     Typedef,
     Static,
     Extern,
@@ -138,9 +139,10 @@ impl<'a> Token<'a> {
                     | Keyword::Short
                     | Keyword::Int
                     | Keyword::Long
-                    | Keyword::Enum
+                    | Keyword::Signed
                     | Keyword::Struct
                     | Keyword::Union
+                    | Keyword::Enum
                     | Keyword::Typedef
                     | Keyword::Static
                     | Keyword::Extern

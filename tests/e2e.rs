@@ -899,6 +899,27 @@ fn test_sizeof() {
 
     f.assert(4, "sizeof(struct { int x, y[]; })");
 
+    f.assert(1, "sizeof(char)");
+    f.assert(1, "sizeof(signed char)");
+
+    f.assert(2, "sizeof(short)");
+    f.assert(2, "sizeof(int short)");
+    f.assert(2, "sizeof(short int)");
+    f.assert(2, "sizeof(signed short)");
+    f.assert(2, "sizeof(int short signed)");
+
+    f.assert(4, "sizeof(int)");
+    f.assert(4, "sizeof(signed int)");
+    f.assert(4, "sizeof(signed)");
+
+    f.assert(8, "sizeof(long)");
+    f.assert(8, "sizeof(signed long)");
+    f.assert(8, "sizeof(signed long int)");
+
+    f.assert(8, "sizeof(long long)");
+    f.assert(8, "sizeof(signed long long)");
+    f.assert(8, "sizeof(signed long long int)");
+
     f.finish();
     f.run("sizeof");
 }

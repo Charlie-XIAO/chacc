@@ -419,6 +419,7 @@ impl<'a> Parser<'a> {
     ///   | "short"
     ///   | "int"
     ///   | "long"
+    ///   | "signed"
     ///   | <struct-or-union-decl>
     ///   | <typedef-name>
     ///   | <enum-specifier>
@@ -441,6 +442,7 @@ impl<'a> Parser<'a> {
         let mut long_count = 0;
         let mut storage_class = None;
         let mut align = None;
+        let mut signed = false;
 
         while self.at_typename() {
             let offset = self.current().offset;
@@ -470,11 +472,11 @@ impl<'a> Parser<'a> {
 
             match keyword {
                 Some(Keyword::Void) => match spec {
-                    None => spec = Some(TypeSpec::Void),
+                    None if !signed => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Bool) => match spec {
-                    None => spec = Some(TypeSpec::Bool),
+                    None if !signed => spec = Some(TypeSpec::Bool),
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Char) => match spec {
@@ -498,7 +500,7 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Struct) => match spec {
-                    None => {
+                    None if !signed => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(true, context)?,
                         ))
@@ -506,7 +508,7 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Union) => match spec {
-                    None => {
+                    None if !signed => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(false, context)?,
                         ))
@@ -514,8 +516,14 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Enum) => match spec {
-                    None => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
+                    None if !signed => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
                     _ => bail_multiple_types!(),
+                },
+                Some(Keyword::Signed) => {
+                    if signed {
+                        bail_multiple_types!();
+                    }
+                    signed = true;
                 },
                 Some(Keyword::Typedef | Keyword::Static | Keyword::Extern) => {
                     if !context.allows_storage_class() {
@@ -557,11 +565,15 @@ impl<'a> Parser<'a> {
                     self.skip_punct(")")?;
                 },
                 _ => match typedef_ty {
-                    Some(ty) if spec.is_none() => spec = Some(TypeSpec::Other(ty)),
-                    Some(_) => unreachable!(), // Early break'ed
+                    Some(ty) if spec.is_none() && !signed => spec = Some(TypeSpec::Other(ty)),
+                    Some(_) => bail_multiple_types!(),
                     None => unreachable!("all typename tokens should have been handled"),
                 },
             }
+        }
+
+        if spec.is_none() && signed {
+            spec = Some(TypeSpec::Int);
         }
 
         if spec.is_none() {
