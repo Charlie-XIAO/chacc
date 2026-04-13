@@ -161,6 +161,10 @@ fn test_alignof() {
     f.assert(1, "({ char x; _Alignof x; })");
     f.assert(4, "({ int x; _Alignof x; })");
 
+    f.assert(1, "_Alignof(char) << 31 >> 31");
+    f.assert(1, "_Alignof(char) << 63 >> 63");
+    f.assert(1, "({ char x; _Alignof(x) << 63 >> 63; })");
+
     f.finish();
     f.run("alignof");
 }
@@ -288,6 +292,14 @@ fn test_arith() {
     f.assert(-2, "1?-2:(long)-1");
 
     f.line("1 ? -2 : (void)-1;");
+
+    f.assert(20, "({ int x; int *p=&x; p+20-p; })");
+    f.assert(1, "({ int x; int *p=&x; p+20-p>0; })");
+    f.assert(-20, "({ int x; int *p=&x; p-20-p; })");
+    f.assert(1, "({ int x; int *p=&x; p-20-p<0; })");
+
+    f.assert(15, "(char *)0xffffffffffffffff - (char *)0xfffffffffffffff0");
+    f.assert(-15, "(char *)0xfffffffffffffff0 - (char *)0xffffffffffffffff");
 
     f.finish();
     f.run("arith");
@@ -1042,6 +1054,9 @@ fn test_sizeof() {
     f.assert(4, "sizeof(1?2:3)");
     f.assert(4, "sizeof(1?(short)2:(char)3)");
     f.assert(8, "sizeof(1?(long)2:(char)3)");
+
+    f.assert(1, "sizeof(char) << 31 >> 31");
+    f.assert(1, "sizeof(char) << 63 >> 63");
 
     f.finish();
     f.run("sizeof");

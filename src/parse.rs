@@ -2984,7 +2984,7 @@ impl<'a> Parser<'a> {
         let scaled_rhs = Node::binary(
             BinaryOp::Mul,
             rhs,
-            Node::num(base_size, Type::ULong, offset),
+            Node::num(base_size, Type::Long, offset),
             offset,
         );
         let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
@@ -3012,7 +3012,7 @@ impl<'a> Parser<'a> {
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
                 rhs,
-                Node::num(base_size, Type::ULong, offset),
+                Node::num(base_size, Type::Long, offset),
                 offset,
             );
             let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
@@ -3029,7 +3029,7 @@ impl<'a> Parser<'a> {
             let node = Node::binary(
                 BinaryOp::Div,
                 diff,
-                Node::num(base_size, Type::ULong, offset),
+                Node::num(base_size, Type::Long, offset),
                 offset,
             );
             return Ok(node);
