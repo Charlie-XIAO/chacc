@@ -1,14 +1,13 @@
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 
-void assert(int expected, int actual, char *code) {
+int assert(int expected, int actual, char *code) {
   if (expected == actual) {
     printf("%s => \x1b[32m%d\x1b[0m\n", code, actual);
-  } else {
-    printf("%s => \x1b[31m%d expected but got %d\x1b[0m\n", code, expected, actual);
-    exit(1);
+    return 0;
   }
+  printf("%s => \x1b[31m%d expected but got %d\x1b[0m\n", code, expected, actual);
+  return 1;
 }
 
 static int static_fn() { return 5; }
@@ -23,6 +22,10 @@ int false_fn() { return 512; }
 int true_fn() { return 513; }
 int char_fn() { return (2 << 8) + 3; }
 int short_fn() { return (2 << 16) + 5; }
+int uchar_fn() { return (2 << 10) - 1 - 4; }
+int ushort_fn() { return (2 << 20) - 1 - 7; }
+int schar_fn() { return (2 << 10) - 1 - 4; }
+int sshort_fn() { return (2 << 20) - 1 - 7; }
 
 int add_all(int n, ...) {
   va_list ap;

@@ -420,6 +420,7 @@ impl<'a> Parser<'a> {
     ///   | "int"
     ///   | "long"
     ///   | "signed"
+    ///   | "unsigned"
     ///   | <struct-or-union-decl>
     ///   | <typedef-name>
     ///   | <enum-specifier>
@@ -428,6 +429,7 @@ impl<'a> Parser<'a> {
     /// As per C language specification, type specifiers are order-insensitive,
     /// but only certain combinations are legal.
     fn parse_declspec(&mut self, context: DeclspecContext) -> Result<Declspec> {
+        #[derive(Debug)]
         enum TypeSpec {
             Void,
             Bool,
@@ -438,11 +440,18 @@ impl<'a> Parser<'a> {
             Other(Type),
         }
 
+        #[derive(Debug, PartialEq, Eq)]
+        enum Sign {
+            None,
+            Unsigned,
+            Signed,
+        }
+
         let mut spec = None;
         let mut long_count = 0;
+        let mut sign = Sign::None;
         let mut storage_class = None;
         let mut align = None;
-        let mut signed = false;
 
         while self.at_typename() {
             let offset = self.current().offset;
@@ -472,11 +481,11 @@ impl<'a> Parser<'a> {
 
             match keyword {
                 Some(Keyword::Void) => match spec {
-                    None if !signed => spec = Some(TypeSpec::Void),
+                    None if sign == Sign::None => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Bool) => match spec {
-                    None if !signed => spec = Some(TypeSpec::Bool),
+                    None if sign == Sign::None => spec = Some(TypeSpec::Bool),
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Char) => match spec {
@@ -500,7 +509,7 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Struct) => match spec {
-                    None if !signed => {
+                    None if sign == Sign::None => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(true, context)?,
                         ))
@@ -508,7 +517,7 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Union) => match spec {
-                    None if !signed => {
+                    None if sign == Sign::None => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(false, context)?,
                         ))
@@ -516,14 +525,22 @@ impl<'a> Parser<'a> {
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Enum) => match spec {
-                    None if !signed => spec = Some(TypeSpec::Other(self.parse_enum_specifier()?)),
+                    None if sign == Sign::None => {
+                        spec = Some(TypeSpec::Other(self.parse_enum_specifier()?))
+                    },
                     _ => bail_multiple_types!(),
                 },
                 Some(Keyword::Signed) => {
-                    if signed {
+                    if sign != Sign::None {
                         bail_multiple_types!();
                     }
-                    signed = true;
+                    sign = Sign::Signed;
+                },
+                Some(Keyword::Unsigned) => {
+                    if sign != Sign::None {
+                        bail_multiple_types!();
+                    }
+                    sign = Sign::Unsigned;
                 },
                 Some(Keyword::Typedef | Keyword::Static | Keyword::Extern) => {
                     if !context.allows_storage_class() {
@@ -552,7 +569,6 @@ impl<'a> Parser<'a> {
                             format_smolstr!("'_Alignas' is not allowed in {context}"),
                         ));
                     }
-
                     // Multiple "_Alignas" is allowed, and only the strictest
                     // requirement is kept
                     self.skip_punct("(")?;
@@ -565,14 +581,16 @@ impl<'a> Parser<'a> {
                     self.skip_punct(")")?;
                 },
                 _ => match typedef_ty {
-                    Some(ty) if spec.is_none() && !signed => spec = Some(TypeSpec::Other(ty)),
+                    Some(ty) if spec.is_none() && sign == Sign::None => {
+                        spec = Some(TypeSpec::Other(ty))
+                    },
                     Some(_) => bail_multiple_types!(),
                     None => unreachable!("all typename tokens should have been handled"),
                 },
             }
         }
 
-        if spec.is_none() && signed {
+        if spec.is_none() && sign != Sign::None {
             spec = Some(TypeSpec::Int);
         }
 
@@ -584,14 +602,18 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("expected a typename"));
         }
 
-        let ty = match spec.unwrap() {
-            TypeSpec::Void => Type::Void,
-            TypeSpec::Bool => Type::Bool,
-            TypeSpec::Char => Type::Char,
-            TypeSpec::Short => Type::Short,
-            TypeSpec::Int => Type::Int,
-            TypeSpec::Long => Type::Long,
-            TypeSpec::Other(ty) => ty,
+        let ty = match (spec.unwrap(), sign) {
+            (TypeSpec::Void, _) => Type::Void,
+            (TypeSpec::Bool, _) => Type::Bool,
+            (TypeSpec::Char, Sign::Unsigned) => Type::UChar,
+            (TypeSpec::Char, _) => Type::Char,
+            (TypeSpec::Short, Sign::Unsigned) => Type::UShort,
+            (TypeSpec::Short, _) => Type::Short,
+            (TypeSpec::Int, Sign::Unsigned) => Type::UInt,
+            (TypeSpec::Int, _) => Type::Int,
+            (TypeSpec::Long, Sign::Unsigned) => Type::ULong,
+            (TypeSpec::Long, _) => Type::Long,
+            (TypeSpec::Other(ty), _) => ty,
         };
 
         Ok(Declspec {

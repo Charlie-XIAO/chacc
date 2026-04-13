@@ -119,7 +119,7 @@ pub enum EntityRef {
 }
 
 /// Binary operators.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
     Sub,

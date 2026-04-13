@@ -31,6 +31,7 @@ pub enum Keyword {
     Int,
     Long,
     Signed,
+    Unsigned,
     Sizeof,
     Struct,
     Union,
@@ -140,6 +141,7 @@ impl<'a> Token<'a> {
                     | Keyword::Int
                     | Keyword::Long
                     | Keyword::Signed
+                    | Keyword::Unsigned
                     | Keyword::Struct
                     | Keyword::Union
                     | Keyword::Enum

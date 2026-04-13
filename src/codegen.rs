@@ -113,6 +113,16 @@ impl ScalarWidth {
         }
     }
 
+    /// Return the mnemonic used to load an unsigned scalar of this width.
+    fn unsigned_load_mnemonic(&self) -> &'static str {
+        match self {
+            Self::Byte => "movzbl",
+            Self::Word => "movzwl",
+            Self::Dword => "mov",
+            Self::Qword => "mov",
+        }
+    }
+
     /// Return the destination register used by a signed load of this width.
     fn signed_load_dest_reg(&self) -> &'static str {
         match self {
@@ -533,11 +543,16 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
+        #[derive(Debug, PartialEq, Eq)]
         enum CastTypeId {
             I8,
+            U8,
             I16,
+            U16,
             I32,
+            U32,
             I64,
+            U64,
         }
 
         use CastTypeId::*;
@@ -548,9 +563,13 @@ impl<'a> Codegen<'a> {
             fn try_from(value: Type) -> Result<Self, Self::Error> {
                 match value {
                     Type::Char => Ok(I8),
+                    Type::UChar => Ok(U8),
                     Type::Short => Ok(I16),
+                    Type::UShort => Ok(U16),
                     Type::Int | Type::Enum => Ok(I32),
+                    Type::UInt => Ok(U32),
                     Type::Long => Ok(I64),
+                    Type::ULong => Ok(U64),
                     _ => Err(()),
                 }
             }
@@ -563,15 +582,17 @@ impl<'a> Codegen<'a> {
             return Ok(());
         };
 
+        if from == to {
+            return Ok(());
+        }
+
         match (from, to) {
-            (I8, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
-            (I16, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
-            (I16, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
-            (I32, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
-            (I32, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
-            (I32, I64) => writeln!(self.out, "  movsxd %eax, %rax")?,
-            (I64, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
-            (I64, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
+            (_, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
+            (_, U8) => writeln!(self.out, "  movzbl %al, %eax")?,
+            (U8 | U16 | I32 | U32 | I64 | U64, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
+            (I8 | I16 | I32 | U32 | I64 | U64, U16) => writeln!(self.out, "  movzwl %ax, %eax")?,
+            (I8 | U8 | I16 | U16 | I32, I64 | U64) => writeln!(self.out, "  movsxd %eax, %rax")?,
+            (U32, I64 | U64) => writeln!(self.out, "  mov %eax, %eax")?,
             _ => {},
         }
         Ok(())
@@ -622,7 +643,9 @@ impl<'a> Codegen<'a> {
                 match node.expect_ty() {
                     Type::Bool => writeln!(self.out, "  movzx %al, %eax")?,
                     Type::Char => writeln!(self.out, "  movsbl %al, %eax")?,
+                    Type::UChar => writeln!(self.out, "  movzbl %al, %eax")?,
                     Type::Short => writeln!(self.out, "  movswl %ax, %eax")?,
+                    Type::UShort => writeln!(self.out, "  movzwl %ax, %eax")?,
                     _ => {},
                 }
             },
@@ -693,23 +716,28 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(lhs)?;
                 self.pop("%rdi")?;
 
-                let width = ScalarWidth::from_promoted_binary_type(lhs.expect_ty(), &self.types);
+                let lhs_ty = lhs.expect_ty();
+                let width = ScalarWidth::from_promoted_binary_type(lhs_ty, &self.types);
                 let acc = width.acc_reg();
                 let rdi = width.rdi_reg();
                 let rcx = width.rcx_reg();
+                let rdx = width.rdx_reg();
 
                 match op {
                     BinaryOp::Add => writeln!(self.out, "  add {rdi}, {acc}")?,
                     BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
                     BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
-                    BinaryOp::Div => {
-                        writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
-                        writeln!(self.out, "  idiv {rdi}")?;
-                    },
-                    BinaryOp::Mod => {
-                        writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
-                        writeln!(self.out, "  idiv {rdi}")?;
-                        writeln!(self.out, "  mov {}, {}", width.rdx_reg(), acc)?;
+                    BinaryOp::Div | BinaryOp::Mod => {
+                        if node.expect_ty().is_unsigned_integer() {
+                            writeln!(self.out, "  mov $0, {rdx}")?;
+                            writeln!(self.out, "  div {rdi}")?;
+                        } else {
+                            writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
+                            writeln!(self.out, "  idiv {rdi}")?;
+                        }
+                        if *op == BinaryOp::Mod {
+                            writeln!(self.out, "  mov {}, {}", width.rdx_reg(), acc)?;
+                        }
                     },
                     BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
                     BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
@@ -720,7 +748,11 @@ impl<'a> Codegen<'a> {
                     },
                     BinaryOp::BitRightShift => {
                         writeln!(self.out, "  mov {rdi}, {rcx}")?;
-                        writeln!(self.out, "  sar %cl, {acc}")?;
+                        if lhs_ty.is_unsigned_integer() {
+                            writeln!(self.out, "  shr %cl, {acc}")?;
+                        } else {
+                            writeln!(self.out, "  sar %cl, {acc}")?;
+                        }
                     },
                     BinaryOp::Eq => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
@@ -734,12 +766,20 @@ impl<'a> Codegen<'a> {
                     },
                     BinaryOp::Lt => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        writeln!(self.out, "  setl %al")?;
+                        if lhs_ty.is_unsigned_integer() {
+                            writeln!(self.out, "  setb %al")?;
+                        } else {
+                            writeln!(self.out, "  setl %al")?;
+                        }
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },
                     BinaryOp::Le => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        writeln!(self.out, "  setle %al")?;
+                        if lhs_ty.is_unsigned_integer() {
+                            writeln!(self.out, "  setbe %al")?;
+                        } else {
+                            writeln!(self.out, "  setle %al")?;
+                        }
                         writeln!(self.out, "  movzb %al, %rax")?;
                     },
                 }
@@ -808,7 +848,11 @@ impl<'a> Codegen<'a> {
         writeln!(
             self.out,
             "  {} (%rax), {}",
-            width.signed_load_mnemonic(),
+            if ty.is_unsigned_integer() {
+                width.unsigned_load_mnemonic()
+            } else {
+                width.signed_load_mnemonic()
+            },
             width.signed_load_dest_reg()
         )?;
         Ok(())

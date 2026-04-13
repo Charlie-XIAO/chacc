@@ -60,6 +60,7 @@ impl Fixture {
 
     fn main(&mut self) {
         self.line("int main() {");
+        self.line("  int __n_failed = 0;");
     }
 
     fn assert<E, A>(&mut self, expected: E, actual: A)
@@ -67,10 +68,13 @@ impl Fixture {
         E: std::fmt::Display,
         A: std::fmt::Display,
     {
-        self.line(&format!("  ASSERT({expected}, {actual});"));
+        self.line(&format!("  __n_failed += ASSERT({expected}, {actual});"));
     }
 
     fn finish(&mut self) {
+        self.line("  if (__n_failed > 0) {");
+        self.line("    return 1;");
+        self.line("  }");
         self.line("  return 0;");
         self.line("}");
     }
@@ -304,6 +308,36 @@ fn test_cast() {
     f.assert(5, "({ int x=5; long y=(long)&x; *(int*)y; })");
 
     f.line("(void)1;");
+
+    f.assert(-1, "(char)255");
+    f.assert(-1, "(signed char)255");
+    f.assert(255, "(unsigned char)255");
+    f.assert(-1, "(short)65535");
+    f.assert(65535, "(unsigned short)65535");
+    f.assert(-1, "(int)0xffffffff");
+    f.assert(1, "(unsigned)0xffffffff > 0");
+
+    f.assert(1, "-1<1");
+    f.assert(0, "-1<(unsigned)1");
+    f.assert(254, "(char)127+(char)127");
+    f.assert(65534, "(short)32767+(short)32767");
+    f.assert(-1, "-1>>1");
+    f.assert(1, "(unsigned long)-1 > 0");
+    f.assert(2147483647, "((unsigned)-1)>>1");
+    f.assert(-50, "(-100)/2");
+    f.assert(1, "((unsigned)-100)/2 == 2147483598");
+    f.assert(1, "((unsigned long)-100)/2 == 9223372036854775758");
+    f.assert(0, "((long)-1)/(unsigned)100");
+    f.assert(-2, "(-100)%7");
+    f.assert(2, "((unsigned)-100)%7");
+    f.assert(6, "((unsigned long)-100)%9");
+
+    f.assert(65535, "(int)(unsigned short)65535");
+    f.assert(65535, "({ unsigned short x = 65535; x; })");
+    f.assert(65535, "({ unsigned short x = 65535; (int)x; })");
+
+    f.assert(-1, "({ typedef short T; T x = 65535; (int)x; })");
+    f.assert(65535, "({ typedef unsigned short T; T x = 65535; (int)x; })");
 
     f.finish();
     f.run("cast");
@@ -549,6 +583,10 @@ fn test_function() {
     f.line("_Bool true_fn();");
     f.line("char char_fn();");
     f.line("short short_fn();");
+    f.line("unsigned char uchar_fn();");
+    f.line("unsigned short ushort_fn();");
+    f.line("signed char schar_fn();");
+    f.line("signed short sshort_fn();");
 
     f.line("typedef struct {int gp_offset; int fp_offset; void *overflow_arg_area; void *reg_save_area;} __va_elem;");
     f.line("typedef __va_elem va_list[1];");
@@ -602,6 +640,10 @@ fn test_function() {
     f.assert(0, "false_fn()");
     f.assert(3, "char_fn()");
     f.assert(5, "short_fn()");
+    f.assert(251, "uchar_fn()");
+    f.assert(65528, "ushort_fn()");
+    f.assert(-5, "schar_fn()");
+    f.assert(-8, "sshort_fn()");
 
     f.assert(6, "add_all(3,1,2,3)");
     f.assert(5, "add_all(4,1,2,3,-1)");
@@ -901,24 +943,44 @@ fn test_sizeof() {
 
     f.assert(1, "sizeof(char)");
     f.assert(1, "sizeof(signed char)");
+    f.assert(1, "sizeof(unsigned char)");
 
     f.assert(2, "sizeof(short)");
     f.assert(2, "sizeof(int short)");
     f.assert(2, "sizeof(short int)");
     f.assert(2, "sizeof(signed short)");
     f.assert(2, "sizeof(int short signed)");
+    f.assert(2, "sizeof(unsigned short)");
+    f.assert(2, "sizeof(int short unsigned)");
 
     f.assert(4, "sizeof(int)");
     f.assert(4, "sizeof(signed int)");
     f.assert(4, "sizeof(signed)");
+    f.assert(4, "sizeof(unsigned int)");
+    f.assert(4, "sizeof(unsigned)");
 
     f.assert(8, "sizeof(long)");
     f.assert(8, "sizeof(signed long)");
     f.assert(8, "sizeof(signed long int)");
+    f.assert(8, "sizeof(unsigned long)");
+    f.assert(8, "sizeof(unsigned long int)");
 
     f.assert(8, "sizeof(long long)");
     f.assert(8, "sizeof(signed long long)");
     f.assert(8, "sizeof(signed long long int)");
+    f.assert(8, "sizeof(unsigned long long)");
+    f.assert(8, "sizeof(unsigned long long int)");
+
+    f.assert(1, "sizeof((char)1)");
+    f.assert(2, "sizeof((short)1)");
+    f.assert(4, "sizeof((int)1)");
+    f.assert(8, "sizeof((long)1)");
+
+    f.assert(4, "sizeof((char)1 + (char)1)");
+    f.assert(4, "sizeof((short)1 + (short)1)");
+    f.assert(4, "sizeof(1?2:3)");
+    f.assert(4, "sizeof(1?(short)2:(char)3)");
+    f.assert(8, "sizeof(1?(long)2:(char)3)");
 
     f.finish();
     f.run("sizeof");

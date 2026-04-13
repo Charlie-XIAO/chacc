@@ -1,5 +1,6 @@
 //! The type system for expressions.
 
+use std::cmp::Ordering;
 use std::rc::Rc;
 
 use smol_str::SmolStr;
@@ -18,9 +19,13 @@ pub enum Type {
     Void,
     Bool,
     Char,
+    UChar,
     Short,
+    UShort,
     Int,
+    UInt,
     Long,
+    ULong,
     Enum,
     /// A non-trivial type stored in [`TypeStore`].
     Stored(TypeId),
@@ -214,10 +219,10 @@ impl TypeStore {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,
-            Type::Bool | Type::Char => 1,
-            Type::Short => 2,
-            Type::Int | Type::Enum => 4,
-            Type::Long => 8,
+            Type::Bool | Type::Char | Type::UChar => 1,
+            Type::Short | Type::UShort => 2,
+            Type::Int | Type::UInt | Type::Enum => 4,
+            Type::Long | Type::ULong => 8,
             Type::Stored(_) => self.get(ty).unwrap().align,
         }
     }
@@ -232,10 +237,10 @@ impl TypeStore {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,
-            Type::Bool | Type::Char => 1,
-            Type::Short => 2,
-            Type::Int | Type::Enum => 4,
-            Type::Long => 8,
+            Type::Bool | Type::Char | Type::UChar => 1,
+            Type::Short | Type::UShort => 2,
+            Type::Int | Type::UInt | Type::Enum => 4,
+            Type::Long | Type::ULong => 8,
             Type::Stored(_) => self.get(ty).unwrap().size,
         }
     }
@@ -345,7 +350,7 @@ impl TypeStore {
     /// pointer, it must already have been canonicalized to `lhs` by the
     /// caller. This method also does not perform pointer legality checks and
     /// the caller is responsible for those beforehand.
-    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
+    pub fn coerce(&mut self, mut lhs: Type, mut rhs: Type) -> Type {
         debug_assert!(
             self.base(lhs).is_some() || self.base(rhs).is_none(),
             "pointer coercion expects any lone pointer operand to be lhs",
@@ -354,10 +359,24 @@ impl TypeStore {
         if let Some(base) = self.base(lhs) {
             return self.ptr(base);
         }
-        if self.size(lhs) == 8 || self.size(rhs) == 8 {
-            return Type::Long;
+
+        if self.size(lhs) < 4 {
+            lhs = Type::Int;
         }
-        Type::Int
+        if self.size(rhs) < 4 {
+            rhs = Type::Int;
+        }
+
+        match self.size(lhs).cmp(&self.size(rhs)) {
+            Ordering::Less => return rhs,
+            Ordering::Greater => return lhs,
+            _ => {},
+        }
+
+        if rhs.is_unsigned_integer() {
+            return rhs;
+        }
+        lhs
     }
 
     /// Merge two declarations of the same type.
@@ -393,6 +412,11 @@ impl Type {
         matches!(
             self,
             Type::Bool | Type::Char | Type::Short | Type::Int | Type::Long | Type::Enum
-        )
+        ) || self.is_unsigned_integer()
+    }
+
+    /// Return whether the type is an unsigned integer type.
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(self, Type::UChar | Type::UShort | Type::UInt | Type::ULong)
     }
 }
