@@ -3766,24 +3766,58 @@ impl<'a> Parser<'a> {
                     if rhs == 0 {
                         return Err(self.source.error_at(node.offset, "division by zero"));
                     }
-                    self.eval(lhs)?.wrapping_div(rhs)
+                    let lhs = self.eval(lhs)?;
+                    if ty.is_unsigned_integer() {
+                        ((lhs as u64) / (rhs as u64)) as i64
+                    } else {
+                        lhs.wrapping_div(rhs)
+                    }
                 },
                 BinaryOp::Mod => {
                     let rhs = self.eval(rhs)?;
                     if rhs == 0 {
                         return Err(self.source.error_at(node.offset, "division by zero"));
                     }
-                    self.eval(lhs)?.wrapping_rem(rhs)
+                    let lhs = self.eval(lhs)?;
+                    if ty.is_unsigned_integer() {
+                        ((lhs as u64) % (rhs as u64)) as i64
+                    } else {
+                        lhs.wrapping_rem(rhs)
+                    }
                 },
                 BinaryOp::BitAnd => self.eval(lhs)? & self.eval(rhs)?,
                 BinaryOp::BitOr => self.eval(lhs)? | self.eval(rhs)?,
                 BinaryOp::BitXor => self.eval(lhs)? ^ self.eval(rhs)?,
                 BinaryOp::BitLeftShift => self.eval(lhs)?.wrapping_shl(self.eval(rhs)? as _),
-                BinaryOp::BitRightShift => self.eval(lhs)?.wrapping_shr(self.eval(rhs)? as _),
+                BinaryOp::BitRightShift => {
+                    let lhs = self.eval(lhs)?;
+                    let rhs = self.eval(rhs)?;
+                    if ty.is_unsigned_integer() && self.types.size(ty) == 8 {
+                        ((lhs as u64) >> rhs) as i64
+                    } else {
+                        lhs.wrapping_shr(rhs as _)
+                    }
+                },
                 BinaryOp::Eq => (self.eval(lhs)? == self.eval(rhs)?) as _,
                 BinaryOp::Ne => (self.eval(lhs)? != self.eval(rhs)?) as _,
-                BinaryOp::Lt => (self.eval(lhs)? < self.eval(rhs)?) as _,
-                BinaryOp::Le => (self.eval(lhs)? <= self.eval(rhs)?) as _,
+                BinaryOp::Lt => {
+                    let lhs_val = self.eval(lhs)?;
+                    let rhs_val = self.eval(rhs)?;
+                    if lhs.expect_ty().is_unsigned_integer() {
+                        ((lhs_val as u64) < (rhs_val as u64)) as _
+                    } else {
+                        (lhs_val < rhs_val) as _
+                    }
+                },
+                BinaryOp::Le => {
+                    let lhs_val = self.eval(lhs)?;
+                    let rhs_val = self.eval(rhs)?;
+                    if lhs.expect_ty().is_unsigned_integer() {
+                        ((lhs_val as u64) <= (rhs_val as u64)) as _
+                    } else {
+                        (lhs_val <= rhs_val) as _
+                    }
+                },
             },
             NodeKind::Conditional {
                 cond,
@@ -3801,8 +3835,11 @@ impl<'a> Parser<'a> {
                 match ty {
                     Type::Bool => (val != 0) as _,
                     Type::Char => val as i8 as _,
+                    Type::UChar => val as u8 as _,
                     Type::Short => val as i16 as _,
+                    Type::UShort => val as u16 as _,
                     Type::Int => val as i32 as _,
+                    Type::UInt => val as u32 as _,
                     _ => val,
                 }
             },

@@ -419,6 +419,15 @@ fn test_constexpr() {
     f.assert(12, "({ char x[(int*)16-1]; sizeof(x); })");
     f.assert(3, "({ char x[(int*)16-(int*)4]; sizeof(x); })");
 
+    f.assert(4, "({ char x[(-1>>31)+5]; sizeof(x); })");
+    f.assert(255, "({ char x[(unsigned char)0xffffffff]; sizeof(x); })");
+    f.assert(0x800f, "({ char x[(unsigned short)0xffff800f]; sizeof(x); })");
+    f.assert(1, "({ char x[(unsigned int)0xfffffffffff>>31]; sizeof(x); })");
+    f.assert(1, "({ char x[(long)-1/((long)1<<62)+1]; sizeof(x); })");
+    f.assert(4, "({ char x[(unsigned long)-1/((long)1<<62)+1]; sizeof(x); })");
+    f.assert(1, "({ char x[(unsigned)1<-1]; sizeof(x); })");
+    f.assert(1, "({ char x[(unsigned)1<=-1]; sizeof(x); })");
+
     f.finish();
     f.run("constexpr");
 }
