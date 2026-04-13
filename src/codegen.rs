@@ -728,7 +728,7 @@ impl<'a> Codegen<'a> {
                     BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
                     BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
                     BinaryOp::Div | BinaryOp::Mod => {
-                        if node.expect_ty().is_unsigned_integer() {
+                        if self.types.uses_unsigned_arith(node.expect_ty()) {
                             writeln!(self.out, "  mov $0, {rdx}")?;
                             writeln!(self.out, "  div {rdi}")?;
                         } else {
@@ -748,7 +748,7 @@ impl<'a> Codegen<'a> {
                     },
                     BinaryOp::BitRightShift => {
                         writeln!(self.out, "  mov {rdi}, {rcx}")?;
-                        if lhs_ty.is_unsigned_integer() {
+                        if self.types.uses_unsigned_arith(lhs_ty) {
                             writeln!(self.out, "  shr %cl, {acc}")?;
                         } else {
                             writeln!(self.out, "  sar %cl, {acc}")?;
@@ -766,7 +766,7 @@ impl<'a> Codegen<'a> {
                     },
                     BinaryOp::Lt => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        if lhs_ty.is_unsigned_integer() {
+                        if self.types.uses_unsigned_arith(lhs_ty) {
                             writeln!(self.out, "  setb %al")?;
                         } else {
                             writeln!(self.out, "  setl %al")?;
@@ -775,7 +775,7 @@ impl<'a> Codegen<'a> {
                     },
                     BinaryOp::Le => {
                         writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        if lhs_ty.is_unsigned_integer() {
+                        if self.types.uses_unsigned_arith(lhs_ty) {
                             writeln!(self.out, "  setbe %al")?;
                         } else {
                             writeln!(self.out, "  setle %al")?;
@@ -848,7 +848,7 @@ impl<'a> Codegen<'a> {
         writeln!(
             self.out,
             "  {} (%rax), {}",
-            if ty.is_unsigned_integer() {
+            if self.types.uses_unsigned_arith(ty) {
                 width.unsigned_load_mnemonic()
             } else {
                 width.signed_load_mnemonic()

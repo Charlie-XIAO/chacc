@@ -300,6 +300,7 @@ fn test_arith() {
 
     f.assert(15, "(char *)0xffffffffffffffff - (char *)0xfffffffffffffff0");
     f.assert(-15, "(char *)0xfffffffffffffff0 - (char *)0xffffffffffffffff");
+    f.assert(1, "(void *)0xffffffffffffffff > (void *)0");
 
     f.finish();
     f.run("arith");

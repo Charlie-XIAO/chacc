@@ -309,6 +309,16 @@ impl TypeStore {
         )
     }
 
+    /// Return whether unsigned machine arithmetic should be used for the type.
+    ///
+    /// This includes unsigned integer types and pointer types.
+    pub fn uses_unsigned_arith(&self, ty: Type) -> bool {
+        ty.is_unsigned_integer()
+            || self
+                .get(ty)
+                .is_some_and(|data| matches!(data.kind, TypeKind::Ptr(_)))
+    }
+
     /// Return whether two types are the same.
     ///
     /// - Trivial types are compared directly.
@@ -409,10 +419,11 @@ impl TypeStore {
 impl Type {
     /// Return whether the type is an integer type.
     pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Type::Bool | Type::Char | Type::Short | Type::Int | Type::Long | Type::Enum
-        ) || self.is_unsigned_integer()
+        self.is_unsigned_integer()
+            || matches!(
+                self,
+                Type::Bool | Type::Char | Type::Short | Type::Int | Type::Long | Type::Enum
+            )
     }
 
     /// Return whether the type is an unsigned integer type.
