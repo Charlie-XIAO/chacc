@@ -26,6 +26,8 @@ pub struct Function {
     pub body: Option<Stmt>,
     /// Parameter local IDs in declaration order.
     pub param_locals: Vec<usize>,
+    /// The hidden `__va_area__` local for variadic functions.
+    pub va_area_local: Option<usize>,
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
     pub is_static: bool,

@@ -6,6 +6,5 @@
 void assert(int expected, int actual, char *code);
 int strcmp(char *lhs, char *rhs);
 int memcmp(char *lhs, char *rhs, int n);
-int sprintf(char *buf, char *fmt, ...);
 
 #endif // TEST_H_

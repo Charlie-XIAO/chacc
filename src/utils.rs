@@ -3,6 +3,13 @@
 /// The maximum number of function arguments supported.
 pub const MAX_FUNC_PARAMS: usize = 6;
 
+/// The byte size of the hidden `__va_area__` for variadic functions.
+///
+/// - 24 bytes for the `__va_elem` bookkeeping struct;
+/// - 6 general-purpose arg registers * 8 bytes;
+/// - 8 floating-point arg registers * 8 bytes.
+pub const VA_AREA_SIZE: usize = 136;
+
 /// Round `n` up to the nearest multiple of `align`.
 pub const fn align_to(n: i64, align: i64) -> i64 {
     debug_assert!(align > 0, "align must be positive");

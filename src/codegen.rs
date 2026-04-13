@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::Source;
 use crate::types::{Type, TypeStore};
-use crate::utils::{MAX_FUNC_PARAMS, align_to};
+use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE, align_to};
 
 const GP_ARG_REGS_8: [&str; MAX_FUNC_PARAMS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 const GP_ARG_REGS_16: [&str; MAX_FUNC_PARAMS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
@@ -268,6 +268,7 @@ impl<'a> Codegen<'a> {
             name,
             body,
             param_locals,
+            va_area_local,
             mut locals,
             is_static,
             ..
@@ -290,6 +291,34 @@ impl<'a> Codegen<'a> {
         writeln!(self.out, "  push %rbp")?;
         writeln!(self.out, "  mov %rsp, %rbp")?;
         writeln!(self.out, "  sub ${stack_size}, %rsp")?;
+
+        if let Some(va_area_id) = va_area_local {
+            let offset = locals[va_area_id].offset;
+            let gp_offset = (param_locals.len() * 8) as i64;
+            debug_assert_eq!(self.types.size(locals[va_area_id].ty), VA_AREA_SIZE as i64);
+
+            // __va_elem
+            writeln!(self.out, "  movl ${gp_offset}, {offset}(%rbp)")?;
+            writeln!(self.out, "  movl $0, {}(%rbp)", offset + 4)?;
+            writeln!(self.out, "  movq %rbp, {}(%rbp)", offset + 16)?;
+            writeln!(self.out, "  addq ${}, {}(%rbp)", offset + 24, offset + 16)?;
+
+            // __va_elem.reg_save_area
+            writeln!(self.out, "  movq %rdi, {}(%rbp)", offset + 24)?;
+            writeln!(self.out, "  movq %rsi, {}(%rbp)", offset + 32)?;
+            writeln!(self.out, "  movq %rdx, {}(%rbp)", offset + 40)?;
+            writeln!(self.out, "  movq %rcx, {}(%rbp)", offset + 48)?;
+            writeln!(self.out, "  movq %r8, {}(%rbp)", offset + 56)?;
+            writeln!(self.out, "  movq %r9, {}(%rbp)", offset + 64)?;
+            writeln!(self.out, "  movsd %xmm0, {}(%rbp)", offset + 72)?;
+            writeln!(self.out, "  movsd %xmm1, {}(%rbp)", offset + 80)?;
+            writeln!(self.out, "  movsd %xmm2, {}(%rbp)", offset + 88)?;
+            writeln!(self.out, "  movsd %xmm3, {}(%rbp)", offset + 96)?;
+            writeln!(self.out, "  movsd %xmm4, {}(%rbp)", offset + 104)?;
+            writeln!(self.out, "  movsd %xmm5, {}(%rbp)", offset + 112)?;
+            writeln!(self.out, "  movsd %xmm6, {}(%rbp)", offset + 120)?;
+            writeln!(self.out, "  movsd %xmm7, {}(%rbp)", offset + 128)?;
+        }
 
         for (i, param_id) in param_locals.iter().enumerate() {
             let local = &locals[*param_id];

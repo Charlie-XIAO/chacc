@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
 use crate::types::{ArrayType, Member, StructOrUnionType, Type, TypeStore};
-use crate::utils::MAX_FUNC_PARAMS;
+use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 
 /// Declaration of a function parameter.
 struct Parameter {
@@ -1125,9 +1125,10 @@ impl<'a> Parser<'a> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty)?;
-        if !self.types.is_func(declarator.ty) {
+        let Some(func_ty) = self.types.as_func(declarator.ty) else {
             return Err(self.error_current("expected a function"));
-        }
+        };
+        let is_variadic = func_ty.is_variadic;
 
         let func_id =
             self.declare_function(declarator.name.clone(), declarator.ty, declarator.offset)?;
@@ -1146,9 +1147,19 @@ impl<'a> Parser<'a> {
         let body_offset = self.current().offset;
         self.locals.clear();
         self.enter_scope();
+
         let param_locals = self.create_param_locals(declarator.params);
+
+        let va_area_local = if is_variadic {
+            let ty = self.types.array(Type::Char, Some(VA_AREA_SIZE));
+            Some(self.create_local("__va_area__", ty, None))
+        } else {
+            None
+        };
+
         self.skip_punct("{")?;
         let mut body = Stmt::block(self.parse_compound_stmt()?, body_offset);
+
         self.leave_scope();
 
         {
@@ -1160,6 +1171,7 @@ impl<'a> Parser<'a> {
         let function = &mut self.functions[func_id];
         function.body = Some(body);
         function.param_locals = param_locals;
+        function.va_area_local = va_area_local;
         function.locals = std::mem::take(&mut self.locals);
         function.is_static = is_static;
 
@@ -2848,8 +2860,8 @@ impl<'a> Parser<'a> {
 
     /// Create a new function declaration.
     ///
-    /// If the function is also defined (i.e., has a body), it needs to be
-    /// filled in later, looked up via the returned ID.
+    /// If the function is also defined, relevant fields need to be filled in
+    /// later, looked up via the returned ID.
     fn create_function(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
         self.disallow_speculation();
 
@@ -2859,6 +2871,7 @@ impl<'a> Parser<'a> {
             ty,
             body: None,
             param_locals: Default::default(),
+            va_area_local: None,
             locals: Default::default(),
             is_static: false,
         });
