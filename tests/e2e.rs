@@ -850,6 +850,67 @@ fn test_literal() {
     f.assert(47, "0b101111");
     f.assert(47, "0B101111");
 
+    f.assert(4, "sizeof(0)");
+    f.assert(8, "sizeof(0L)");
+    f.assert(8, "sizeof(0LU)");
+    f.assert(8, "sizeof(0UL)");
+    f.assert(8, "sizeof(0LL)");
+    f.assert(8, "sizeof(0LLU)");
+    f.assert(8, "sizeof(0Ull)");
+    f.assert(8, "sizeof(0l)");
+    f.assert(8, "sizeof(0ll)");
+    f.assert(8, "sizeof(0x0L)");
+    f.assert(8, "sizeof(0b0L)");
+    f.assert(4, "sizeof(2147483647)");
+    f.assert(8, "sizeof(2147483648)");
+    f.assert(-1, "0xffffffffffffffff");
+    f.assert(8, "sizeof(0xffffffffffffffff)");
+    f.assert(4, "sizeof(4294967295U)");
+    f.assert(8, "sizeof(4294967296U)");
+
+    f.assert(3, "-1U>>30");
+    f.assert(3, "-1Ul>>62");
+    f.assert(3, "-1ull>>62");
+
+    f.assert(1, "0xffffffffffffffffl>>63");
+    f.assert(1, "0xffffffffffffffffll>>63");
+
+    f.assert(-1, "18446744073709551615");
+    f.assert(8, "sizeof(18446744073709551615)");
+    f.assert(-1, "18446744073709551615>>63");
+
+    f.assert(-1, "0xffffffffffffffff");
+    f.assert(8, "sizeof(0xffffffffffffffff)");
+    f.assert(1, "0xffffffffffffffff>>63");
+
+    f.assert(-1, "01777777777777777777777");
+    f.assert(8, "sizeof(01777777777777777777777)");
+    f.assert(1, "01777777777777777777777>>63");
+
+    f.assert(-1, "0b1111111111111111111111111111111111111111111111111111111111111111");
+    f.assert(8, "sizeof(0b1111111111111111111111111111111111111111111111111111111111111111)");
+    f.assert(1, "0b1111111111111111111111111111111111111111111111111111111111111111>>63");
+
+    f.assert(8, "sizeof(2147483648)");
+    f.assert(4, "sizeof(2147483647)");
+
+    f.assert(8, "sizeof(0x1ffffffff)");
+    f.assert(4, "sizeof(0xffffffff)");
+    f.assert(1, "0xffffffff>>31");
+
+    f.assert(8, "sizeof(040000000000)");
+    f.assert(4, "sizeof(037777777777)");
+    f.assert(1, "037777777777>>31");
+
+    f.assert(8, "sizeof(0b111111111111111111111111111111111)");
+    f.assert(4, "sizeof(0b11111111111111111111111111111111)");
+    f.assert(1, "0b11111111111111111111111111111111>>31");
+
+    f.assert(-1, "1 << 31 >> 31");
+    f.assert(-1, "01 << 31 >> 31");
+    f.assert(-1, "0x1 << 31 >> 31");
+    f.assert(-1, "0b1 << 31 >> 31");
+
     f.finish();
     f.run("literal");
 }

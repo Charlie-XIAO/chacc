@@ -1829,7 +1829,7 @@ impl<'a> Parser<'a> {
             .take(len)
             .map(|&byte| Initializer {
                 ty: Type::Char,
-                kind: InitializerKind::Expr(Node::num(byte as i8 as _, offset, false)),
+                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::Int, offset)),
             })
             .collect();
 
@@ -2359,14 +2359,14 @@ impl<'a> Parser<'a> {
         if self.current().is_punct("++") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_add(unary, Node::num(1, offset, false), offset)?;
+            let binary = self.new_add(unary, Node::num(1, Type::Int, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
         if self.current().is_punct("--") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_sub(unary, Node::num(1, offset, false), offset)?;
+            let binary = self.new_sub(unary, Node::num(1, Type::Int, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
@@ -2493,7 +2493,7 @@ impl<'a> Parser<'a> {
                             .source
                             .error_at(offset, "cannot apply 'sizeof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.size(ty), offset, false));
+                    return Ok(Node::num(self.types.size(ty), Type::ULong, offset));
                 }
 
                 self.pos = pos;
@@ -2502,7 +2502,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.size(operand.expect_ty());
-            return Ok(Node::num(size, offset, false));
+            return Ok(Node::num(size, Type::ULong, offset));
         }
 
         if self.current().is_keyword(Keyword::Alignof) {
@@ -2522,7 +2522,7 @@ impl<'a> Parser<'a> {
                             .source
                             .error_at(offset, "cannot apply '_Alignof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.align(ty), offset, false));
+                    return Ok(Node::num(self.types.align(ty), Type::ULong, offset));
                 }
 
                 self.pos = pos;
@@ -2531,7 +2531,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.align(operand.expect_ty());
-            return Ok(Node::num(size, offset, false));
+            return Ok(Node::num(size, Type::ULong, offset));
         }
 
         if let Some(name) = self.current().as_ident() {
@@ -2549,7 +2549,7 @@ impl<'a> Parser<'a> {
                     Node::entity(EntityRef::Global(global_id), offset)
                 },
                 Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
-                Some(OrdinaryIdent::Enumerator(val)) => Node::num(val, offset, false),
+                Some(OrdinaryIdent::Enumerator(val)) => Node::num(val, Type::Int, offset),
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
             return Ok(node);
@@ -2572,9 +2572,9 @@ impl<'a> Parser<'a> {
             return Ok(Node::entity(EntityRef::Global(global_id), offset));
         }
 
-        if let Some(value) = self.current().as_num() {
+        if let Some((num, ty)) = self.current().as_num() {
             self.advance();
-            return Ok(Node::num(value, offset, false));
+            return Ok(Node::num(num, ty, offset));
         }
 
         Err(self.error_current("expected an expression"))
@@ -2984,7 +2984,7 @@ impl<'a> Parser<'a> {
         let scaled_rhs = Node::binary(
             BinaryOp::Mul,
             rhs,
-            Node::num(base_size, offset, true),
+            Node::num(base_size, Type::ULong, offset),
             offset,
         );
         let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
@@ -3012,7 +3012,7 @@ impl<'a> Parser<'a> {
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
                 rhs,
-                Node::num(base_size, offset, true),
+                Node::num(base_size, Type::ULong, offset),
                 offset,
             );
             let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
@@ -3025,11 +3025,11 @@ impl<'a> Parser<'a> {
         {
             let base_size = self.types.size(base_ty);
             let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            diff.ty = Some(Type::Int);
+            diff.ty = Some(Type::Long);
             let node = Node::binary(
                 BinaryOp::Div,
                 diff,
-                Node::num(base_size, offset, true),
+                Node::num(base_size, Type::ULong, offset),
                 offset,
             );
             return Ok(node);
@@ -3089,11 +3089,11 @@ impl<'a> Parser<'a> {
         let addend = if is_inc { 1 } else { -1 };
 
         // node += addend
-        let binary = self.new_add(node, Node::num(addend, offset, false), offset)?;
+        let binary = self.new_add(node, Node::num(addend, Type::Long, offset), offset)?;
         let assign = self.new_compound_assign(binary, offset)?;
 
         // (node += addend) - addend
-        let mut post = self.new_add(assign, Node::num(-addend, offset, false), offset)?;
+        let mut post = self.new_add(assign, Node::num(-addend, Type::Long, offset), offset)?;
         self.infer_type(&mut post)?;
 
         // (typeof node)((node += addend) - addend)
@@ -3168,7 +3168,7 @@ impl<'a> Parser<'a> {
                 for step in path.iter() {
                     lhs = match step {
                         InitializerStep::Index(index) => {
-                            let index = Node::num(*index as _, offset, false);
+                            let index = Node::num(*index as _, Type::ULong, offset);
                             Node::deref(self.new_add(lhs, index, offset)?, offset)
                         },
                         InitializerStep::Member(member) => {

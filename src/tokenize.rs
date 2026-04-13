@@ -6,6 +6,7 @@ use smol_str::{SmolStr, format_smolstr};
 
 use crate::error::{Error, Result};
 use crate::source::Source;
+use crate::types::Type;
 
 /// Reserved keywords recognized by the tokenizer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumString)]
@@ -54,8 +55,8 @@ pub enum TokenKind<'a> {
     Keyword(Keyword),
     /// A punctuator with the given lexeme.
     Punct(&'a str),
-    /// A numeric literal with the given value.
-    Num(i64),
+    /// A numeric literal with the given value and type.
+    Num(i64, Type),
     /// A string literal with the given content, including the null terminator.
     Str(Rc<[u8]>),
     /// A sentinel token representing the end of the input.
@@ -96,10 +97,10 @@ impl<'a> Token<'a> {
     }
 
     /// Construct a numeric literal token.
-    pub fn num(offset: usize, value: i64) -> Self {
+    pub fn num(offset: usize, value: i64, ty: Type) -> Self {
         Self {
             offset,
-            kind: TokenKind::Num(value),
+            kind: TokenKind::Num(value, ty),
         }
     }
 
@@ -170,9 +171,9 @@ impl<'a> Token<'a> {
     }
 
     /// Return the value if this is a numeric token.
-    pub fn as_num(&self) -> Option<i64> {
+    pub fn as_num(&self) -> Option<(i64, Type)> {
         match self.kind {
-            TokenKind::Num(value) => Some(value),
+            TokenKind::Num(value, ty) => Some((value, ty)),
             _ => None,
         }
     }
@@ -312,15 +313,96 @@ impl<'a> Tokenizer<'a> {
             .count();
         let end = start + len;
 
-        let num = i64::from_str_radix(&content[start..end], radix).map_err(|e| {
-            self.error_current(format_smolstr!("invalid numeric literal: {:?}", e.kind()))
-        })?;
+        let num = u64::from_str_radix(&content[start..end], radix)
+            .map_err(|e| self.error_current(format_smolstr!("invalid numeric literal: {e}")))?;
 
+        let suffix = &content[end..];
+        let mut l = false;
+        let mut u = false;
+
+        let suffix_len = if suffix.starts_with("LLU")
+            || suffix.starts_with("LLu")
+            || suffix.starts_with("llU")
+            || suffix.starts_with("llu")
+            || suffix.starts_with("ULL")
+            || suffix.starts_with("Ull")
+            || suffix.starts_with("uLL")
+            || suffix.starts_with("ull")
+        {
+            l = true;
+            u = true;
+            3
+        } else if suffix.starts_with("LU")
+            || suffix.starts_with("Lu")
+            || suffix.starts_with("lU")
+            || suffix.starts_with("lu")
+            || suffix.starts_with("UL")
+            || suffix.starts_with("Ul")
+            || suffix.starts_with("uL")
+            || suffix.starts_with("ul")
+        {
+            l = true;
+            u = true;
+            2
+        } else if suffix.starts_with("LL") || suffix.starts_with("ll") {
+            l = true;
+            2
+        } else if suffix.starts_with("L") || suffix.starts_with("l") {
+            l = true;
+            1
+        } else if suffix.starts_with("U") || suffix.starts_with("u") {
+            u = true;
+            1
+        } else {
+            0
+        };
+
+        let end = end + suffix_len;
         if bytes.get(end).is_some_and(|&b| b.is_ascii_alphanumeric()) {
             return Err(self.source.error_at(end, "invalid digit"));
         }
 
-        self.tokens.push(Token::num(self.pos, num));
+        let ty = if radix == 10 {
+            if l && u {
+                Type::ULong
+            } else if l {
+                Type::Long
+            } else if u {
+                if num > u32::MAX as _ {
+                    Type::ULong
+                } else {
+                    Type::UInt
+                }
+            } else if num > i32::MAX as _ {
+                Type::Long
+            } else {
+                Type::Int
+            }
+        } else if l && u {
+            Type::ULong
+        } else if l {
+            if num > i64::MAX as _ {
+                Type::ULong
+            } else {
+                Type::Long
+            }
+        } else if u {
+            if num > u32::MAX as _ {
+                Type::ULong
+            } else {
+                Type::UInt
+            }
+        } else if num > i64::MAX as _ {
+            Type::ULong
+        } else if num > u32::MAX as _ {
+            Type::Long
+        } else if num > i32::MAX as _ {
+            Type::UInt
+        } else {
+            Type::Int
+        };
+
+        self.tokens.push(Token::num(self.pos, num as _, ty));
         self.pos = end;
         Ok(())
     }
@@ -391,7 +473,7 @@ impl<'a> Tokenizer<'a> {
             .filter(|&pos| bytes[i + pos] == b'\'')
         {
             Some(0) => {
-                self.tokens.push(Token::num(self.pos, ch as _));
+                self.tokens.push(Token::num(self.pos, ch as _, Type::Int));
                 self.pos = i + 1; // Skip past closing quote
                 Ok(())
             },

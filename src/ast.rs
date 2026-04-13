@@ -210,17 +210,7 @@ pub enum NodeKind {
 
 impl Node {
     /// Construct a numeric literal node.
-    ///
-    /// This will automatically infer the node type. If `force_long` is true,
-    /// the type of the node will always be `long`. Otherwise, it will be `int`
-    /// if the value fits in an [`i32`] and otherwise `long`.
-    pub fn num(value: i64, offset: usize, force_long: bool) -> Self {
-        let ty = if !force_long && i32::try_from(value).is_ok() {
-            Type::Int
-        } else {
-            Type::Long
-        };
-
+    pub fn num(value: i64, ty: Type, offset: usize) -> Self {
         Self {
             offset,
             ty: Some(ty),
