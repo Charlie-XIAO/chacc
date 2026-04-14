@@ -682,7 +682,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(lhs)?;
                 self.gen_expr(rhs)?;
             },
-            NodeKind::LogicalAnd { lhs, rhs } => {
+            NodeKind::And { lhs, rhs } => {
                 let label = self.take_label();
                 self.gen_expr(lhs)?;
                 self.cmp_zero(lhs.expect_ty())?;
@@ -696,7 +696,7 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  mov $0, %rax")?;
                 writeln!(self.out, ".L.end.{label}:")?;
             },
-            NodeKind::LogicalOr { lhs, rhs } => {
+            NodeKind::Or { lhs, rhs } => {
                 let label = self.take_label();
                 self.gen_expr(lhs)?;
                 self.cmp_zero(lhs.expect_ty())?;
@@ -742,11 +742,11 @@ impl<'a> Codegen<'a> {
                     BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
                     BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
                     BinaryOp::BitXor => writeln!(self.out, "  xor {rdi}, {acc}")?,
-                    BinaryOp::BitLeftShift => {
+                    BinaryOp::BitShl => {
                         writeln!(self.out, "  mov {rdi}, {rcx}")?;
                         writeln!(self.out, "  shl %cl, {acc}")?;
                     },
-                    BinaryOp::BitRightShift => {
+                    BinaryOp::BitShr => {
                         writeln!(self.out, "  mov {rdi}, {rcx}")?;
                         if self.types.uses_unsigned_arith(lhs_ty) {
                             writeln!(self.out, "  shr %cl, {acc}")?;

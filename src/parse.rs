@@ -11,6 +11,7 @@ use crate::ast::{
     BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
     NodeKind, Program, Relocation, Stmt, StmtKind,
 };
+use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
@@ -51,7 +52,7 @@ enum InitializerStep {
 
 /// The compile-time value model for global initializers.
 enum GlobalInitValue {
-    Num(i64),
+    Num(ConstValue),
     /// Relocation against the given label with the given addend/offset.
     Reloc(SmolStr, i64),
 }
@@ -576,7 +577,9 @@ impl<'a> Parser<'a> {
                         let ty = self.parse_typename()?;
                         self.types.align(ty)
                     } else {
-                        self.parse_constexpr()?
+                        i64::try_from(self.parse_constexpr()?).map_err(|_| {
+                            self.error_current("constant expression is out of range")
+                        })?
                     }));
                     self.skip_punct(")")?;
                 },
@@ -1066,7 +1069,10 @@ impl<'a> Parser<'a> {
             let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
-                val = self.parse_constexpr()?;
+                val = i64::try_from(self.parse_constexpr()?).map_err(|_| {
+                    self.source
+                        .error_at(offset, "constant expression is out of range")
+                })?;
             }
 
             if let Some(ident) = self.find_ident_current(name) {
@@ -1356,7 +1362,10 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Case) {
             self.advance();
-            let val = self.parse_constexpr()?;
+            let val = i64::try_from(self.parse_constexpr()?).map_err(|_| {
+                self.source
+                    .error_at(offset, "constant expression is out of range")
+            })?;
             self.skip_punct(":")?;
             let label = self.unique_label();
             let body = self.parse_stmt()?;
@@ -2031,14 +2040,14 @@ impl<'a> Parser<'a> {
         if self.current().is_punct("<<=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitLeftShift, node, assign, offset);
+            let binary = Node::binary(BinaryOp::BitShl, node, assign, offset);
             return self.new_compound_assign(binary, offset);
         }
 
         if self.current().is_punct(">>=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitRightShift, node, assign, offset);
+            let binary = Node::binary(BinaryOp::BitShr, node, assign, offset);
             return self.new_compound_assign(binary, offset);
         }
 
@@ -2046,10 +2055,10 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <conditional> ::= <logical-or> ("?" <expr> ":" <conditional>)?
+    /// <conditional> ::= <or> ("?" <expr> ":" <conditional>)?
     /// ```
     fn parse_conditional(&mut self) -> Result<Node> {
-        let node = self.parse_logical_or()?;
+        let node = self.parse_or()?;
 
         if !self.current().is_punct("?") {
             return Ok(node);
@@ -2065,30 +2074,30 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <logical-or> ::= <logical-and> ("||" <logical-and>)*
+    /// <or> ::= <and> ("||" <and>)*
     /// ```
-    fn parse_logical_or(&mut self) -> Result<Node> {
-        let mut node = self.parse_logical_and()?;
+    fn parse_or(&mut self) -> Result<Node> {
+        let mut node = self.parse_and()?;
 
         while self.current().is_punct("||") {
             let offset = self.current().offset;
             self.advance();
-            node = Node::logical_or(node, self.parse_logical_and()?, offset);
+            node = Node::or(node, self.parse_and()?, offset);
         }
 
         Ok(node)
     }
 
     /// ```bnf
-    /// <logical-and> ::= <bit-or> ("&&" <bit-or>)*
+    /// <and> ::= <bit-or> ("&&" <bit-or>)*
     /// ```
-    fn parse_logical_and(&mut self) -> Result<Node> {
+    fn parse_and(&mut self) -> Result<Node> {
         let mut node = self.parse_bit_or()?;
 
         while self.current().is_punct("&&") {
             let offset = self.current().offset;
             self.advance();
-            node = Node::logical_and(node, self.parse_bit_or()?, offset);
+            node = Node::and(node, self.parse_bit_or()?, offset);
         }
 
         Ok(node)
@@ -2215,13 +2224,13 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct("<<") {
                 self.advance();
-                node = Node::binary(BinaryOp::BitLeftShift, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::BitShl, node, self.parse_add()?, offset);
                 continue;
             }
 
             if self.current().is_punct(">>") {
                 self.advance();
-                node = Node::binary(BinaryOp::BitRightShift, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::BitShr, node, self.parse_add()?, offset);
                 continue;
             }
 
@@ -2690,7 +2699,7 @@ impl<'a> Parser<'a> {
     ///
     /// Semantically, not every conditional expression is a valid constant
     /// expression, and that restriction is forced by [`Self::eval`].
-    fn parse_constexpr(&mut self) -> Result<i64> {
+    fn parse_constexpr(&mut self) -> Result<ConstValue> {
         let mut node = self.parse_conditional()?;
         self.eval(&mut node)
     }
@@ -3220,11 +3229,11 @@ impl<'a> Parser<'a> {
         relocations: &mut Vec<Relocation>,
         offset: usize,
     ) -> Result<()> {
-        let mut write = |val: i64, size| match size {
-            1 => bytes[offset] = val as _,
-            2 => bytes[offset..offset + 2].copy_from_slice(&(val as i16).to_ne_bytes()),
-            4 => bytes[offset..offset + 4].copy_from_slice(&(val as i32).to_ne_bytes()),
-            8 => bytes[offset..offset + 8].copy_from_slice(&val.to_ne_bytes()),
+        let mut write = |val: ConstValue, size| match size {
+            1 => bytes[offset] = val.bits() as _,
+            2 => bytes[offset..offset + 2].copy_from_slice(&(val.bits() as u16).to_ne_bytes()),
+            4 => bytes[offset..offset + 4].copy_from_slice(&(val.bits() as u32).to_ne_bytes()),
+            8 => bytes[offset..offset + 8].copy_from_slice(&val.bits().to_ne_bytes()),
             _ => unreachable!(),
         };
 
@@ -3431,7 +3440,7 @@ impl<'a> Parser<'a> {
                 self.infer_type(rhs)?;
                 rhs.expect_ty()
             },
-            NodeKind::LogicalAnd { lhs, rhs } | NodeKind::LogicalOr { lhs, rhs } => {
+            NodeKind::And { lhs, rhs } | NodeKind::Or { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
                 Type::Int // C logical operators give int 0/1 not bool
@@ -3449,8 +3458,8 @@ impl<'a> Parser<'a> {
                     | BinaryOp::BitAnd
                     | BinaryOp::BitOr
                     | BinaryOp::BitXor
-                    | BinaryOp::BitLeftShift
-                    | BinaryOp::BitRightShift => ty,
+                    | BinaryOp::BitShl
+                    | BinaryOp::BitShr => ty,
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::Int,
                 }
             },
@@ -3590,8 +3599,8 @@ impl<'a> Parser<'a> {
             | NodeKind::Member { parent: expr, .. } => self.collect_labels(expr, labels)?,
             NodeKind::Assign { lhs, rhs }
             | NodeKind::Comma { lhs, rhs }
-            | NodeKind::LogicalAnd { lhs, rhs }
-            | NodeKind::LogicalOr { lhs, rhs }
+            | NodeKind::And { lhs, rhs }
+            | NodeKind::Or { lhs, rhs }
             | NodeKind::Binary { lhs, rhs, .. } => {
                 self.collect_labels(lhs, labels)?;
                 self.collect_labels(rhs, labels)?;
@@ -3704,8 +3713,8 @@ impl<'a> Parser<'a> {
             | NodeKind::Member { parent: expr, .. } => self.resolve_gotos(expr, labels)?,
             NodeKind::Assign { lhs, rhs }
             | NodeKind::Comma { lhs, rhs }
-            | NodeKind::LogicalAnd { lhs, rhs }
-            | NodeKind::LogicalOr { lhs, rhs }
+            | NodeKind::And { lhs, rhs }
+            | NodeKind::Or { lhs, rhs }
             | NodeKind::Binary { lhs, rhs, .. } => {
                 self.resolve_gotos(lhs, labels)?;
                 self.resolve_gotos(rhs, labels)?;
@@ -3736,113 +3745,59 @@ impl<'a> Parser<'a> {
     }
 
     /// Evaluate an expression as a compile-time constant.
-    fn eval(&mut self, node: &mut Node) -> Result<i64> {
+    ///
+    /// This method assumes that integer promotions and usual arithmetic
+    /// conversions have already been lowered into explicit casts in the AST.
+    fn eval(&mut self, node: &mut Node) -> Result<ConstValue> {
         self.infer_type(node)?;
-        let ty = node.expect_ty();
+        let Some(ty) = self.types.to_const(node.expect_ty()) else {
+            return Err(self
+                .source
+                .error_at(node.offset, "not a compile-time constant"));
+        };
 
         Ok(match &mut node.kind {
-            NodeKind::Num(val) => *val,
-            NodeKind::Neg(expr) => self.eval(expr)?.wrapping_neg(),
-            NodeKind::Not(expr) => {
-                let cond = self.eval(expr)? == 0;
-                if cond { 1 } else { 0 }
-            },
-            NodeKind::BitNot(expr) => !self.eval(expr)?,
+            NodeKind::Num(val) => ConstValue::raw(*val as u64, ty),
+            NodeKind::Neg(expr) => self.eval(expr)?.neg(ty),
+            NodeKind::Not(expr) => self.eval(expr)?.not(ty),
+            NodeKind::BitNot(expr) => self.eval(expr)?.bit_not(ty),
             NodeKind::Comma { rhs, .. } => self.eval(rhs)?,
-            NodeKind::LogicalAnd { lhs, rhs } => {
-                let cond = self.eval(lhs)? != 0 && self.eval(rhs)? != 0;
-                if cond { 1 } else { 0 }
-            },
-            NodeKind::LogicalOr { lhs, rhs } => {
-                let cond = self.eval(lhs)? != 0 || self.eval(rhs)? != 0;
-                if cond { 1 } else { 0 }
-            },
+            NodeKind::And { lhs, rhs } => self.eval(lhs)?.and(|| self.eval(rhs), ty)?,
+            NodeKind::Or { lhs, rhs } => self.eval(lhs)?.or(|| self.eval(rhs), ty)?,
             NodeKind::Binary { op, lhs, rhs } => match op {
-                BinaryOp::Add => self.eval(lhs)?.wrapping_add(self.eval(rhs)?),
-                BinaryOp::Sub => self.eval(lhs)?.wrapping_sub(self.eval(rhs)?),
-                BinaryOp::Mul => self.eval(lhs)?.wrapping_mul(self.eval(rhs)?),
-                BinaryOp::Div => {
-                    let rhs = self.eval(rhs)?;
-                    if rhs == 0 {
-                        return Err(self.source.error_at(node.offset, "division by zero"));
-                    }
-                    let lhs = self.eval(lhs)?;
-                    if ty.is_unsigned_integer() {
-                        ((lhs as u64) / (rhs as u64)) as i64
-                    } else {
-                        lhs.wrapping_div(rhs)
-                    }
-                },
-                BinaryOp::Mod => {
-                    let rhs = self.eval(rhs)?;
-                    if rhs == 0 {
-                        return Err(self.source.error_at(node.offset, "division by zero"));
-                    }
-                    let lhs = self.eval(lhs)?;
-                    if ty.is_unsigned_integer() {
-                        ((lhs as u64) % (rhs as u64)) as i64
-                    } else {
-                        lhs.wrapping_rem(rhs)
-                    }
-                },
-                BinaryOp::BitAnd => self.eval(lhs)? & self.eval(rhs)?,
-                BinaryOp::BitOr => self.eval(lhs)? | self.eval(rhs)?,
-                BinaryOp::BitXor => self.eval(lhs)? ^ self.eval(rhs)?,
-                BinaryOp::BitLeftShift => self.eval(lhs)?.wrapping_shl(self.eval(rhs)? as _),
-                BinaryOp::BitRightShift => {
-                    let lhs = self.eval(lhs)?;
-                    let rhs = self.eval(rhs)?;
-                    if ty.is_unsigned_integer() && self.types.size(ty) == 8 {
-                        ((lhs as u64) >> rhs) as i64
-                    } else {
-                        lhs.wrapping_shr(rhs as _)
-                    }
-                },
-                BinaryOp::Eq => (self.eval(lhs)? == self.eval(rhs)?) as _,
-                BinaryOp::Ne => (self.eval(lhs)? != self.eval(rhs)?) as _,
-                BinaryOp::Lt => {
-                    let lhs_val = self.eval(lhs)?;
-                    let rhs_val = self.eval(rhs)?;
-                    if lhs.expect_ty().is_unsigned_integer() {
-                        ((lhs_val as u64) < (rhs_val as u64)) as _
-                    } else {
-                        (lhs_val < rhs_val) as _
-                    }
-                },
-                BinaryOp::Le => {
-                    let lhs_val = self.eval(lhs)?;
-                    let rhs_val = self.eval(rhs)?;
-                    if lhs.expect_ty().is_unsigned_integer() {
-                        ((lhs_val as u64) <= (rhs_val as u64)) as _
-                    } else {
-                        (lhs_val <= rhs_val) as _
-                    }
-                },
+                BinaryOp::Add => self.eval(lhs)?.add(self.eval(rhs)?, ty),
+                BinaryOp::Sub => self.eval(lhs)?.sub(self.eval(rhs)?, ty),
+                BinaryOp::Mul => self.eval(lhs)?.mul(self.eval(rhs)?, ty),
+                BinaryOp::Div => self
+                    .eval(lhs)?
+                    .div(self.eval(rhs)?, ty)
+                    .ok_or_else(|| self.source.error_at(node.offset, "division by zero"))?,
+                BinaryOp::Mod => self
+                    .eval(lhs)?
+                    .rem(self.eval(rhs)?, ty)
+                    .ok_or_else(|| self.source.error_at(node.offset, "division by zero"))?,
+                BinaryOp::BitAnd => self.eval(lhs)?.bit_and(self.eval(rhs)?, ty),
+                BinaryOp::BitOr => self.eval(lhs)?.bit_or(self.eval(rhs)?, ty),
+                BinaryOp::BitXor => self.eval(lhs)?.bit_xor(self.eval(rhs)?, ty),
+                BinaryOp::BitShl => self.eval(lhs)?.bit_shl(self.eval(rhs)?, ty),
+                BinaryOp::BitShr => self.eval(lhs)?.bit_shr(self.eval(rhs)?, ty),
+                BinaryOp::Eq => self.eval(lhs)?.eq(self.eval(rhs)?, ty),
+                BinaryOp::Ne => self.eval(lhs)?.ne(self.eval(rhs)?, ty),
+                BinaryOp::Lt => self.eval(lhs)?.lt(self.eval(rhs)?, ty),
+                BinaryOp::Le => self.eval(lhs)?.le(self.eval(rhs)?, ty),
             },
             NodeKind::Conditional {
                 cond,
                 then_expr,
                 else_expr,
             } => {
-                if self.eval(cond)? != 0 {
+                if self.eval(cond)?.is_true() {
                     self.eval(then_expr)?
                 } else {
                     self.eval(else_expr)?
                 }
             },
-            NodeKind::Cast(expr) => {
-                let val = self.eval(expr)?;
-                match ty {
-                    Type::Bool => (val != 0) as _,
-                    Type::Char => val as i8 as _,
-                    Type::UChar => val as u8 as _,
-                    Type::Short => val as i16 as _,
-                    Type::UShort => val as u16 as _,
-                    Type::Int => val as i32 as _,
-                    Type::UInt => val as u32 as _,
-                    _ => val,
-                }
-            },
+            NodeKind::Cast(expr) => self.eval(expr)?.cast(ty),
             NodeKind::Dummy => unreachable!(),
             _ => {
                 return Err(self
@@ -3869,6 +3824,12 @@ impl<'a> Parser<'a> {
             return self.eval_global_addr(node);
         }
 
+        let Some(const_ty) = self.types.to_const(ty) else {
+            return Err(self
+                .source
+                .error_at(node.offset, "not a compile-time constant"));
+        };
+
         Ok(match &mut node.kind {
             NodeKind::Binary { op, lhs, rhs } => {
                 let lhs = self.eval_global_init(lhs)?;
@@ -3876,19 +3837,25 @@ impl<'a> Parser<'a> {
                 match op {
                     BinaryOp::Add => match (lhs, rhs) {
                         (GlobalInitValue::Num(lhs), GlobalInitValue::Num(rhs)) => {
-                            GlobalInitValue::Num(lhs.wrapping_add(rhs))
+                            GlobalInitValue::Num(lhs.add(rhs, const_ty))
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
                         | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
+                            let rhs = i64::try_from(rhs).map_err(|_| {
+                                self.source.error_at(node.offset, "invalid initializer")
+                            })?;
                             GlobalInitValue::Reloc(label, addend.wrapping_add(rhs))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
                     },
                     BinaryOp::Sub => match (lhs, rhs) {
                         (GlobalInitValue::Num(lhs), GlobalInitValue::Num(rhs)) => {
-                            GlobalInitValue::Num(lhs.wrapping_sub(rhs))
+                            GlobalInitValue::Num(lhs.sub(rhs, const_ty))
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
+                            let rhs = i64::try_from(rhs).map_err(|_| {
+                                self.source.error_at(node.offset, "invalid initializer")
+                            })?;
                             GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
@@ -3901,7 +3868,7 @@ impl<'a> Parser<'a> {
                 then_expr,
                 else_expr,
             } => {
-                if self.eval(cond)? != 0 {
+                if self.eval(cond)?.is_true() {
                     self.eval_global_init(then_expr)?
                 } else {
                     self.eval_global_init(else_expr)?
@@ -3909,18 +3876,9 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Comma { rhs, .. } => self.eval_global_init(rhs)?,
             NodeKind::Cast(expr) => match self.eval_global_init(expr)? {
-                GlobalInitValue::Num(val) => {
-                    let val = match ty {
-                        Type::Bool => (val != 0) as _,
-                        Type::Char => val as i8 as _,
-                        Type::Short => val as i16 as _,
-                        Type::Int => val as i32 as _,
-                        _ => val,
-                    };
-                    GlobalInitValue::Num(val)
-                },
+                GlobalInitValue::Num(val) => GlobalInitValue::Num(val.cast(const_ty)),
                 GlobalInitValue::Reloc(label, addend) => {
-                    if ty == Type::Long || self.types.is_ptr(ty) {
+                    if matches!(ty, Type::Long | Type::ULong) || self.types.is_ptr(ty) {
                         GlobalInitValue::Reloc(label, addend)
                     } else {
                         return Err(self.source.error_at(node.offset, "invalid initializer"));

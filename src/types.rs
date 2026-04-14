@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
+use crate::constexpr::ConstType;
 use crate::utils::align_to;
 
 /// A stable handle to a non-trivial type stored in [`TypeStore`].
@@ -393,8 +394,7 @@ impl TypeStore {
     ///
     /// This method returns `None` except for the following supported cases:
     ///
-    /// - The same type under [`TypeStore::same_type`], which will be returned
-    ///   as `this`;
+    /// - The same type, which will be returned;
     /// - An incomplete array type and a complete array type with the same base,
     ///   where the complete one will be returned.
     pub fn merge(&self, this: Type, other: Type) -> Option<Type> {
@@ -411,6 +411,23 @@ impl TypeStore {
         match (this_array.len, other_array.len) {
             (None, Some(_)) => Some(other),
             (Some(_), None) => Some(this),
+            _ => None,
+        }
+    }
+
+    /// Convert a [`Type`] to a [`ConstType`] if applicable.
+    pub fn to_const(&self, ty: Type) -> Option<ConstType> {
+        match ty {
+            Type::Bool => Some(ConstType::Bool),
+            Type::Char => Some(ConstType::Char),
+            Type::UChar => Some(ConstType::UChar),
+            Type::Short => Some(ConstType::Short),
+            Type::UShort => Some(ConstType::UShort),
+            Type::Int | Type::Enum => Some(ConstType::Int),
+            Type::UInt => Some(ConstType::UInt),
+            Type::Long => Some(ConstType::Long),
+            Type::ULong => Some(ConstType::ULong),
+            _ if self.is_ptr(ty) => Some(ConstType::Ptr),
             _ => None,
         }
     }

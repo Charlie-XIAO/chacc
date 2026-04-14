@@ -1,5 +1,6 @@
 mod ast;
 mod codegen;
+mod constexpr;
 mod error;
 mod parse;
 mod source;

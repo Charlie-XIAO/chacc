@@ -129,8 +129,8 @@ pub enum BinaryOp {
     BitAnd,
     BitOr,
     BitXor,
-    BitLeftShift,
-    BitRightShift,
+    BitShl,
+    BitShr,
     Eq,
     Ne,
     Lt,
@@ -183,9 +183,9 @@ pub enum NodeKind {
     /// [1]: https://gcc.gnu.org/onlinedocs/gcc-3.2.1/gcc/Lvalues.html
     Comma { lhs: Box<Node>, rhs: Box<Node> },
     /// A logical and operation "&&".
-    LogicalAnd { lhs: Box<Node>, rhs: Box<Node> },
+    And { lhs: Box<Node>, rhs: Box<Node> },
     /// A logical or operation "||".
-    LogicalOr { lhs: Box<Node>, rhs: Box<Node> },
+    Or { lhs: Box<Node>, rhs: Box<Node> },
     /// A binary operation.
     Binary {
         op: BinaryOp,
@@ -319,15 +319,11 @@ impl Node {
     }
 
     /// Construct a logical and node.
-    pub fn logical_and(
-        lhs: impl Into<Box<Node>>,
-        rhs: impl Into<Box<Node>>,
-        offset: usize,
-    ) -> Self {
+    pub fn and(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::LogicalAnd {
+            kind: NodeKind::And {
                 lhs: lhs.into(),
                 rhs: rhs.into(),
             },
@@ -335,11 +331,11 @@ impl Node {
     }
 
     /// Construct a logical or node.
-    pub fn logical_or(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn or(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
         Self {
             offset,
             ty: None,
-            kind: NodeKind::LogicalOr {
+            kind: NodeKind::Or {
                 lhs: lhs.into(),
                 rhs: rhs.into(),
             },
