@@ -442,7 +442,7 @@ impl<'a> Codegen<'a> {
                 let width = ScalarWidth::from_promoted_binary_type(cond.expect_ty(), &self.types);
                 let acc = width.acc_reg();
                 for (val, label) in cases {
-                    writeln!(self.out, "  cmp ${val}, {acc}")?;
+                    writeln!(self.out, "  cmp ${}, {acc}", val.bits() as i64)?;
                     writeln!(self.out, "  je {label}")?;
                 }
                 if let Some(default) = default {

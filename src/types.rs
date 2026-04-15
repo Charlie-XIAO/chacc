@@ -371,12 +371,8 @@ impl TypeStore {
             return self.ptr(base);
         }
 
-        if self.size(lhs) < 4 {
-            lhs = Type::Int;
-        }
-        if self.size(rhs) < 4 {
-            rhs = Type::Int;
-        }
+        lhs = self.promote_int(lhs).unwrap_or(lhs);
+        rhs = self.promote_int(rhs).unwrap_or(rhs);
 
         match self.size(lhs).cmp(&self.size(rhs)) {
             Ordering::Less => return rhs,
@@ -431,6 +427,27 @@ impl TypeStore {
             _ => None,
         }
     }
+
+    /// Apply [integer promotions][1] to an integer type.
+    ///
+    /// If a type is not applicable for integer promotion, this returns `None`.
+    ///
+    /// [1]: https://en.cppreference.com/w/c/language/conversion.html#Integer_promotions
+    pub fn promote_int(&self, ty: Type) -> Option<Type> {
+        Some(match ty {
+            Type::Bool
+            | Type::Char
+            | Type::UChar
+            | Type::Short
+            | Type::UShort
+            | Type::Int
+            | Type::Enum => Type::Int,
+            Type::UInt => Type::UInt,
+            Type::Long => Type::Long,
+            Type::ULong => Type::ULong,
+            _ => return None,
+        })
+    }
 }
 
 impl Type {
@@ -446,5 +463,21 @@ impl Type {
     /// Return whether the type is an unsigned integer type.
     pub fn is_unsigned_integer(&self) -> bool {
         matches!(self, Type::UChar | Type::UShort | Type::UInt | Type::ULong)
+    }
+}
+
+impl From<ConstType> for Type {
+    fn from(value: ConstType) -> Self {
+        match value {
+            ConstType::Bool => Type::Bool,
+            ConstType::Char => Type::Char,
+            ConstType::UChar => Type::UChar,
+            ConstType::Short => Type::Short,
+            ConstType::UShort => Type::UShort,
+            ConstType::Int => Type::Int,
+            ConstType::UInt => Type::UInt,
+            ConstType::Long => Type::Long,
+            ConstType::ULong | ConstType::Ptr => Type::ULong,
+        }
     }
 }

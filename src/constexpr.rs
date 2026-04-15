@@ -58,6 +58,11 @@ impl ConstValue {
         Self { bits, ty }
     }
 
+    /// Return the semantic type of the constant.
+    pub fn ty(self) -> ConstType {
+        self.ty
+    }
+
     /// Return the raw bit-pattern of the constant.
     pub fn bits(self) -> u64 {
         self.bits

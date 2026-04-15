@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
+use crate::constexpr::ConstValue;
 use crate::types::{Member, Type, TypeStore};
 
 /// The parsed program.
@@ -461,7 +462,7 @@ pub enum StmtKind {
         ///
         /// Each element corresponds to the case value and the corresponding
         /// [`StmtKind::Label::label`].
-        cases: Vec<(i64, SmolStr)>,
+        cases: Vec<(ConstValue, SmolStr)>,
         /// The default case label within this switch.
         default: Option<SmolStr>,
         brk_label: SmolStr,
@@ -583,7 +584,7 @@ impl Stmt {
     pub fn switch(
         cond: Node,
         body: Box<Stmt>,
-        cases: Vec<(i64, SmolStr)>,
+        cases: Vec<(ConstValue, SmolStr)>,
         default: Option<SmolStr>,
         brk_label: SmolStr,
         offset: usize,

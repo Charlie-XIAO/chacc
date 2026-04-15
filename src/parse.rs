@@ -11,7 +11,7 @@ use crate::ast::{
     BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
     NodeKind, Program, Relocation, Stmt, StmtKind,
 };
-use crate::constexpr::ConstValue;
+use crate::constexpr::{ConstType, ConstValue};
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
@@ -122,7 +122,7 @@ enum OrdinaryIdent {
     Global(usize, bool),
     Function(usize),
     Typedef(Type),
-    Enumerator(i64),
+    Enumerator(ConstValue),
 }
 
 impl OrdinaryIdent {
@@ -141,9 +141,10 @@ impl OrdinaryIdent {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct SwitchContext {
-    cases: Vec<(i64, SmolStr)>,
+    ty: ConstType,
+    cases: Vec<(ConstValue, SmolStr)>,
     default: Option<SmolStr>,
 }
 
@@ -1058,7 +1059,7 @@ impl<'a> Parser<'a> {
         self.skip_punct("{")?;
 
         let mut first = true;
-        let mut val = 0;
+        let mut val = ConstValue::raw(0, ConstType::Int);
         while !self.maybe_skip_list_end(true) {
             if !first {
                 self.skip_punct(",")?;
@@ -1069,10 +1070,7 @@ impl<'a> Parser<'a> {
             let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
-                val = i64::try_from(self.parse_constexpr()?).map_err(|_| {
-                    self.source
-                        .error_at(offset, "constant expression is out of range")
-                })?;
+                val = self.parse_constexpr()?;
             }
 
             if let Some(ident) = self.find_ident_current(name) {
@@ -1087,7 +1085,7 @@ impl<'a> Parser<'a> {
             }
 
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::Enumerator(val));
-            val += 1;
+            val = val.add(ConstValue::raw(1, val.ty()), val.ty());
         }
 
         let ty = Type::Enum;
@@ -1338,12 +1336,27 @@ impl<'a> Parser<'a> {
         if self.current().is_keyword(Keyword::Switch) {
             self.advance();
             self.skip_punct("(")?;
-            let cond = self.parse_expr()?;
+            let mut cond = self.parse_expr()?;
+            self.infer_type(&mut cond)?;
             self.skip_punct(")")?;
+
+            let Some(ty) = self
+                .types
+                .promote_int(cond.expect_ty())
+                .and_then(|ty| self.types.to_const(ty))
+            else {
+                return Err(self
+                    .source
+                    .error_at(offset, "switch condition is not an integer"));
+            };
 
             let brk_label = self.unique_label();
             let prev_brk_label = self.active_brk_label.replace(brk_label.clone());
-            let prev_switch = self.active_switch.replace(SwitchContext::default());
+            let prev_switch = self.active_switch.replace(SwitchContext {
+                ty,
+                cases: Vec::new(),
+                default: None,
+            });
 
             let body = self.parse_stmt()?;
 
@@ -1362,10 +1375,12 @@ impl<'a> Parser<'a> {
 
         if self.current().is_keyword(Keyword::Case) {
             self.advance();
-            let val = i64::try_from(self.parse_constexpr()?).map_err(|_| {
-                self.source
-                    .error_at(offset, "constant expression is out of range")
-            })?;
+            let Some(ty) = self.active_switch.as_ref().map(|switch| switch.ty) else {
+                return Err(self
+                    .source
+                    .error_at(offset, "case label not within a switch"));
+            };
+            let val = self.parse_constexpr()?.cast(ty);
             self.skip_punct(":")?;
             let label = self.unique_label();
             let body = self.parse_stmt()?;
@@ -2558,7 +2573,9 @@ impl<'a> Parser<'a> {
                     Node::entity(EntityRef::Global(global_id), offset)
                 },
                 Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
-                Some(OrdinaryIdent::Enumerator(val)) => Node::num(val, Type::Int, offset),
+                Some(OrdinaryIdent::Enumerator(val)) => {
+                    Node::num(val.bits() as i64, val.ty().into(), offset)
+                },
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
             return Ok(node);
@@ -2636,8 +2653,10 @@ impl<'a> Parser<'a> {
                 }
                 // Variadic function call applies default argument promotions
                 let ty = arg.expect_ty();
-                if ty.is_integer() && self.types.size(ty) < 4 {
-                    self.apply_cast(&mut arg, Type::Int)?;
+                if let Some(promoted) = self.types.promote_int(ty)
+                    && promoted != ty
+                {
+                    self.apply_cast(&mut arg, promoted)?;
                 }
             }
 
@@ -3409,7 +3428,10 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Neg(expr) | NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
-                let ty = self.types.coerce(Type::Int, expr.expect_ty());
+                let ty = self
+                    .types
+                    .promote_int(expr.expect_ty())
+                    .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?;
                 self.apply_cast(expr, ty)?;
                 ty
             },
@@ -3841,10 +3863,7 @@ impl<'a> Parser<'a> {
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
                         | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
-                            let rhs = i64::try_from(rhs).map_err(|_| {
-                                self.source.error_at(node.offset, "invalid initializer")
-                            })?;
-                            GlobalInitValue::Reloc(label, addend.wrapping_add(rhs))
+                            GlobalInitValue::Reloc(label, addend.wrapping_add(rhs.bits() as i64))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
                     },
@@ -3853,10 +3872,7 @@ impl<'a> Parser<'a> {
                             GlobalInitValue::Num(lhs.sub(rhs, const_ty))
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
-                            let rhs = i64::try_from(rhs).map_err(|_| {
-                                self.source.error_at(node.offset, "invalid initializer")
-                            })?;
-                            GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs))
+                            GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs.bits() as i64))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
                     },
