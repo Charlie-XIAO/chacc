@@ -107,7 +107,7 @@ impl DeclspecContext {
 /// A declaration specifier.
 struct Declspec {
     ty: Type,
-    align: Option<i64>,
+    align: Option<u64>,
     storage_class: Option<StorageClass>,
 }
 
@@ -578,7 +578,7 @@ impl<'a> Parser<'a> {
                         let ty = self.parse_typename()?;
                         self.types.align(ty)
                     } else {
-                        i64::try_from(self.parse_constexpr()?).map_err(|_| {
+                        u64::try_from(self.parse_constexpr()?).map_err(|_| {
                             self.error_current("constant expression is out of range")
                         })?
                     }));
@@ -622,8 +622,8 @@ impl<'a> Parser<'a> {
 
         Ok(Declspec {
             ty,
-            storage_class,
             align,
+            storage_class,
         })
     }
 
@@ -2574,7 +2574,7 @@ impl<'a> Parser<'a> {
                 },
                 Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
                 Some(OrdinaryIdent::Enumerator(val)) => {
-                    Node::num(val.bits() as i64, val.ty().into(), offset)
+                    Node::num(val.bits(), val.ty().into(), offset)
                 },
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
@@ -2783,7 +2783,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new local variable.
-    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, align: Option<i64>) -> usize {
+    fn create_local(&mut self, name: impl Into<SmolStr>, ty: Type, align: Option<u64>) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
@@ -2820,7 +2820,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: impl Into<SmolStr>,
         ty: Type,
-        align: Option<i64>,
+        align: Option<u64>,
         storage: GlobalStorage,
         is_static: bool,
     ) -> usize {
@@ -2853,7 +2853,7 @@ impl<'a> Parser<'a> {
         &mut self,
         name: SmolStr,
         ty: Type,
-        align: Option<i64>,
+        align: Option<u64>,
         storage: GlobalStorage,
         is_static: bool,
         offset: usize,
@@ -3114,17 +3114,21 @@ impl<'a> Parser<'a> {
         self.infer_type(&mut node)?;
         let ty = node.expect_ty();
 
-        let addend = if is_inc { 1 } else { -1 };
+        let mut addend = Node::num(1, Type::Long, offset);
+        let mut neg_addend = Node::neg(Node::num(1, Type::Long, offset), offset);
+        if !is_inc {
+            std::mem::swap(&mut addend, &mut neg_addend);
+        }
 
         // node += addend
-        let binary = self.new_add(node, Node::num(addend, Type::Long, offset), offset)?;
+        let binary = self.new_add(node, addend, offset)?;
         let assign = self.new_compound_assign(binary, offset)?;
 
         // (node += addend) - addend
-        let mut post = self.new_add(assign, Node::num(-addend, Type::Long, offset), offset)?;
+        let mut post = self.new_add(assign, neg_addend, offset)?;
         self.infer_type(&mut post)?;
 
-        // (typeof node)((node += addend) - addend)
+        // (typeof node)((node += addend) - addend) (or reverse)
         Ok(Node::cast(post, ty, offset))
     }
 
@@ -3779,7 +3783,7 @@ impl<'a> Parser<'a> {
         };
 
         Ok(match &mut node.kind {
-            NodeKind::Num(val) => ConstValue::raw(*val as u64, ty),
+            NodeKind::Num(val) => ConstValue::raw(*val, ty),
             NodeKind::Neg(expr) => self.eval(expr)?.neg(ty),
             NodeKind::Not(expr) => self.eval(expr)?.not(ty),
             NodeKind::BitNot(expr) => self.eval(expr)?.bit_not(ty),

@@ -56,7 +56,7 @@ pub enum TokenKind<'a> {
     /// A punctuator with the given lexeme.
     Punct(&'a str),
     /// A numeric literal with the given value and type.
-    Num(i64, Type),
+    Num(u64, Type),
     /// A string literal with the given content, including the null terminator.
     Str(Rc<[u8]>),
     /// A sentinel token representing the end of the input.
@@ -97,7 +97,7 @@ impl<'a> Token<'a> {
     }
 
     /// Construct a numeric literal token.
-    pub fn num(offset: usize, value: i64, ty: Type) -> Self {
+    pub fn num(offset: usize, value: u64, ty: Type) -> Self {
         Self {
             offset,
             kind: TokenKind::Num(value, ty),
@@ -171,7 +171,7 @@ impl<'a> Token<'a> {
     }
 
     /// Return the value if this is a numeric token.
-    pub fn as_num(&self) -> Option<(i64, Type)> {
+    pub fn as_num(&self) -> Option<(u64, Type)> {
         match self.kind {
             TokenKind::Num(value, ty) => Some((value, ty)),
             _ => None,

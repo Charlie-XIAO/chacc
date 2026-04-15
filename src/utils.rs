@@ -11,7 +11,7 @@ pub const MAX_FUNC_PARAMS: usize = 6;
 pub const VA_AREA_SIZE: usize = 136;
 
 /// Round `n` up to the nearest multiple of `align`.
-pub const fn align_to(n: i64, align: i64) -> i64 {
+pub const fn align_to(n: u64, align: u64) -> u64 {
     debug_assert!(align > 0, "align must be positive");
 
     if (align & (align - 1)) == 0 {
@@ -20,6 +20,6 @@ pub const fn align_to(n: i64, align: i64) -> i64 {
         // away so this would effectively be no runtime cost
         (n + align - 1) & !(align - 1)
     } else {
-        (n + align - 1) / align * align
+        n.div_ceil(align) * align
     }
 }

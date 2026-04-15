@@ -35,8 +35,8 @@ pub enum Type {
 #[derive(Debug, Clone)]
 struct TypeData {
     kind: TypeKind,
-    size: i64,
-    align: i64,
+    size: u64,
+    align: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,7 @@ pub struct Member {
     pub ty: Type,
     pub name: SmolStr,
     /// Optional alignment override via "_Alignas".
-    pub align: Option<i64>,
+    pub align: Option<u64>,
     /// The byte offset of the member in the struct.
     pub offset: usize,
 }
@@ -96,7 +96,7 @@ impl TypeStore {
         self.types.truncate(len);
     }
 
-    fn push(&mut self, kind: TypeKind, size: i64, align: i64) -> Type {
+    fn push(&mut self, kind: TypeKind, size: u64, align: u64) -> Type {
         debug_assert!(!self.frozen, "cannot push new type to a frozen type store");
         let ty = Type::Stored(TypeId(self.types.len()));
         self.types.push(TypeData { kind, size, align });
@@ -145,8 +145,8 @@ impl TypeStore {
         );
 
         let size = match len {
-            Some(len) => self.size(base) * (len as i64),
-            None => -1,
+            Some(len) => self.size(base) * (len as u64),
+            None => 0,
         };
         let align = self.align(base);
         self.push(TypeKind::Array(ArrayType { base, len }), size, align)
@@ -164,7 +164,7 @@ impl TypeStore {
                 is_struct,
                 members: None,
             }),
-            -1,
+            0,
             1,
         );
         if let Some(members) = members {
@@ -216,7 +216,7 @@ impl TypeStore {
     }
 
     /// Return the byte alignment of the type.
-    pub fn align(&self, ty: Type) -> i64 {
+    pub fn align(&self, ty: Type) -> u64 {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,
@@ -229,12 +229,12 @@ impl TypeStore {
     }
 
     /// Return the effective byte alignment of the type with optional override.
-    pub fn eff_align(&self, align_override: Option<i64>, ty: Type) -> i64 {
+    pub fn eff_align(&self, align_override: Option<u64>, ty: Type) -> u64 {
         align_override.unwrap_or_else(|| self.align(ty))
     }
 
     /// Return the size of the type in bytes.
-    pub fn size(&self, ty: Type) -> i64 {
+    pub fn size(&self, ty: Type) -> u64 {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,

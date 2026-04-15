@@ -31,7 +31,7 @@ enum ScalarWidth {
 
 impl ScalarWidth {
     /// Convert a scalar size in bytes to its corresponding width.
-    fn from_size(size: i64) -> Self {
+    fn from_size(size: u64) -> Self {
         match size {
             1 => Self::Byte,
             2 => Self::Word,
@@ -305,7 +305,7 @@ impl<'a> Codegen<'a> {
         if let Some(va_area_id) = va_area_local {
             let offset = locals[va_area_id].offset;
             let gp_offset = (param_locals.len() * 8) as i64;
-            debug_assert_eq!(self.types.size(locals[va_area_id].ty), VA_AREA_SIZE as i64);
+            debug_assert_eq!(self.types.size(locals[va_area_id].ty), VA_AREA_SIZE as u64);
 
             // __va_elem
             writeln!(self.out, "  movl ${gp_offset}, {offset}(%rbp)")?;
@@ -883,7 +883,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Store an incoming general-purpose argument register to its stack slot.
-    fn store_gp(&mut self, r: usize, offset: i64, size: i64) -> Result<()> {
+    fn store_gp(&mut self, r: usize, offset: i64, size: u64) -> Result<()> {
         let register = ScalarWidth::from_size(size).gp_arg_reg(r);
         writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
         Ok(())
@@ -907,13 +907,14 @@ impl<'a> Codegen<'a> {
     }
 
     /// Assign stack offsets to locals and return the aligned stack size.
-    fn assign_lvar_offsets(&self, locals: &mut [LocalVar]) -> i64 {
+    fn assign_lvar_offsets(&self, locals: &mut [LocalVar]) -> u64 {
         let mut offset = 0;
 
         // The first parsed local stays closest to `%rbp`
         for local in locals.iter_mut().rev() {
             offset += self.types.size(local.ty);
             offset = align_to(offset, self.types.eff_align(local.align, local.ty));
+            let offset = i64::try_from(offset).expect("stack frame too large");
             local.offset = -offset;
         }
 

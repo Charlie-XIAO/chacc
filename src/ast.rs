@@ -89,7 +89,7 @@ pub struct GlobalVar {
     pub name: SmolStr,
     pub ty: Type,
     /// Optional alignment override via "_Alignas".
-    pub align: Option<i64>,
+    pub align: Option<u64>,
     pub storage: GlobalStorage,
     pub is_static: bool,
 }
@@ -100,7 +100,7 @@ pub struct LocalVar {
     pub _name: SmolStr,
     pub ty: Type,
     /// Optional alignment override via "_Alignas".
-    pub align: Option<i64>,
+    pub align: Option<u64>,
     /// The offset of the variable from the base pointer (RBP) in bytes.
     pub offset: i64,
 }
@@ -158,7 +158,7 @@ pub enum NodeKind {
     #[default] // For ergonomics
     Dummy,
     /// A numeric literal.
-    Num(i64),
+    Num(u64),
     /// A function call.
     FuncCall { name: SmolStr, args: Vec<Node> },
     /// An address-of expression "&".
@@ -211,7 +211,7 @@ pub enum NodeKind {
 
 impl Node {
     /// Construct a numeric literal node.
-    pub fn num(value: i64, ty: Type, offset: usize) -> Self {
+    pub fn num(value: u64, ty: Type, offset: usize) -> Self {
         Self {
             offset,
             ty: Some(ty),

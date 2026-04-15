@@ -235,6 +235,18 @@ impl TryFrom<ConstValue> for i64 {
     }
 }
 
+impl TryFrom<ConstValue> for u64 {
+    type Error = ();
+
+    fn try_from(value: ConstValue) -> Result<Self, Self::Error> {
+        if value.ty.is_signed() {
+            u64::try_from(value.bits_as_signed()).map_err(|_| ())
+        } else {
+            Ok(value.bits)
+        }
+    }
+}
+
 impl TryFrom<ConstValue> for usize {
     type Error = ();
 
