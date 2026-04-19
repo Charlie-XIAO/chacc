@@ -360,8 +360,11 @@ fn test_cast() {
 #[test]
 fn test_compat() {
     let mut f = Fixture::new();
+    f.line("_Noreturn int ignored_global;");
+    f.line("_Noreturn noreturn_fn(int restrict x) { exit(0); }");
     f.main();
 
+    f.line("{ _Noreturn x; }");
     f.line("{ volatile x; }");
     f.line("{ int volatile x; }");
     f.line("{ volatile int x; }");

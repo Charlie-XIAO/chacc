@@ -32,6 +32,7 @@ pub struct Function {
     /// The local variable table used by the function.
     pub locals: Vec<LocalVar>,
     pub is_static: bool,
+    pub noreturn: bool,
 }
 
 /// A relocation inside statically initialized global data.

@@ -98,6 +98,7 @@ struct Declspec {
     ty: Type,
     align: Option<u64>,
     storage_class: Option<StorageClass>,
+    noreturn: bool,
 }
 
 /// An ordinary identifier.
@@ -208,9 +209,16 @@ impl<'a> Parser<'a> {
         self.source.error_at(self.current().offset, message)
     }
 
+    /// Emit a warning message at the given byte offset.
+    fn warn_at(&self, offset: usize, message: impl Into<SmolStr>) {
+        if self.speculate_depth == 0 {
+            self.source.warn_at(offset, message);
+        }
+    }
+
     /// Emit a warning message at the current token.
     fn warn_current(&self, message: impl Into<SmolStr>) {
-        self.source.warn_at(self.current().offset, message);
+        self.warn_at(self.current().offset, message);
     }
 
     /// Generate a unique label.
@@ -404,6 +412,8 @@ impl<'a> Parser<'a> {
     ///   "typedef"
     ///   | "static"
     ///   | "extern"
+    ///   | "auto"
+    ///   | "register"
     ///   | "void"
     ///   | "_Bool"
     ///   | "char"
@@ -412,6 +422,11 @@ impl<'a> Parser<'a> {
     ///   | "long"
     ///   | "signed"
     ///   | "unsigned"
+    ///   | "const"
+    ///   | "volatile"
+    ///   | "restrict"
+    ///   | "_Noreturn"
+    ///   | "_Alignas" "(" (<typename> | <constexpr>) ")"
     ///   | <struct-or-union-decl>
     ///   | <typedef-name>
     ///   | <enum-specifier>
@@ -436,6 +451,7 @@ impl<'a> Parser<'a> {
         let mut signed = None;
         let mut storage_class = None;
         let mut align = None;
+        let mut noreturn = false;
         let mut defaults_to_int = false;
 
         while self.at_typename() {
@@ -583,6 +599,22 @@ impl<'a> Parser<'a> {
                     });
                     defaults_to_int = true;
                 },
+                Keyword::Noreturn => {
+                    if !matches!(
+                        context,
+                        DeclspecContext::FileScopeDecl
+                            | DeclspecContext::BlockScopeDecl
+                            | DeclspecContext::ParameterDecl
+                            | DeclspecContext::ForLoopInitializer
+                    ) {
+                        return Err(self.source.error_at(
+                            offset,
+                            format_smolstr!("'_Noreturn' is not allowed in {context}"),
+                        ));
+                    }
+                    noreturn = true;
+                    defaults_to_int = true;
+                },
                 Keyword::Alignas => {
                     if !matches!(
                         context,
@@ -643,6 +675,7 @@ impl<'a> Parser<'a> {
             ty,
             align,
             storage_class,
+            noreturn,
         })
     }
 
@@ -798,6 +831,9 @@ impl<'a> Parser<'a> {
 
             let offset = self.current().offset;
             let declarator = self.parse_declarator(declspec.ty)?;
+            if declspec.noreturn {
+                self.warn_at(declarator.offset, "parameter declared '_Noreturn'");
+            }
 
             let ty = if let Some(array) = self.types.as_array(declarator.ty) {
                 // Array decay will convert "array of T" to "pointer to T" in
@@ -1149,7 +1185,7 @@ impl<'a> Parser<'a> {
         while !self.current().is_eof() {
             let declspec = self.parse_declspec(DeclspecContext::FileScopeDecl)?;
             if declspec.storage_class == Some(StorageClass::Typedef) {
-                self.parse_typedef_tail(declspec.ty)?;
+                self.parse_typedef_tail(declspec.ty, declspec.noreturn)?;
                 continue;
             }
 
@@ -1157,6 +1193,7 @@ impl<'a> Parser<'a> {
                 self.parse_function(
                     declspec.ty,
                     declspec.storage_class == Some(StorageClass::Static),
+                    declspec.noreturn,
                 )?;
                 continue;
             }
@@ -1189,7 +1226,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <function> ::= <declarator> (";" | "{" <compound-stmt>)
     /// ```
-    fn parse_function(&mut self, return_ty: Type, is_static: bool) -> Result<()> {
+    fn parse_function(&mut self, return_ty: Type, is_static: bool, noreturn: bool) -> Result<()> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty)?;
@@ -1198,8 +1235,12 @@ impl<'a> Parser<'a> {
         };
         let is_variadic = func_ty.is_variadic;
 
-        let func_id =
-            self.declare_function(declarator.name.clone(), declarator.ty, declarator.offset)?;
+        let func_id = self.declare_function(
+            declarator.name.clone(),
+            declarator.ty,
+            noreturn,
+            declarator.offset,
+        )?;
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
@@ -1262,6 +1303,9 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(declspec.ty)?;
+            if declspec.noreturn {
+                self.warn_at(declarator.offset, "variable declared '_Noreturn'");
+            }
             if self.types.is_func(declarator.ty) {
                 return Err(self
                     .source
@@ -1329,8 +1373,7 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct(";") {
                 if return_ty != Type::Void {
-                    self.source
-                        .warn_at(offset, "return with no value in a non-void function");
+                    self.warn_at(offset, "return with no value in a non-void function");
                 }
                 self.advance();
                 return Ok(Stmt::return_(None, offset));
@@ -1339,8 +1382,7 @@ impl<'a> Parser<'a> {
             let mut expr = self.parse_expr()?;
             self.skip_punct(";")?;
             if return_ty == Type::Void {
-                self.source
-                    .warn_at(expr.offset, "return with a value in a void function");
+                self.warn_at(expr.offset, "return with a value in a void function");
                 self.apply_cast(&mut expr, Type::Void)?;
             } else {
                 self.apply_cast(&mut expr, return_ty)?;
@@ -1596,7 +1638,7 @@ impl<'a> Parser<'a> {
                 if self.at_typename() && !self.peek(1).is_some_and(|tok| tok.is_punct(":")) {
                     let declspec = self.parse_declspec(DeclspecContext::BlockScopeDecl)?;
                     if declspec.storage_class == Some(StorageClass::Typedef) {
-                        self.parse_typedef_tail(declspec.ty)?;
+                        self.parse_typedef_tail(declspec.ty, declspec.noreturn)?;
                         continue;
                     }
                     self.parse_declaration(declspec)?
@@ -1684,8 +1726,17 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
-                self.declare_function(declarator.name, declarator.ty, declarator.offset)?;
+                self.declare_function(
+                    declarator.name,
+                    declarator.ty,
+                    declspec.noreturn,
+                    declarator.offset,
+                )?;
                 continue;
+            }
+
+            if declspec.noreturn {
+                self.warn_at(declarator.offset, "variable declared '_Noreturn'");
             }
 
             // Block-scope extern object declaration
@@ -2710,7 +2761,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <typedef-tail> ::= <declarator> ("," <declarator>)* ";"
     /// ```
-    fn parse_typedef_tail(&mut self, base_ty: Type) -> Result<()> {
+    fn parse_typedef_tail(&mut self, base_ty: Type, noreturn: bool) -> Result<()> {
         let mut first = true;
 
         while !self.current().is_punct(";") {
@@ -2720,6 +2771,9 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(base_ty)?;
+            if noreturn {
+                self.warn_at(declarator.offset, "typedef declared '_Noreturn'");
+            }
 
             if let Some(ident) = self.find_ident_current(&declarator.name) {
                 match ident {
@@ -2960,7 +3014,7 @@ impl<'a> Parser<'a> {
     ///
     /// If the function is also defined, relevant fields need to be filled in
     /// later, looked up via the returned ID.
-    fn create_function(&mut self, name: impl Into<SmolStr>, ty: Type) -> usize {
+    fn create_function(&mut self, name: impl Into<SmolStr>, ty: Type, noreturn: bool) -> usize {
         self.disallow_speculation();
 
         let name = name.into();
@@ -2972,6 +3026,7 @@ impl<'a> Parser<'a> {
             va_area_local: None,
             locals: Default::default(),
             is_static: false,
+            noreturn,
         });
 
         let id = self.functions.len() - 1;
@@ -2987,7 +3042,13 @@ impl<'a> Parser<'a> {
     /// compatible.
     ///
     /// [`create_function`]: Self::create_function
-    fn declare_function(&mut self, name: SmolStr, ty: Type, offset: usize) -> Result<usize> {
+    fn declare_function(
+        &mut self,
+        name: SmolStr,
+        ty: Type,
+        noreturn: bool,
+        offset: usize,
+    ) -> Result<usize> {
         self.disallow_speculation();
 
         let func_id = match self.find_ident_current(&name) {
@@ -3009,12 +3070,13 @@ impl<'a> Parser<'a> {
         };
 
         let Some(func_id) = func_id else {
-            return Ok(self.create_function(name, ty));
+            return Ok(self.create_function(name, ty, noreturn));
         };
 
         if !self.types.same_type(self.functions[func_id].ty, ty) {
             return Err(self.source.error_at(offset, "conflicting types"));
         }
+        self.functions[func_id].noreturn |= noreturn;
 
         self.push_scope_ident(name, OrdinaryIdent::Function(func_id));
         Ok(func_id)

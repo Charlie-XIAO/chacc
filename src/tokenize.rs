@@ -50,6 +50,8 @@ pub enum Keyword {
         serialize = "__restrict__"
     )]
     Restrict,
+    #[strum(serialize = "_Noreturn")]
+    Noreturn,
     #[strum(serialize = "_Alignof")]
     Alignof,
     #[strum(serialize = "_Alignas")]
@@ -164,6 +166,7 @@ impl<'a> Token<'a> {
                     | Keyword::Auto
                     | Keyword::Register
                     | Keyword::Restrict
+                    | Keyword::Noreturn
                     | Keyword::Alignas
             )
         )

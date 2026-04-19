@@ -160,29 +160,52 @@ After qualifier-aware types exist:
 
 ### Current Status
 
-- intentionally deferred from this batch
-- not part of the current support plan here
+- parsed
+- stored on function declarations/definitions
+- accepted on some non-function declarations with warnings
+- rejected in contexts where GCC also rejects it, such as member declarations
+  and typenames
 
-### Why It Was Deferred
+### What Is Implemented
 
-`_Noreturn` is not a type qualifier. It is closer to function metadata.
+- tokenized as a declaration keyword
+- accepted in:
+  - file-scope declarations
+  - block-scope declarations
+  - `for`-initializer declarations
+  - parameter declarations
+- attached to `Function` metadata
+- merged across redeclarations with OR semantics
+- warned on non-function uses such as:
+  - variables
+  - typedefs
+  - parameters
 
-Its backend impact is minimal, but the front-end policy is not:
+### Why It Is Modeled Separately From Qualifiers
 
-- should it be accepted only on functions, or accepted more broadly with a
-  warning
-- how should redeclarations be checked
-- when should returning from a `_Noreturn` function be diagnosed
+`_Noreturn` is not a type qualifier. It is function metadata, closer in shape
+to `is_static` than to `const` or `volatile`.
 
-That is a separate design decision and is cleaner as its own batch.
+That is why it could be implemented now without waiting for qualifier-aware
+types.
+
+### Remaining Limitations
+
+- there is currently no diagnostic for `return` statements inside a
+  `_Noreturn` function
+- `_Noreturn` is not part of any deeper declaration-compatibility subsystem
+- there is no downstream optimization or control-flow effect in codegen
+
+That missing `return` diagnostic is intentional for now. It is not just a
+local parser check; the real question is whether the function satisfies its
+non-returning contract as a whole. That belongs more naturally in a later
+whole-function/control-flow analysis pass, alongside diagnostics such as
+"function may fall through the end" or "not all paths return".
 
 ### Future Plan
 
-If implemented later, the likely shape is:
-
-- store it on `Function`, similar in spirit to `is_static`
-- validate declaration contexts and redeclaration consistency
-- optionally diagnose functions marked `_Noreturn` that return normally
+Keep the current behavior unless later chapters create a reason to tighten
+compatibility or diagnostics further.
 
 ## Array-Parameter Qualifiers Inside `[]`
 
@@ -210,10 +233,10 @@ Handle this in its own batch if needed:
 
 - `auto` and `register`: parse, context-validate, ignore
 - `const`, `volatile`, `restrict`: parse and ignore
+- `_Noreturn`: parse, warn on broad non-function uses, and store on functions
 
 ### What Is Deliberately Not Done Yet
 
-- `_Noreturn`
 - array-parameter qualifiers inside `[]`
 - any qualifier-aware type semantics
 
