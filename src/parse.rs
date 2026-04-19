@@ -20,13 +20,14 @@ use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 
 /// Declaration of a function parameter.
 struct Parameter {
-    name: SmolStr,
+    name: Option<SmolStr>,
     ty: Type,
+    offset: usize,
 }
 
 /// An object declarator.
 struct Declarator {
-    name: SmolStr,
+    name: Option<SmolStr>,
     ty: Type,
     /// The byte offset of the declarator in the source code.
     offset: usize,
@@ -680,7 +681,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declarator> ::= <pointers> (<ident> | "(" <declarator> ")") <type-suffix>
+    /// <declarator> ::= <pointers> (<ident>? | "(" <declarator> ")") <type-suffix>
     /// ```
     fn parse_declarator(&mut self, mut ty: Type, in_param: bool) -> Result<Declarator> {
         ty = self.parse_pointers(ty);
@@ -713,11 +714,14 @@ impl<'a> Parser<'a> {
         }
 
         let offset = self.current().offset;
-        let name = self.consume_ident()?;
+        let name = self.current().as_ident();
+        if name.is_some() {
+            self.advance();
+        }
         let (ty, params) = self.parse_type_suffix(ty, in_param)?;
 
         Ok(Declarator {
-            name: SmolStr::new(name),
+            name: name.map(Into::into),
             ty,
             offset,
             params,
@@ -850,13 +854,16 @@ impl<'a> Parser<'a> {
                     .error_at(offset, "parameter has incomplete type"));
             }
 
-            if !param_names.insert(declarator.name.clone()) {
+            if let Some(name) = &declarator.name
+                && !param_names.insert(name.clone())
+            {
                 return Err(self.source.error_at(offset, "redefinition of parameter"));
             }
 
             params.push(Parameter {
                 name: declarator.name,
                 ty,
+                offset: declarator.offset,
             });
 
             if params.len() > MAX_FUNC_PARAMS {
@@ -1093,8 +1100,14 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
+                let Some(name) = declarator.name else {
+                    return Err(self
+                        .source
+                        .error_at(declarator.offset, "missing member name"));
+                };
+
                 members.push(Member {
-                    name: declarator.name,
+                    name,
                     ty: declarator.ty,
                     align: declspec.align,
                     offset: 0, // union requires 0; struct fills in later
@@ -1263,17 +1276,17 @@ impl<'a> Parser<'a> {
         self.disallow_speculation();
 
         let declarator = self.parse_declarator(return_ty, false)?;
+        let Some(name) = declarator.name.clone() else {
+            return Err(self
+                .source
+                .error_at(declarator.offset, "missing function name"));
+        };
         let Some(func_ty) = self.types.as_func(declarator.ty) else {
             return Err(self.error_current("expected a function"));
         };
         let is_variadic = func_ty.is_variadic;
 
-        let func_id = self.declare_function(
-            declarator.name.clone(),
-            declarator.ty,
-            noreturn,
-            declarator.offset,
-        )?;
+        let func_id = self.declare_function(name, declarator.ty, noreturn, declarator.offset)?;
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
@@ -1290,7 +1303,7 @@ impl<'a> Parser<'a> {
         self.locals.clear();
         self.enter_scope();
 
-        let param_locals = self.create_param_locals(declarator.params);
+        let param_locals = self.create_param_locals(declarator.params)?;
 
         let va_area_local = if is_variadic {
             let ty = self.types.array(Type::Char, Some(VA_AREA_SIZE));
@@ -1336,6 +1349,11 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(declspec.ty, false)?;
+            let Some(name) = declarator.name else {
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "missing variable name"));
+            };
             if declspec.noreturn {
                 self.warn_at(declarator.offset, "variable declared '_Noreturn'");
             }
@@ -1358,7 +1376,7 @@ impl<'a> Parser<'a> {
             };
 
             let global_id = self.declare_global(
-                declarator.name,
+                name,
                 ty,
                 declspec.align,
                 storage,
@@ -1720,12 +1738,17 @@ impl<'a> Parser<'a> {
             first = false;
 
             let declarator = self.parse_declarator(declspec.ty, false)?;
+            let Some(name) = declarator.name else {
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "missing declarator name"));
+            };
 
             // Check whether this declaration would conflict with an existing
             // binding in the current scope; this should (and should only) be
             // called before introducing a block-scope object with no linkage
             let check_no_linkage_decl_conflict = || {
-                let Some(ident) = self.find_ident_current(&declarator.name) else {
+                let Some(ident) = self.find_ident_current(&name) else {
                     return Ok(());
                 };
 
@@ -1759,12 +1782,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
-                self.declare_function(
-                    declarator.name,
-                    declarator.ty,
-                    declspec.noreturn,
-                    declarator.offset,
-                )?;
+                self.declare_function(name, declarator.ty, declspec.noreturn, declarator.offset)?;
                 continue;
             }
 
@@ -1782,7 +1800,7 @@ impl<'a> Parser<'a> {
                 }
 
                 self.declare_global(
-                    declarator.name,
+                    name,
                     declarator.ty,
                     declspec.align,
                     GlobalStorage::Decl,
@@ -1817,14 +1835,14 @@ impl<'a> Parser<'a> {
                 // (with no linkage)
                 let label = self.unique_label();
                 let global_id = self.create_global(label, ty, declspec.align, storage, true);
-                self.push_scope_ident(declarator.name, OrdinaryIdent::Global(global_id, false));
+                self.push_scope_ident(name, OrdinaryIdent::Global(global_id, false));
                 continue;
             }
 
             // Normal local object
             check_no_linkage_decl_conflict()?;
 
-            let local_id = self.create_local(declarator.name, declarator.ty, declspec.align);
+            let local_id = self.create_local(name, declarator.ty, declspec.align);
 
             let mut ty = self.locals[local_id].ty;
             if self.current().is_punct("=") {
@@ -2807,8 +2825,13 @@ impl<'a> Parser<'a> {
             if noreturn {
                 self.warn_at(declarator.offset, "typedef declared '_Noreturn'");
             }
+            let Some(name) = declarator.name else {
+                return Err(self
+                    .source
+                    .error_at(declarator.offset, "missing typedef name"));
+            };
 
-            if let Some(ident) = self.find_ident_current(&declarator.name) {
+            if let Some(ident) = self.find_ident_current(&name) {
                 match ident {
                     OrdinaryIdent::Typedef(ty) => {
                         // Duplicate typedef with same type is allowed
@@ -2828,7 +2851,7 @@ impl<'a> Parser<'a> {
             }
 
             let typedef = OrdinaryIdent::Typedef(declarator.ty);
-            self.push_scope_ident(declarator.name, typedef);
+            self.push_scope_ident(name, typedef);
         }
 
         self.skip_punct(";")?;
@@ -2927,15 +2950,18 @@ impl<'a> Parser<'a> {
     ///
     /// Parameters are pushed in reverse order to ensure the first parameter
     /// gets the lowest local ID.
-    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Vec<usize> {
+    fn create_param_locals(&mut self, params: Vec<Parameter>) -> Result<Vec<usize>> {
         let mut param_ids = Vec::with_capacity(params.len());
 
         for param in params.into_iter().rev() {
-            param_ids.push(self.create_local(param.name, param.ty, None));
+            let Some(name) = param.name else {
+                return Err(self.source.error_at(param.offset, "missing parameter name"));
+            };
+            param_ids.push(self.create_local(name, param.ty, None));
         }
 
         param_ids.reverse();
-        param_ids
+        Ok(param_ids)
     }
 
     /// Create a new global variable.
