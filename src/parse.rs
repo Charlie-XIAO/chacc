@@ -1070,28 +1070,30 @@ impl<'a> Parser<'a> {
 
         while !self.current().is_punct("}") {
             let declspec = self.parse_declspec(context)?;
-
-            let mut first = true;
-            while !self.current().is_punct(";") {
-                if !first {
-                    self.skip_punct(",")?;
+            if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
+                if !is_flexible_array {
+                    return Err(self.source.error_at(offset, "field has incomplete type"));
                 }
-                first = false;
-
-                if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
-                    if !is_flexible_array {
-                        return Err(self.source.error_at(offset, "field has incomplete type"));
-                    }
-                    if !is_struct {
-                        return Err(self
-                            .source
-                            .error_at(offset, "flexible array member in union"));
-                    }
+                if !is_struct {
                     return Err(self
                         .source
-                        .error_at(offset, "flexible array member not at end of struct"));
+                        .error_at(offset, "flexible array member in union"));
                 }
+                return Err(self
+                    .source
+                    .error_at(offset, "flexible array member not at end of struct"));
+            }
 
+            if self.current().is_punct(";") {
+                self.warn_current("declaration does not declare anything");
+                self.advance();
+                continue;
+            }
+            if self.current().is_punct("}") {
+                return Err(self.error_current("expected ';'"));
+            }
+
+            loop {
                 let declarator = self.parse_declarator(declspec.ty, false)?;
                 if self.types.is_incomplete(declarator.ty) {
                     pending_incomplete = Some((
@@ -1112,9 +1114,20 @@ impl<'a> Parser<'a> {
                     align: declspec.align,
                     offset: 0, // union requires 0; struct fills in later
                 });
-            }
 
-            self.advance();
+                if self.current().is_punct(",") {
+                    self.advance();
+                    continue;
+                }
+                if self.current().is_punct(";") {
+                    self.advance();
+                    break;
+                }
+                if self.current().is_punct("}") {
+                    return Err(self.error_current("expected ';'"));
+                }
+                return Err(self.error_current("expected ',' or ';'"));
+            }
         }
 
         self.advance();
@@ -1340,14 +1353,13 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_global_variable(&mut self, declspec: Declspec) -> Result<()> {
         self.disallow_speculation();
-        let mut first = true;
+        if self.current().is_punct(";") {
+            self.warn_current("useless type name in empty declaration");
+            self.advance();
+            return Ok(());
+        }
 
-        while !self.current().is_punct(";") {
-            if !first {
-                self.skip_punct(",")?;
-            }
-            first = false;
-
+        loop {
             let declarator = self.parse_declarator(declspec.ty, false)?;
             let Some(name) = declarator.name else {
                 return Err(self
@@ -1391,9 +1403,17 @@ impl<'a> Parser<'a> {
                     .source
                     .error_at(declarator.offset, "variable has incomplete type"));
             }
-        }
 
-        self.skip_punct(";")?;
+            if self.current().is_punct(",") {
+                self.advance();
+                continue;
+            }
+            if self.current().is_punct(";") {
+                self.advance();
+                break;
+            }
+            return Err(self.error_current("expected ',' or ';'"));
+        }
         Ok(())
     }
 
@@ -1729,14 +1749,13 @@ impl<'a> Parser<'a> {
     fn parse_declaration(&mut self, declspec: Declspec) -> Result<Stmt> {
         let offset = self.current().offset;
         let mut stmts = Vec::new();
-        let mut first = true;
+        if self.current().is_punct(";") {
+            self.warn_current("useless type name in empty declaration");
+            self.advance();
+            return Ok(Stmt::block(Vec::new(), offset));
+        }
 
-        while !self.current().is_punct(";") {
-            if !first {
-                self.skip_punct(",")?;
-            }
-            first = false;
-
+        loop {
             let declarator = self.parse_declarator(declspec.ty, false)?;
             let Some(name) = declarator.name else {
                 return Err(self
@@ -1783,85 +1802,88 @@ impl<'a> Parser<'a> {
                 }
 
                 self.declare_function(name, declarator.ty, declspec.noreturn, declarator.offset)?;
-                continue;
-            }
+            } else {
+                if declspec.noreturn {
+                    self.warn_at(declarator.offset, "variable declared '_Noreturn'");
+                }
 
-            if declspec.noreturn {
-                self.warn_at(declarator.offset, "variable declared '_Noreturn'");
-            }
+                // Block-scope extern object declaration
+                if declspec.storage_class == Some(StorageClass::Extern) {
+                    if self.current().is_punct("=") {
+                        return Err(self.source.error_at(
+                            declarator.offset,
+                            "extern declaration cannot be initialized",
+                        ));
+                    }
 
-            // Block-scope extern object declaration
-            if declspec.storage_class == Some(StorageClass::Extern) {
-                if self.current().is_punct("=") {
-                    return Err(self.source.error_at(
+                    self.declare_global(
+                        name,
+                        declarator.ty,
+                        declspec.align,
+                        GlobalStorage::Decl,
+                        false,
                         declarator.offset,
-                        "extern declaration cannot be initialized",
-                    ));
-                }
+                    )?;
+                } else if declspec.storage_class == Some(StorageClass::Static) {
+                    // Block-scope static object
+                    check_no_linkage_decl_conflict()?;
 
-                self.declare_global(
-                    name,
-                    declarator.ty,
-                    declspec.align,
-                    GlobalStorage::Decl,
-                    false,
-                    declarator.offset,
-                )?;
-                continue;
-            }
+                    let mut ty = declarator.ty;
+                    let storage = if self.current().is_punct("=") {
+                        self.advance();
+                        let init = self.parse_initializer(ty)?;
+                        ty = init.ty;
+                        GlobalStorage::Data(self.new_global_init(init)?)
+                    } else {
+                        GlobalStorage::Zero
+                    };
 
-            // Block-scope static object
-            if declspec.storage_class == Some(StorageClass::Static) {
-                check_no_linkage_decl_conflict()?;
+                    if self.types.is_incomplete(ty) {
+                        return Err(self
+                            .source
+                            .error_at(declarator.offset, "variable has incomplete type"));
+                    }
 
-                let mut ty = declarator.ty;
-                let storage = if self.current().is_punct("=") {
-                    self.advance();
-                    let init = self.parse_initializer(ty)?;
-                    ty = init.ty;
-                    GlobalStorage::Data(self.new_global_init(init)?)
+                    // A block-scope static object is backed by a hidden global
+                    // storage, then its spelled local name is bound to that storage
+                    // (with no linkage)
+                    let label = self.unique_label();
+                    let global_id = self.create_global(label, ty, declspec.align, storage, true);
+                    self.push_scope_ident(name, OrdinaryIdent::Global(global_id, false));
                 } else {
-                    GlobalStorage::Zero
-                };
+                    // Normal local object
+                    check_no_linkage_decl_conflict()?;
 
-                if self.types.is_incomplete(ty) {
-                    return Err(self
-                        .source
-                        .error_at(declarator.offset, "variable has incomplete type"));
+                    let local_id = self.create_local(name, declarator.ty, declspec.align);
+
+                    let mut ty = self.locals[local_id].ty;
+                    if self.current().is_punct("=") {
+                        let offset = self.current().offset;
+                        self.advance();
+                        let init = self.parse_initializer(ty)?;
+                        ty = init.ty;
+                        self.new_local_init(local_id, init, offset, &mut stmts)?;
+                    }
+
+                    if self.types.is_incomplete(ty) {
+                        return Err(self
+                            .source
+                            .error_at(declarator.offset, "variable has incomplete type"));
+                    }
+                    self.locals[local_id].ty = ty;
                 }
+            }
 
-                // A block-scope static object is backed by a hidden global
-                // storage, then its spelled local name is bound to that storage
-                // (with no linkage)
-                let label = self.unique_label();
-                let global_id = self.create_global(label, ty, declspec.align, storage, true);
-                self.push_scope_ident(name, OrdinaryIdent::Global(global_id, false));
+            if self.current().is_punct(",") {
+                self.advance();
                 continue;
             }
-
-            // Normal local object
-            check_no_linkage_decl_conflict()?;
-
-            let local_id = self.create_local(name, declarator.ty, declspec.align);
-
-            let mut ty = self.locals[local_id].ty;
-            if self.current().is_punct("=") {
-                let offset = self.current().offset;
+            if self.current().is_punct(";") {
                 self.advance();
-                let init = self.parse_initializer(ty)?;
-                ty = init.ty;
-                self.new_local_init(local_id, init, offset, &mut stmts)?;
+                break;
             }
-
-            if self.types.is_incomplete(ty) {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "variable has incomplete type"));
-            }
-            self.locals[local_id].ty = ty;
+            return Err(self.error_current("expected ',' or ';'"));
         }
-
-        self.skip_punct(";")?;
         Ok(Stmt::block(stmts, offset))
     }
 
@@ -2813,14 +2835,13 @@ impl<'a> Parser<'a> {
     /// <typedef-tail> ::= <declarator> ("," <declarator>)* ";"
     /// ```
     fn parse_typedef_tail(&mut self, base_ty: Type, noreturn: bool) -> Result<()> {
-        let mut first = true;
+        if self.current().is_punct(";") {
+            self.warn_current("useless type name in empty declaration");
+            self.advance();
+            return Ok(());
+        }
 
-        while !self.current().is_punct(";") {
-            if !first {
-                self.skip_punct(",")?;
-            }
-            first = false;
-
+        loop {
             let declarator = self.parse_declarator(base_ty, false)?;
             if noreturn {
                 self.warn_at(declarator.offset, "typedef declared '_Noreturn'");
@@ -2852,9 +2873,17 @@ impl<'a> Parser<'a> {
 
             let typedef = OrdinaryIdent::Typedef(declarator.ty);
             self.push_scope_ident(name, typedef);
-        }
 
-        self.skip_punct(";")?;
+            if self.current().is_punct(",") {
+                self.advance();
+                continue;
+            }
+            if self.current().is_punct(";") {
+                self.advance();
+                break;
+            }
+            return Err(self.error_current("expected ',' or ';'"));
+        }
         Ok(())
     }
 
