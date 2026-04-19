@@ -682,7 +682,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <declarator> ::= <pointers> (<ident> | "(" <declarator> ")") <type-suffix>
     /// ```
-    fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator> {
+    fn parse_declarator(&mut self, mut ty: Type, in_param: bool) -> Result<Declarator> {
         ty = self.parse_pointers(ty);
 
         if self.current().is_punct("(") {
@@ -692,21 +692,21 @@ impl<'a> Parser<'a> {
             // Try to parse the inner declarator to find where it ends, i.e.,
             // the matching ")"
             let (_, next_pos) = self.speculate(|parser| {
-                parser.parse_declarator(Default::default())?;
+                parser.parse_declarator(Default::default(), in_param)?;
                 parser.skip_punct(")")?;
                 Ok(())
             })?;
 
             // Parse the type suffix after ")"
             self.pos = next_pos;
-            let (ty, params) = self.parse_type_suffix(ty)?;
+            let (ty, params) = self.parse_type_suffix(ty, in_param)?;
             let next_pos = self.pos;
 
             // Rewind to parse the inner declarator again, this time with the
             // real type; we don't go through the type suffix again but rather
             // directly take its params
             self.pos = inner_pos;
-            let mut declarator = self.parse_declarator(ty)?;
+            let mut declarator = self.parse_declarator(ty, in_param)?;
             declarator.params = params;
             self.pos = next_pos;
             return Ok(declarator);
@@ -714,7 +714,7 @@ impl<'a> Parser<'a> {
 
         let offset = self.current().offset;
         let name = self.consume_ident()?;
-        let (ty, params) = self.parse_type_suffix(ty)?;
+        let (ty, params) = self.parse_type_suffix(ty, in_param)?;
 
         Ok(Declarator {
             name: SmolStr::new(name),
@@ -728,7 +728,7 @@ impl<'a> Parser<'a> {
     /// <abstract-declarator> ::=
     ///   <pointers> ("(" <abstract-declarator> ")")? <type-suffix>
     /// ```
-    fn parse_abstract_declarator(&mut self, mut ty: Type) -> Result<Type> {
+    fn parse_abstract_declarator(&mut self, mut ty: Type, in_param: bool) -> Result<Type> {
         ty = self.parse_pointers(ty);
 
         // The following part of logic is analogous to "parse_declarator"
@@ -737,22 +737,22 @@ impl<'a> Parser<'a> {
             let inner_pos = self.pos;
 
             let (_, next_pos) = self.speculate(|parser| {
-                parser.parse_abstract_declarator(Default::default())?;
+                parser.parse_abstract_declarator(Default::default(), in_param)?;
                 parser.skip_punct(")")?;
                 Ok(())
             })?;
 
             self.pos = next_pos;
-            let (ty, _) = self.parse_type_suffix(ty)?;
+            let (ty, _) = self.parse_type_suffix(ty, in_param)?;
             let next_pos = self.pos;
 
             self.pos = inner_pos;
-            let ty = self.parse_abstract_declarator(ty)?;
+            let ty = self.parse_abstract_declarator(ty, in_param)?;
             self.pos = next_pos;
             return Ok(ty);
         }
 
-        let (ty, _) = self.parse_type_suffix(ty)?;
+        let (ty, _) = self.parse_type_suffix(ty, in_param)?;
         Ok(ty)
     }
 
@@ -778,19 +778,19 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_typename(&mut self) -> Result<Type> {
         let declspec = self.parse_declspec(DeclspecContext::Typename)?;
-        self.parse_abstract_declarator(declspec.ty)
+        self.parse_abstract_declarator(declspec.ty, false)
     }
 
     /// ```bnf
     /// <type-suffix> ::= "(" <func-params> | <array-dimensions>
     /// ```
-    fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>)> {
+    fn parse_type_suffix(&mut self, ty: Type, in_param: bool) -> Result<(Type, Vec<Parameter>)> {
         if self.current().is_punct("(") {
             self.advance();
             return self.parse_func_params(ty);
         }
 
-        let ty = self.parse_array_dimensions(ty)?;
+        let ty = self.parse_array_dimensions(ty, in_param)?;
         Ok((ty, Vec::new()))
     }
 
@@ -830,7 +830,7 @@ impl<'a> Parser<'a> {
             }
 
             let offset = self.current().offset;
-            let declarator = self.parse_declarator(declspec.ty)?;
+            let declarator = self.parse_declarator(declspec.ty, true)?;
             if declspec.noreturn {
                 self.warn_at(declarator.offset, "parameter declared '_Noreturn'");
             }
@@ -872,9 +872,10 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-dimensions> ::= ("[" <constexpr>? "]")*
+    /// <array-dimensions> ::= ("[" <array-qualifier>* <constexpr>? "]")*
+    /// <array-qualifier> ::= "static" | "const" | "volatile" | "restrict"
     /// ```
-    fn parse_array_dimensions(&mut self, ty: Type) -> Result<Type> {
+    fn parse_array_dimensions(&mut self, ty: Type, in_param: bool) -> Result<Type> {
         if !self.current().is_punct("[") {
             return Ok(ty);
         }
@@ -882,7 +883,39 @@ impl<'a> Parser<'a> {
         let offset = self.current().offset;
         self.advance();
 
+        let mut static_offset = None;
+        while let Some(keyword) = self.current().as_keyword() {
+            if !matches!(
+                keyword,
+                Keyword::Static | Keyword::Const | Keyword::Volatile | Keyword::Restrict
+            ) {
+                break;
+            }
+
+            if !in_param {
+                return Err(
+                    self.error_current("'static' or qualifiers in non-parameter array declarator")
+                );
+            }
+
+            if keyword == Keyword::Static {
+                if static_offset.is_some() {
+                    return Err(
+                        self.error_current("duplicate 'static' in array parameter declarator")
+                    );
+                }
+                static_offset = Some(self.current().offset);
+            }
+            self.advance();
+        }
+
         let len = if self.current().is_punct("]") {
+            if let Some(offset) = static_offset {
+                return Err(self.source.error_at(
+                    offset,
+                    "array parameter declared 'static' but bound is missing",
+                ));
+            }
             None
         } else {
             let len = self.parse_constexpr()?;
@@ -894,7 +927,7 @@ impl<'a> Parser<'a> {
 
         self.skip_punct("]")?;
 
-        let ty = self.parse_array_dimensions(ty)?;
+        let ty = self.parse_array_dimensions(ty, in_param)?;
         if self.types.is_incomplete(ty) {
             return Err(self
                 .source
@@ -1052,7 +1085,7 @@ impl<'a> Parser<'a> {
                         .error_at(offset, "flexible array member not at end of struct"));
                 }
 
-                let declarator = self.parse_declarator(declspec.ty)?;
+                let declarator = self.parse_declarator(declspec.ty, false)?;
                 if self.types.is_incomplete(declarator.ty) {
                     pending_incomplete = Some((
                         self.types.as_array(declarator.ty).is_some(),
@@ -1217,7 +1250,7 @@ impl<'a> Parser<'a> {
         }
 
         let (result, _) = self.speculate(|parser| {
-            let declarator = parser.parse_declarator(Default::default())?;
+            let declarator = parser.parse_declarator(Default::default(), false)?;
             Ok(parser.types.is_func(declarator.ty))
         })?;
         Ok(result)
@@ -1229,7 +1262,7 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self, return_ty: Type, is_static: bool, noreturn: bool) -> Result<()> {
         self.disallow_speculation();
 
-        let declarator = self.parse_declarator(return_ty)?;
+        let declarator = self.parse_declarator(return_ty, false)?;
         let Some(func_ty) = self.types.as_func(declarator.ty) else {
             return Err(self.error_current("expected a function"));
         };
@@ -1302,7 +1335,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(declspec.ty)?;
+            let declarator = self.parse_declarator(declspec.ty, false)?;
             if declspec.noreturn {
                 self.warn_at(declarator.offset, "variable declared '_Noreturn'");
             }
@@ -1686,7 +1719,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(declspec.ty)?;
+            let declarator = self.parse_declarator(declspec.ty, false)?;
 
             // Check whether this declaration would conflict with an existing
             // binding in the current scope; this should (and should only) be
@@ -2770,7 +2803,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let declarator = self.parse_declarator(base_ty)?;
+            let declarator = self.parse_declarator(base_ty, false)?;
             if noreturn {
                 self.warn_at(declarator.offset, "typedef declared '_Noreturn'");
             }

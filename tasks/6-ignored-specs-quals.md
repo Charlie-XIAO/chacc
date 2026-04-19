@@ -211,21 +211,46 @@ compatibility or diagnostics further.
 
 ### Current Status
 
-- intentionally deferred from this batch
-- not part of the current support plan here
+- parsed in function parameter array declarators
+- lightly validated
+- otherwise ignored
 
-### Why It Was Deferred
+### What Is Implemented
 
-This is a separate grammar rule from ordinary qualifiers. It only matters in
-function parameter declarators, so it is better handled as a focused parser
-change rather than being mixed into the ordinary qualifier story.
+- accepted only in function parameter array declarators
+- accepted forms include:
+  - `int a[restrict 3]`
+  - `int a[static 3]`
+  - `int a[restrict static 3]`
+- rejected outside parameter declarators
+- `static` currently requires an explicit bound
+- qualifiers and `static` are ignored after parsing and do not affect the
+  resulting parameter type
+
+### Why It Is Handled Separately
+
+This syntax is not the same thing as ordinary type qualifiers. It is a special
+array-parameter grammar rule, so it is clearer to parse it only in parameter
+declarators rather than relaxing all array declarators globally.
 
 ### Future Plan
 
-Handle this in its own batch if needed:
+The future path here likely splits in two:
 
-- parse `static` and qualifiers inside parameter array declarators
-- decide whether they should be silently ignored or lightly validated
+- `const` / `volatile` / `restrict`
+  - once qualifier-aware types exist, these may be carried onto the adjusted
+    pointer type of the parameter, since array parameters already decay to
+    pointers in `parse_func_params()`
+
+- `static`
+  - this is not a type qualifier; it is a parameter contract about the minimum
+    accessible number of elements
+  - if implemented later, it will likely need dedicated parameter metadata
+    rather than being stored on ordinary array types
+
+So this area is not expected to remain parser-only forever. It is deferred
+mainly because the current type and parameter models are not yet rich enough to
+support the semantics cleanly.
 
 ## Overall Plan
 
@@ -234,10 +259,11 @@ Handle this in its own batch if needed:
 - `auto` and `register`: parse, context-validate, ignore
 - `const`, `volatile`, `restrict`: parse and ignore
 - `_Noreturn`: parse, warn on broad non-function uses, and store on functions
+- array-parameter qualifiers inside `[]`: parse in parameter declarators,
+  lightly validate, ignore
 
 ### What Is Deliberately Not Done Yet
 
-- array-parameter qualifiers inside `[]`
 - any qualifier-aware type semantics
 
 ### Next Real Semantic Step

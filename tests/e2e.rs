@@ -362,6 +362,7 @@ fn test_compat() {
     let mut f = Fixture::new();
     f.line("_Noreturn int ignored_global;");
     f.line("_Noreturn noreturn_fn(int restrict x) { exit(0); }");
+    f.line("void funcy_type(int arg[restrict static 3]) {}");
     f.main();
 
     f.line("{ _Noreturn x; }");
