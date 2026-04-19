@@ -37,9 +37,19 @@ pub enum Keyword {
     Struct,
     Union,
     Enum,
+    Const,
+    Volatile,
     Typedef,
     Static,
     Extern,
+    Auto,
+    Register,
+    #[strum(
+        serialize = "restrict",
+        serialize = "__restrict",
+        serialize = "__restrict__"
+    )]
+    Restrict,
     #[strum(serialize = "_Alignof")]
     Alignof,
     #[strum(serialize = "_Alignas")]
@@ -146,9 +156,14 @@ impl<'a> Token<'a> {
                     | Keyword::Struct
                     | Keyword::Union
                     | Keyword::Enum
+                    | Keyword::Const
+                    | Keyword::Volatile
                     | Keyword::Typedef
                     | Keyword::Static
                     | Keyword::Extern
+                    | Keyword::Auto
+                    | Keyword::Register
+                    | Keyword::Restrict
                     | Keyword::Alignas
             )
         )

@@ -72,6 +72,8 @@ enum StorageClass {
     Typedef,
     Static,
     Extern,
+    Auto,
+    Register,
 }
 
 /// The parsing context for declaration specifiers.
@@ -89,19 +91,6 @@ enum DeclspecContext {
     ForLoopInitializer,
     #[strum(serialize = "{0} member declaration")]
     MemberDecl(&'static str),
-}
-
-impl DeclspecContext {
-    fn allows_storage_class(&self) -> bool {
-        matches!(self, Self::FileScopeDecl | Self::BlockScopeDecl)
-    }
-
-    fn allows_alignas(&self) -> bool {
-        matches!(
-            self,
-            Self::FileScopeDecl | Self::BlockScopeDecl | Self::MemberDecl(_)
-        )
-    }
 }
 
 /// A declaration specifier.
@@ -442,18 +431,12 @@ impl<'a> Parser<'a> {
             Other(Type),
         }
 
-        #[derive(Debug, PartialEq, Eq)]
-        enum Sign {
-            None,
-            Unsigned,
-            Signed,
-        }
-
         let mut spec = None;
         let mut long_count = 0;
-        let mut sign = Sign::None;
+        let mut signed = None;
         let mut storage_class = None;
         let mut align = None;
+        let mut defaults_to_int = false;
 
         while self.at_typename() {
             let offset = self.current().offset;
@@ -481,71 +464,104 @@ impl<'a> Parser<'a> {
                 };
             }
 
+            let Some(keyword) = keyword else {
+                if let Some(ty) = typedef_ty {
+                    if spec.is_some() || signed.is_some() {
+                        bail_multiple_types!();
+                    }
+                    spec = Some(TypeSpec::Other(ty));
+                }
+                continue;
+            };
+
             match keyword {
-                Some(Keyword::Void) => match spec {
-                    None if sign == Sign::None => spec = Some(TypeSpec::Void),
+                Keyword::Void => match spec {
+                    None if signed.is_none() => spec = Some(TypeSpec::Void),
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Bool) => match spec {
-                    None if sign == Sign::None => spec = Some(TypeSpec::Bool),
+                Keyword::Bool => match spec {
+                    None if signed.is_none() => spec = Some(TypeSpec::Bool),
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Char) => match spec {
+                Keyword::Char => match spec {
                     None => spec = Some(TypeSpec::Char),
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Short) => match spec {
+                Keyword::Short => match spec {
                     None | Some(TypeSpec::Int) => spec = Some(TypeSpec::Short),
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Int) => match spec {
+                Keyword::Int => match spec {
                     None => spec = Some(TypeSpec::Int),
                     Some(TypeSpec::Short | TypeSpec::Long) => {},
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Long) => match spec {
+                Keyword::Long => match spec {
                     None | Some(TypeSpec::Int) | Some(TypeSpec::Long) if long_count < 2 => {
                         spec = Some(TypeSpec::Long);
                         long_count += 1;
                     },
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Struct) => match spec {
-                    None if sign == Sign::None => {
+                Keyword::Struct => match spec {
+                    None if signed.is_none() => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(true, context)?,
                         ))
                     },
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Union) => match spec {
-                    None if sign == Sign::None => {
+                Keyword::Union => match spec {
+                    None if signed.is_none() => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(false, context)?,
                         ))
                     },
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Enum) => match spec {
-                    None if sign == Sign::None => {
+                Keyword::Enum => match spec {
+                    None if signed.is_none() => {
                         spec = Some(TypeSpec::Other(self.parse_enum_specifier()?))
                     },
                     _ => bail_multiple_types!(),
                 },
-                Some(Keyword::Signed) => {
-                    if sign != Sign::None {
+                Keyword::Signed => {
+                    if signed.is_some() {
                         bail_multiple_types!();
                     }
-                    sign = Sign::Signed;
+                    signed = Some(true);
+                    defaults_to_int = true;
                 },
-                Some(Keyword::Unsigned) => {
-                    if sign != Sign::None {
+                Keyword::Unsigned => {
+                    if signed.is_some() {
                         bail_multiple_types!();
                     }
-                    sign = Sign::Unsigned;
+                    signed = Some(false);
+                    defaults_to_int = true;
                 },
-                Some(Keyword::Typedef | Keyword::Static | Keyword::Extern) => {
-                    if !context.allows_storage_class() {
+                Keyword::Typedef
+                | Keyword::Static
+                | Keyword::Extern
+                | Keyword::Auto
+                | Keyword::Register => {
+                    let allowed = match (keyword, context) {
+                        (
+                            Keyword::Typedef | Keyword::Static | Keyword::Extern,
+                            DeclspecContext::FileScopeDecl | DeclspecContext::BlockScopeDecl,
+                        ) => true,
+                        (
+                            Keyword::Auto,
+                            DeclspecContext::BlockScopeDecl | DeclspecContext::ForLoopInitializer,
+                        ) => true,
+                        (
+                            Keyword::Register,
+                            DeclspecContext::BlockScopeDecl
+                            | DeclspecContext::ForLoopInitializer
+                            | DeclspecContext::ParameterDecl,
+                        ) => true,
+                        _ => false,
+                    };
+                    if !allowed {
                         return Err(self.source.error_at(
                             offset,
                             format_smolstr!("storage class specifier is not allowed in {context}"),
@@ -557,22 +573,28 @@ impl<'a> Parser<'a> {
                             "multiple storage classes in declaration specifiers",
                         ));
                     }
-                    storage_class = Some(match keyword.unwrap() {
+                    storage_class = Some(match keyword {
                         Keyword::Typedef => StorageClass::Typedef,
                         Keyword::Static => StorageClass::Static,
                         Keyword::Extern => StorageClass::Extern,
+                        Keyword::Auto => StorageClass::Auto,
+                        Keyword::Register => StorageClass::Register,
                         _ => unreachable!(),
                     });
+                    defaults_to_int = true;
                 },
-                Some(Keyword::Alignas) => {
-                    if !context.allows_alignas() {
+                Keyword::Alignas => {
+                    if !matches!(
+                        context,
+                        DeclspecContext::FileScopeDecl
+                            | DeclspecContext::BlockScopeDecl
+                            | DeclspecContext::MemberDecl(_)
+                    ) {
                         return Err(self.source.error_at(
                             offset,
                             format_smolstr!("'_Alignas' is not allowed in {context}"),
                         ));
                     }
-                    // Multiple "_Alignas" is allowed, and only the strictest
-                    // requirement is kept
                     self.skip_punct("(")?;
                     align = align.max(Some(if self.at_typename() {
                         let ty = self.parse_typename()?;
@@ -584,38 +606,35 @@ impl<'a> Parser<'a> {
                     }));
                     self.skip_punct(")")?;
                 },
-                _ => match typedef_ty {
-                    Some(ty) if spec.is_none() && sign == Sign::None => {
-                        spec = Some(TypeSpec::Other(ty))
-                    },
-                    Some(_) => bail_multiple_types!(),
-                    None => unreachable!("all typename tokens should have been handled"),
+                Keyword::Const | Keyword::Volatile | Keyword::Restrict => {
+                    defaults_to_int = true;
                 },
+                _ => unreachable!("all keyword tokens should have been handled"),
             }
         }
 
-        if spec.is_none() && sign != Sign::None {
+        if spec.is_none() && defaults_to_int {
+            if signed.is_none() {
+                // "signed/unsigned x" is valid without warning
+                self.warn_current("missing type specifier, defaults to 'int'");
+            }
             spec = Some(TypeSpec::Int);
         }
 
-        if spec.is_none() {
-            if let Some(storage_class) = storage_class {
-                return Err(self
-                    .error_current(format_smolstr!("missing type specifier in {storage_class}")));
-            }
+        let Some(spec) = spec else {
             return Err(self.error_current("expected a typename"));
-        }
+        };
 
-        let ty = match (spec.unwrap(), sign) {
+        let ty = match (spec, signed) {
             (TypeSpec::Void, _) => Type::Void,
             (TypeSpec::Bool, _) => Type::Bool,
-            (TypeSpec::Char, Sign::Unsigned) => Type::UChar,
+            (TypeSpec::Char, Some(false)) => Type::UChar,
             (TypeSpec::Char, _) => Type::Char,
-            (TypeSpec::Short, Sign::Unsigned) => Type::UShort,
+            (TypeSpec::Short, Some(false)) => Type::UShort,
             (TypeSpec::Short, _) => Type::Short,
-            (TypeSpec::Int, Sign::Unsigned) => Type::UInt,
+            (TypeSpec::Int, Some(false)) => Type::UInt,
             (TypeSpec::Int, _) => Type::Int,
-            (TypeSpec::Long, Sign::Unsigned) => Type::ULong,
+            (TypeSpec::Long, Some(false)) => Type::ULong,
             (TypeSpec::Long, _) => Type::Long,
             (TypeSpec::Other(ty), _) => ty,
         };
@@ -628,13 +647,10 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <declarator> ::= "*"* (<ident> | "(" <declarator> ")") <type-suffix>
+    /// <declarator> ::= <pointers> (<ident> | "(" <declarator> ")") <type-suffix>
     /// ```
     fn parse_declarator(&mut self, mut ty: Type) -> Result<Declarator> {
-        while self.current().is_punct("*") {
-            self.advance();
-            ty = self.types.ptr(ty);
-        }
+        ty = self.parse_pointers(ty);
 
         if self.current().is_punct("(") {
             self.advance();
@@ -677,13 +693,10 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <abstract-declarator> ::=
-    ///   "*"* ("(" <abstract-declarator> ")")? <type-suffix>
+    ///   <pointers> ("(" <abstract-declarator> ")")? <type-suffix>
     /// ```
     fn parse_abstract_declarator(&mut self, mut ty: Type) -> Result<Type> {
-        while self.current().is_punct("*") {
-            self.advance();
-            ty = self.types.ptr(ty);
-        }
+        ty = self.parse_pointers(ty);
 
         // The following part of logic is analogous to "parse_declarator"
         if self.current().is_punct("(") {
@@ -711,6 +724,23 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
+    /// <pointers> ::= ("*" ("const" | "volatile" | "restrict")*)*
+    /// ```
+    fn parse_pointers(&mut self, mut ty: Type) -> Type {
+        while self.current().is_punct("*") {
+            self.advance();
+            ty = self.types.ptr(ty);
+
+            while self.current().as_keyword().is_some_and(|kw| {
+                matches!(kw, Keyword::Const | Keyword::Volatile | Keyword::Restrict)
+            }) {
+                self.advance();
+            }
+        }
+        ty
+    }
+
+    /// ```bnf
     /// <typename> ::= <declspec> <abstract-declarator>
     /// ```
     fn parse_typename(&mut self) -> Result<Type> {
@@ -719,7 +749,7 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <type-suffix> ::= "(" <func-params> | ("[" <num> "]")*
+    /// <type-suffix> ::= "(" <func-params> | <array-dimensions>
     /// ```
     fn parse_type_suffix(&mut self, ty: Type) -> Result<(Type, Vec<Parameter>)> {
         if self.current().is_punct("(") {
@@ -1645,6 +1675,12 @@ impl<'a> Parser<'a> {
                     return Err(self.source.error_at(
                         declarator.offset,
                         "function declaration cannot be initialized",
+                    ));
+                }
+                if !matches!(declspec.storage_class, None | Some(StorageClass::Extern)) {
+                    return Err(self.source.error_at(
+                        declarator.offset,
+                        "invalid storage class specifier in function declaration",
                     ));
                 }
 

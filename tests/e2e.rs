@@ -358,6 +358,23 @@ fn test_cast() {
 
 #[rustfmt::skip]
 #[test]
+fn test_compat() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.line("{ volatile x; }");
+    f.line("{ int volatile x; }");
+    f.line("{ volatile int x; }");
+    f.line("{ volatile int volatile volatile x; }");
+    f.line("{ int volatile * volatile volatile x; }");
+    f.line("{ auto ** restrict __restrict __restrict__ const volatile *x; }");
+
+    f.finish();
+    f.run("compat");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_compound_literal() {
     let mut f = Fixture::new();
     f.line("typedef struct Tree {int val; struct Tree *lhs; struct Tree *rhs;} Tree;");
@@ -377,6 +394,24 @@ fn test_compound_literal() {
 
     f.finish();
     f.run("compound_literal");
+}
+
+#[rustfmt::skip]
+#[test]
+fn test_const() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.line("{ const x; }");
+    f.line("{ int const x; }");
+    f.line("{ const int x; }");
+    f.line("{ const int const const x; }");
+    f.assert(5, "({ const x = 5; x; })");
+    f.assert(8, "({ const x = 8; int *const y=&x; *y; })");
+    f.assert(6, "({ const x = 6; *(const * const)&x; })");
+
+    f.finish();
+    f.run("const");
 }
 
 #[rustfmt::skip]
