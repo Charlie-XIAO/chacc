@@ -692,6 +692,27 @@ fn test_float() {
     f.assert(1, "5.0f<=5");
     f.assert(1, "4.9f<=5");
 
+    f.assert(6, "2.3+3.8");
+    f.assert(-1, "2.3-3.8");
+    f.assert(-3, "-3.8");
+    f.assert(13, "3.3*4");
+    f.assert(2, "5.0/2");
+
+    f.assert(6, "2.3f+3.8f");
+    f.assert(6, "2.3f+3.8");
+    f.assert(-1, "2.3f-3.8");
+    f.assert(-3, "-3.8f");
+    f.assert(13, "3.3f*4");
+    f.assert(2, "5.0f/2");
+
+    f.assert(0, "0.0/0.0 == 0.0/0.0");
+    f.assert(1, "0.0/0.0 != 0.0/0.0");
+
+    f.assert(0, "0.0/0.0 < 0");
+    f.assert(0, "0.0/0.0 <= 0");
+    f.assert(0, "0.0/0.0 > 0");
+    f.assert(0, "0.0/0.0 >= 0");
+
     f.finish();
     f.run("float");
 }
@@ -1070,6 +1091,7 @@ fn test_literal() {
     f.run("literal");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_pointer() {
     let mut f = Fixture::new();
@@ -1117,6 +1139,7 @@ fn test_pointer() {
     f.run("pointer");
 }
 
+#[rustfmt::skip]
 #[test]
 fn test_sizeof() {
     let mut f = Fixture::new();
@@ -1204,6 +1227,15 @@ fn test_sizeof() {
     f.assert(4, "sizeof(float)");
     f.assert(8, "sizeof(double)");
     f.assert(8, "sizeof(long double)");
+
+    f.assert(4, "sizeof(1.f+2)");
+    f.assert(8, "sizeof(1.0+2)");
+    f.assert(4, "sizeof(1.f-2)");
+    f.assert(8, "sizeof(1.0-2)");
+    f.assert(4, "sizeof(1.f*2)");
+    f.assert(8, "sizeof(1.0*2)");
+    f.assert(4, "sizeof(1.f/2)");
+    f.assert(8, "sizeof(1.0/2)");
 
     f.finish();
     f.run("sizeof");

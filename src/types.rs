@@ -460,6 +460,11 @@ impl TypeStore {
 }
 
 impl Type {
+    /// Return whether the type is a numeric type.
+    pub fn is_numeric(&self) -> bool {
+        self.is_integer() || self.is_flonum()
+    }
+
     /// Return whether the type is an integer type.
     pub fn is_integer(&self) -> bool {
         self.is_unsigned_integer()

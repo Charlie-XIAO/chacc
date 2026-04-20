@@ -3198,7 +3198,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num + num
-        if lhs_ty.is_integer() && rhs_ty.is_integer() {
+        if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
             return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
@@ -3233,7 +3233,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num - num
-        if lhs_ty.is_integer() && rhs_ty.is_integer() {
+        if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
             return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
@@ -3635,7 +3635,23 @@ impl<'a> Parser<'a> {
                 }
                 base
             },
-            NodeKind::Neg(expr) | NodeKind::BitNot(expr) => {
+            NodeKind::Neg(expr) => {
+                self.infer_type(expr)?;
+                let mut ty = expr.expect_ty();
+                if !ty.is_flonum() {
+                    ty = self
+                        .types
+                        .promote_int(ty)
+                        .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?
+                };
+                self.apply_cast(expr, ty)?;
+                ty
+            },
+            NodeKind::Not(expr) => {
+                self.infer_type(expr)?;
+                Type::Int // C logical operators give int 0/1 not bool
+            },
+            NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
                 let ty = self
                     .types
@@ -3643,10 +3659,6 @@ impl<'a> Parser<'a> {
                     .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?;
                 self.apply_cast(expr, ty)?;
                 ty
-            },
-            NodeKind::Not(expr) => {
-                self.infer_type(expr)?;
-                Type::Int // C logical operators give int 0/1 not bool
             },
             NodeKind::Entity(entity) => match *entity {
                 EntityRef::Local(local_id) => self.locals[local_id].ty,

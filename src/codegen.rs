@@ -726,7 +726,16 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
-                writeln!(self.out, "  neg %rax")?;
+                let ty = node.expect_ty();
+                if ty.is_flonum() {
+                    let sz = fp_mnemonic_sz(node.expect_ty());
+                    writeln!(self.out, "  mov $1, %rax")?;
+                    writeln!(self.out, "  shl ${}, %rax", self.types.size(ty) * 8 - 1)?;
+                    writeln!(self.out, "  movq %rax, %xmm1")?;
+                    writeln!(self.out, "  xorp{sz} %xmm1, %xmm0")?;
+                } else {
+                    writeln!(self.out, "  neg %rax")?;
+                }
             },
             NodeKind::Not(expr) => {
                 self.gen_expr(expr)?;
@@ -790,21 +799,32 @@ impl<'a> Codegen<'a> {
                     self.popf("%xmm1")?;
 
                     let sz = fp_mnemonic_sz(lhs_ty);
-                    writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
 
                     match op {
+                        BinaryOp::Add => writeln!(self.out, "  adds{sz} %xmm1, %xmm0")?,
+                        BinaryOp::Sub => writeln!(self.out, "  subs{sz} %xmm1, %xmm0")?,
+                        BinaryOp::Mul => writeln!(self.out, "  muls{sz} %xmm1, %xmm0")?,
+                        BinaryOp::Div => writeln!(self.out, "  divs{sz} %xmm1, %xmm0")?,
                         BinaryOp::Eq => {
+                            writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
                             writeln!(self.out, "  sete %al")?;
                             writeln!(self.out, "  setnp %dl")?;
                             writeln!(self.out, "  and %dl, %al")?;
                         },
                         BinaryOp::Ne => {
+                            writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
                             writeln!(self.out, "  setne %al")?;
                             writeln!(self.out, "  setp %dl")?;
                             writeln!(self.out, "  or %dl, %al")?;
                         },
-                        BinaryOp::Lt => writeln!(self.out, "  seta %al")?,
-                        BinaryOp::Le => writeln!(self.out, "  setae %al")?,
+                        BinaryOp::Lt => {
+                            writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
+                            writeln!(self.out, "  seta %al")?;
+                        },
+                        BinaryOp::Le => {
+                            writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
+                            writeln!(self.out, "  setae %al")?;
+                        },
                         _ => {
                             return Err(self.source.error_at(
                                 node.offset,
