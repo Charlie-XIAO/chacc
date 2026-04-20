@@ -561,23 +561,21 @@ impl<'a> Parser<'a> {
                 | Keyword::Extern
                 | Keyword::Auto
                 | Keyword::Register => {
-                    let allowed = match (keyword, context) {
+                    let allowed = matches!(
+                        (keyword, context),
                         (
                             Keyword::Typedef | Keyword::Static | Keyword::Extern,
                             DeclspecContext::FileScopeDecl | DeclspecContext::BlockScopeDecl,
-                        ) => true,
-                        (
+                        ) | (
                             Keyword::Auto,
                             DeclspecContext::BlockScopeDecl | DeclspecContext::ForLoopInitializer,
-                        ) => true,
-                        (
+                        ) | (
                             Keyword::Register,
                             DeclspecContext::BlockScopeDecl
-                            | DeclspecContext::ForLoopInitializer
-                            | DeclspecContext::ParameterDecl,
-                        ) => true,
-                        _ => false,
-                    };
+                                | DeclspecContext::ForLoopInitializer
+                                | DeclspecContext::ParameterDecl,
+                        )
+                    );
                     if !allowed {
                         return Err(self.source.error_at(
                             offset,
@@ -2641,6 +2639,7 @@ impl<'a> Parser<'a> {
     ///   | <ident>
     ///   | <str>
     ///   | <num>
+    ///   | <flonum>
     /// ```
     fn parse_primary(&mut self) -> Result<Node> {
         let offset = self.current().offset;
@@ -2761,6 +2760,11 @@ impl<'a> Parser<'a> {
         if let Some((num, ty)) = self.current().as_num() {
             self.advance();
             return Ok(Node::num(num, ty, offset));
+        }
+
+        if let Some((num, ty)) = self.current().as_flonum() {
+            self.advance();
+            return Ok(Node::flonum(num, ty, offset));
         }
 
         Err(self.error_current("expected an expression"))
@@ -3719,7 +3723,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
             },
-            NodeKind::Num(_) | NodeKind::Cast(_) => {
+            NodeKind::Num(_) | NodeKind::Flonum(_) | NodeKind::Cast(_) => {
                 unreachable!("node type should have been set upon creation")
             },
             NodeKind::Dummy => unreachable!(),
@@ -3801,7 +3805,7 @@ impl<'a> Parser<'a> {
     /// [label]: StmtKind::Label
     fn collect_labels(&self, node: &Node, labels: &mut FxHashMap<SmolStr, SmolStr>) -> Result<()> {
         match &node.kind {
-            NodeKind::Entity(_) | NodeKind::Num(_) => {},
+            NodeKind::Entity(_) | NodeKind::Num(_) | NodeKind::Flonum(_) => {},
             NodeKind::Addr(expr)
             | NodeKind::Deref(expr)
             | NodeKind::Neg(expr)
@@ -3915,7 +3919,7 @@ impl<'a> Parser<'a> {
     /// [goto]: StmtKind::Jump
     fn resolve_gotos(&self, node: &mut Node, labels: &FxHashMap<SmolStr, SmolStr>) -> Result<()> {
         match &mut node.kind {
-            NodeKind::Entity(_) | NodeKind::Num(_) => {},
+            NodeKind::Entity(_) | NodeKind::Num(_) | NodeKind::Flonum(_) => {},
             NodeKind::Addr(expr)
             | NodeKind::Deref(expr)
             | NodeKind::Neg(expr)

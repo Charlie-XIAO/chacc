@@ -158,8 +158,10 @@ pub enum NodeKind {
     /// A dummy node, used as temporary placeholders.
     #[default] // For ergonomics
     Dummy,
-    /// A numeric literal.
+    /// An integer numeric literal.
     Num(u64),
+    /// A floating-point numeric literal.
+    Flonum(f64),
     /// A function call.
     FuncCall { name: SmolStr, args: Vec<Node> },
     /// An address-of expression "&".
@@ -211,12 +213,21 @@ pub enum NodeKind {
 }
 
 impl Node {
-    /// Construct a numeric literal node.
+    /// Construct an integer numeric literal node.
     pub fn num(value: u64, ty: Type, offset: usize) -> Self {
         Self {
             offset,
             ty: Some(ty),
             kind: NodeKind::Num(value),
+        }
+    }
+
+    /// Construct a floating-point numeric literal node.
+    pub fn flonum(value: f64, ty: Type, offset: usize) -> Self {
+        Self {
+            offset,
+            ty: Some(ty),
+            kind: NodeKind::Flonum(value),
         }
     }
 

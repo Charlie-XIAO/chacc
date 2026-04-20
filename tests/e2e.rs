@@ -972,6 +972,19 @@ fn test_literal() {
     f.assert(-1, "0x1 << 31 >> 31");
     f.assert(-1, "0b1 << 31 >> 31");
 
+    f.line("0.0;");
+    f.line("1.0;");
+    f.line("3e+8;");
+    f.line("0x10.1p0;");
+    f.line(".1E4f;");
+
+    f.assert(4, "sizeof(8.f)");
+    f.assert(4, "sizeof(0.3F)");
+    f.assert(8, "sizeof(0.)");
+    f.assert(8, "sizeof(.0)");
+    f.assert(8, "sizeof(5.l)");
+    f.assert(8, "sizeof(2.0L)");
+
     f.finish();
     f.run("literal");
 }

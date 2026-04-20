@@ -28,6 +28,8 @@ pub enum Type {
     Long,
     ULong,
     Enum,
+    Float,
+    Double,
     /// A non-trivial type stored in [`TypeStore`].
     Stored(TypeId),
 }
@@ -222,8 +224,8 @@ impl TypeStore {
             Type::Void => 1,
             Type::Bool | Type::Char | Type::UChar => 1,
             Type::Short | Type::UShort => 2,
-            Type::Int | Type::UInt | Type::Enum => 4,
-            Type::Long | Type::ULong => 8,
+            Type::Int | Type::UInt | Type::Enum | Type::Float => 4,
+            Type::Long | Type::ULong | Type::Double => 8,
             Type::Stored(_) => self.get(ty).unwrap().align,
         }
     }
@@ -240,8 +242,8 @@ impl TypeStore {
             Type::Void => 1,
             Type::Bool | Type::Char | Type::UChar => 1,
             Type::Short | Type::UShort => 2,
-            Type::Int | Type::UInt | Type::Enum => 4,
-            Type::Long | Type::ULong => 8,
+            Type::Int | Type::UInt | Type::Enum | Type::Float => 4,
+            Type::Long | Type::ULong | Type::Double => 8,
             Type::Stored(_) => self.get(ty).unwrap().size,
         }
     }

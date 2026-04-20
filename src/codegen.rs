@@ -604,6 +604,17 @@ impl<'a> Codegen<'a> {
 
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
+            NodeKind::Flonum(value) => match node.expect_ty() {
+                Type::Float => {
+                    writeln!(self.out, "  mov ${:#x}, %eax", (*value as f32).to_bits())?;
+                    writeln!(self.out, "  movd %eax, %xmm0")?;
+                },
+                Type::Double => {
+                    writeln!(self.out, "  movabs ${:#x}, %rax", value.to_bits())?;
+                    writeln!(self.out, "  movq %rax, %xmm0")?;
+                },
+                _ => unreachable!(),
+            },
             NodeKind::FuncCall { name, args } => {
                 if args.len() > MAX_FUNC_PARAMS {
                     return Err(self.source.error_at(

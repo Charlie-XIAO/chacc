@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::SmolStr;
 
 use crate::error::{Error, Result};
 use crate::source::Source;
@@ -59,19 +59,15 @@ pub enum Keyword {
 }
 
 /// Token kinds recognized by the tokenizer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TokenKind<'a> {
-    /// An identifier with the given lexeme.
     Ident(&'a str),
-    /// A reserved keyword.
     Keyword(Keyword),
-    /// A punctuator with the given lexeme.
     Punct(&'a str),
-    /// A numeric literal with the given value and type.
     Num(u64, Type),
-    /// A string literal with the given content, including the null terminator.
+    Flonum(f64, Type),
+    /// A string literal, with null terminator preserved.
     Str(Rc<[u8]>),
-    /// A sentinel token representing the end of the input.
     Eof,
 }
 
@@ -108,11 +104,19 @@ impl<'a> Token<'a> {
         }
     }
 
-    /// Construct a numeric literal token.
+    /// Construct an integer numeric literal token.
     pub fn num(offset: usize, value: u64, ty: Type) -> Self {
         Self {
             offset,
             kind: TokenKind::Num(value, ty),
+        }
+    }
+
+    /// Construct a floating-point numeric literal token.
+    pub fn flonum(offset: usize, value: f64, ty: Type) -> Self {
+        Self {
+            offset,
+            kind: TokenKind::Flonum(value, ty),
         }
     }
 
@@ -134,12 +138,12 @@ impl<'a> Token<'a> {
 
     /// Return whether this token is a punctuator.
     pub fn is_punct(&self, expected: &str) -> bool {
-        self.kind == TokenKind::Punct(expected)
+        matches!(self.kind, TokenKind::Punct(p) if p == expected)
     }
 
     /// Return whether this token is a keyword.
     pub fn is_keyword(&self, expected: Keyword) -> bool {
-        self.kind == TokenKind::Keyword(expected)
+        matches!(self.kind, TokenKind::Keyword(p) if p == expected)
     }
 
     /// Return whether this token is a typename keyword.
@@ -188,10 +192,18 @@ impl<'a> Token<'a> {
         }
     }
 
-    /// Return the value if this is a numeric token.
+    /// Return the value if this is an integer numeric token.
     pub fn as_num(&self) -> Option<(u64, Type)> {
         match self.kind {
             TokenKind::Num(value, ty) => Some((value, ty)),
+            _ => None,
+        }
+    }
+
+    /// Return the value if this is a floating-point numeric token.
+    pub fn as_flonum(&self) -> Option<(f64, Type)> {
+        match self.kind {
+            TokenKind::Flonum(value, ty) => Some((value, ty)),
             _ => None,
         }
     }
@@ -206,7 +218,7 @@ impl<'a> Token<'a> {
 
     /// Return whether this token is the EOF sentinel.
     pub fn is_eof(&self) -> bool {
-        self.kind == TokenKind::Eof
+        matches!(self.kind, TokenKind::Eof)
     }
 }
 
@@ -247,7 +259,13 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if ch.is_ascii_digit() {
+            if ch.is_ascii_digit()
+                || (ch == b'.'
+                    && content
+                        .as_bytes()
+                        .get(self.pos + 1)
+                        .is_some_and(u8::is_ascii_digit))
+            {
                 self.read_numeric_literal()?;
                 continue;
             }
@@ -312,115 +330,49 @@ impl<'a> Tokenizer<'a> {
     fn read_numeric_literal(&mut self) -> Result<()> {
         let content = self.source.content();
         let bytes = content.as_bytes();
+        let offset = self.pos;
 
-        let (radix, prefix_len) = match bytes.get(self.pos..) {
-            Some([b'0', b'x' | b'X', ..]) => (16, 2),
-            Some([b'0', b'b' | b'B', ..]) => (2, 2),
-            // A leading 0 followed by more digits is an octal literal, e.g.,
-            // "08" is an invalid octal rather than a valid decimal; also we do
-            // not strip the leading 0 because it does not affect the parsed
-            // value, and that we want to accept a single "0"
-            Some([b'0', ..]) => (8, 0),
-            _ => (10, 0),
-        };
-
-        let start = self.pos + prefix_len;
-        let len = bytes[start..]
-            .iter()
-            .take_while(|&&b| (b as char).is_digit(radix))
-            .count();
-        let end = start + len;
-
-        let num = u64::from_str_radix(&content[start..end], radix)
-            .map_err(|e| self.error_current(format_smolstr!("invalid numeric literal: {e}")))?;
-
-        let suffix = &content[end..];
-        let mut l = false;
-        let mut u = false;
-
-        let suffix_len = if suffix.starts_with("LLU")
-            || suffix.starts_with("LLu")
-            || suffix.starts_with("llU")
-            || suffix.starts_with("llu")
-            || suffix.starts_with("ULL")
-            || suffix.starts_with("Ull")
-            || suffix.starts_with("uLL")
-            || suffix.starts_with("ull")
-        {
-            l = true;
-            u = true;
-            3
-        } else if suffix.starts_with("LU")
-            || suffix.starts_with("Lu")
-            || suffix.starts_with("lU")
-            || suffix.starts_with("lu")
-            || suffix.starts_with("UL")
-            || suffix.starts_with("Ul")
-            || suffix.starts_with("uL")
-            || suffix.starts_with("ul")
-        {
-            l = true;
-            u = true;
-            2
-        } else if suffix.starts_with("LL") || suffix.starts_with("ll") {
-            l = true;
-            2
-        } else if suffix.starts_with("L") || suffix.starts_with("l") {
-            l = true;
-            1
-        } else if suffix.starts_with("U") || suffix.starts_with("u") {
-            u = true;
-            1
-        } else {
-            0
-        };
-
-        let end = end + suffix_len;
-        if bytes.get(end).is_some_and(|&b| b.is_ascii_alphanumeric()) {
-            return Err(self.source.error_at(end, "invalid digit"));
+        // Scan as far as we can while the characters are valid in some kind of
+        // numeric literal, which might not yet be valid
+        let mut end = offset + 1;
+        while end < bytes.len() {
+            let ch = bytes[end];
+            if ch.is_ascii_alphanumeric()
+                || ch == b'.'
+                || matches!(
+                    (ch, bytes[end - 1]),
+                    (b'+' | b'-', b'e' | b'E' | b'p' | b'P')
+                )
+            {
+                end += 1;
+            } else {
+                break;
+            }
         }
 
-        let ty = if radix == 10 {
-            if l && u {
-                Type::ULong
-            } else if l {
-                Type::Long
-            } else if u {
-                if num > u32::MAX as _ {
-                    Type::ULong
-                } else {
-                    Type::UInt
-                }
-            } else if num > i32::MAX as _ {
-                Type::Long
-            } else {
-                Type::Int
-            }
-        } else if l && u {
-            Type::ULong
-        } else if l {
-            if num > i64::MAX as _ {
-                Type::ULong
-            } else {
-                Type::Long
-            }
-        } else if u {
-            if num > u32::MAX as _ {
-                Type::ULong
-            } else {
-                Type::UInt
-            }
-        } else if num > i64::MAX as _ {
-            Type::ULong
-        } else if num > u32::MAX as _ {
-            Type::Long
-        } else if num > i32::MAX as _ {
-            Type::UInt
-        } else {
-            Type::Int
-        };
+        let lexeme = &content[offset..end];
+        let bytes = lexeme.as_bytes();
+        let starts_hex = bytes.starts_with(b"0x") || bytes.starts_with(b"0X");
+        let starts_binary = bytes.starts_with(b"0b") || bytes.starts_with(b"0B");
 
-        self.tokens.push(Token::num(self.pos, num as _, ty));
+        let is_hex_flonum =
+            starts_hex && bytes[2..].iter().any(|b| matches!(b, b'.' | b'p' | b'P'));
+
+        let is_dec_flonum = !starts_hex
+            && !starts_binary
+            && (bytes.first() == Some(&b'.')
+                || bytes.iter().any(|b| matches!(b, b'.' | b'e' | b'E')));
+
+        if is_hex_flonum || is_dec_flonum {
+            let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum)
+                .ok_or_else(|| self.error_current("invalid floating-point literal"))?;
+            self.tokens.push(Token::flonum(offset, num, ty));
+        } else {
+            let (num, ty) = parse_integer_literal(lexeme)
+                .ok_or_else(|| self.error_current("invalid integer literal"))?;
+            self.tokens.push(Token::num(offset, num, ty));
+        }
+
         self.pos = end;
         Ok(())
     }
@@ -630,4 +582,112 @@ fn is_ident1(byte: &u8) -> bool {
 /// Return whether the byte is valid after the first identifier byte.
 fn is_ident2(byte: &u8) -> bool {
     is_ident1(byte) || byte.is_ascii_digit()
+}
+
+/// Parse an integer literal from the given lexeme.
+///
+/// Returns the parsed value and its type, or `None` if the lexeme is not a
+/// valid integer literal.
+fn parse_integer_literal(lexeme: &str) -> Option<(u64, Type)> {
+    let bytes = lexeme.as_bytes();
+
+    let (radix, start) = match bytes {
+        [b'0', b'x' | b'X', ..] => (16, 2),
+        [b'0', b'b' | b'B', ..] => (2, 2),
+        // A leading 0 followed by more digits is an octal literal, e.g.,
+        // "08" is an invalid octal rather than a valid decimal; also we do
+        // not strip the leading 0 because it does not affect the parsed
+        // value, and that we want to accept a single "0"
+        [b'0', ..] => (8, 0),
+        _ => (10, 0),
+    };
+
+    let (suffix_len, l, u) = match bytes[start..] {
+        [.., b'L', b'L', b'U']
+        | [.., b'L', b'L', b'u']
+        | [.., b'l', b'l', b'U']
+        | [.., b'l', b'l', b'u']
+        | [.., b'U', b'L', b'L']
+        | [.., b'U', b'l', b'l']
+        | [.., b'u', b'L', b'L']
+        | [.., b'u', b'l', b'l'] => (3, true, true),
+        [.., b'L', b'U']
+        | [.., b'L', b'u']
+        | [.., b'l', b'U']
+        | [.., b'l', b'u']
+        | [.., b'U', b'L']
+        | [.., b'U', b'l']
+        | [.., b'u', b'L']
+        | [.., b'u', b'l'] => (2, true, true),
+        [.., b'L', b'L'] | [.., b'l', b'l'] => (2, true, false),
+        [.., b'L'] | [.., b'l'] => (1, true, false),
+        [.., b'U'] | [.., b'u'] => (1, false, true),
+        _ => (0, false, false),
+    };
+
+    let body = &lexeme[start..bytes.len() - suffix_len];
+    let num = u64::from_str_radix(body, radix).ok()?;
+
+    let ty = if radix == 10 {
+        if l && u {
+            Type::ULong
+        } else if l {
+            Type::Long
+        } else if u {
+            if num > u32::MAX as _ {
+                Type::ULong
+            } else {
+                Type::UInt
+            }
+        } else if num > i32::MAX as _ {
+            Type::Long
+        } else {
+            Type::Int
+        }
+    } else if l && u {
+        Type::ULong
+    } else if l {
+        if num > i64::MAX as _ {
+            Type::ULong
+        } else {
+            Type::Long
+        }
+    } else if u {
+        if num > u32::MAX as _ {
+            Type::ULong
+        } else {
+            Type::UInt
+        }
+    } else if num > i64::MAX as _ {
+        Type::ULong
+    } else if num > u32::MAX as _ {
+        Type::Long
+    } else if num > i32::MAX as _ {
+        Type::UInt
+    } else {
+        Type::Int
+    };
+
+    Some((num, ty))
+}
+
+/// Parse a floating-point literal from the given lexeme.
+///
+/// Returns the parsed value and its type, or `None` if the lexeme is not a
+/// valid floating-point literal.
+fn parse_flonum_literal(lexeme: &str, is_hex: bool) -> Option<(f64, Type)> {
+    let (suffix_len, ty) = match lexeme.as_bytes().last() {
+        Some(b'f' | b'F') => (1, Type::Float),
+        Some(b'l' | b'L') => (1, Type::Double),
+        _ => (0, Type::Double),
+    };
+
+    let body = &lexeme[..lexeme.len() - suffix_len];
+    let num = if is_hex {
+        hexf_parse::parse_hexf64(body, false).ok()?
+    } else {
+        body.parse::<f64>().ok()?
+    };
+
+    Some((num, ty))
 }
