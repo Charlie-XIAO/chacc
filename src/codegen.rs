@@ -330,9 +330,17 @@ impl<'a> Codegen<'a> {
             writeln!(self.out, "  movsd %xmm7, {}(%rbp)", offset + 128)?;
         }
 
-        for (i, param_id) in param_locals.iter().enumerate() {
-            let local = &locals[*param_id];
-            self.store_gp(i, local.offset, self.types.size(local.ty))?;
+        let mut gp = 0;
+        let mut fp = 0;
+        for param_id in param_locals {
+            let local = &locals[param_id];
+            if local.ty.is_flonum() {
+                self.store_fp(fp, local.offset, local.ty)?;
+                fp += 1;
+            } else {
+                self.store_gp(gp, local.offset, self.types.size(local.ty))?;
+                gp += 1;
+            }
         }
 
         self.function = Some(FunctionState {
@@ -1049,6 +1057,13 @@ impl<'a> Codegen<'a> {
     fn store_gp(&mut self, r: usize, offset: i64, size: u64) -> Result<()> {
         let register = ScalarWidth::from_size(size).gp_arg_reg(r);
         writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
+        Ok(())
+    }
+
+    /// Store an incoming floating-point argument register to its stack slot.
+    fn store_fp(&mut self, r: usize, offset: i64, ty: Type) -> Result<()> {
+        let sz = fp_mnemonic_sz(ty);
+        writeln!(self.out, "  movs{sz} %xmm{r}, {offset}(%rbp)")?;
         Ok(())
     }
 

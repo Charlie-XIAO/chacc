@@ -783,6 +783,8 @@ fn test_function() {
 
     f.line("double add_double(double x, double y);");
     f.line("float add_float(float x, float y);");
+    f.line("float add_float3(float x, float y, float z) { return x + y + z; }");
+    f.line("double add_double3(double x, double y, double z) { return x + y + z; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -841,6 +843,9 @@ fn test_function() {
 
     f.assert(6, "add_float(2.3, 3.8)");
     f.assert(6, "add_double(2.3, 3.8)");
+
+    f.assert(7, "add_float3(2.5, 2.5, 2.5)");
+    f.assert(7, "add_double3(2.5, 2.5, 2.5)");
 
     f.finish();
     f.run("function");
