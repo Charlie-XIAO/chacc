@@ -466,6 +466,11 @@ impl Type {
     pub fn is_unsigned_integer(&self) -> bool {
         matches!(self, Type::UChar | Type::UShort | Type::UInt | Type::ULong)
     }
+
+    /// Return whether the type is a floating-point type.
+    pub fn is_flonum(&self) -> bool {
+        matches!(self, Type::Float | Type::Double)
+    }
 }
 
 impl From<ConstType> for Type {

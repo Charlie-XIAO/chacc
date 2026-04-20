@@ -352,6 +352,19 @@ fn test_cast() {
     f.assert(-1, "({ typedef short T; T x = 65535; (int)x; })");
     f.assert(65535, "({ typedef unsigned short T; T x = 65535; (int)x; })");
 
+    f.assert(0, "(_Bool)0.0");
+    f.assert(1, "(_Bool)0.1");
+    f.assert(3, "(char)3.0");
+    f.assert(1000, "(short)1000.3");
+    f.assert(3, "(int)3.99");
+    f.assert(2000000000000000i64, "(long)2e15");
+    f.assert(3, "(float)3.5");
+    f.assert(5, "(double)(float)5.5");
+    f.assert(3, "(float)3");
+    f.assert(3, "(double)3");
+    f.assert(3, "(float)3L");
+    f.assert(3, "(double)3L");
+
     f.finish();
     f.run("cast");
 }
@@ -613,6 +626,54 @@ fn test_extern() {
 
     f.finish();
     f.run("extern");
+}
+
+#[rustfmt::skip]
+#[test]
+fn test_float() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(35, "(float)(char)35");
+    f.assert(35, "(float)(short)35");
+    f.assert(35, "(float)(int)35");
+    f.assert(35, "(float)(long)35");
+    f.assert(35, "(float)(unsigned char)35");
+    f.assert(35, "(float)(unsigned short)35");
+    f.assert(35, "(float)(unsigned int)35");
+    f.assert(35, "(float)(unsigned long)35");
+
+    f.assert(35, "(double)(char)35");
+    f.assert(35, "(double)(short)35");
+    f.assert(35, "(double)(int)35");
+    f.assert(35, "(double)(long)35");
+    f.assert(35, "(double)(unsigned char)35");
+    f.assert(35, "(double)(unsigned short)35");
+    f.assert(35, "(double)(unsigned int)35");
+    f.assert(35, "(double)(unsigned long)35");
+
+    f.assert(35, "(char)(float)35");
+    f.assert(35, "(short)(float)35");
+    f.assert(35, "(int)(float)35");
+    f.assert(35, "(long)(float)35");
+    f.assert(35, "(unsigned char)(float)35");
+    f.assert(35, "(unsigned short)(float)35");
+    f.assert(35, "(unsigned int)(float)35");
+    f.assert(35, "(unsigned long)(float)35");
+
+    f.assert(35, "(char)(double)35");
+    f.assert(35, "(short)(double)35");
+    f.assert(35, "(int)(double)35");
+    f.assert(35, "(long)(double)35");
+    f.assert(35, "(unsigned char)(double)35");
+    f.assert(35, "(unsigned short)(double)35");
+    f.assert(35, "(unsigned int)(double)35");
+    f.assert(35, "(unsigned long)(double)35");
+
+    f.assert(-2147483648, "(double)(unsigned long)(long)-1");
+
+    f.finish();
+    f.run("float");
 }
 
 #[rustfmt::skip]
@@ -1119,6 +1180,10 @@ fn test_sizeof() {
 
     f.assert(1, "sizeof(char) << 31 >> 31");
     f.assert(1, "sizeof(char) << 63 >> 63");
+
+    f.assert(4, "sizeof(float)");
+    f.assert(8, "sizeof(double)");
+    f.assert(8, "sizeof(long double)");
 
     f.finish();
     f.run("sizeof");

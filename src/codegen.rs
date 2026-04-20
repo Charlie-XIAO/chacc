@@ -537,13 +537,22 @@ impl<'a> Codegen<'a> {
         }
 
         if to == Type::Bool {
-            self.cmp_zero(from)?;
-            writeln!(self.out, "  setne %al")?;
+            if from.is_flonum() {
+                let suf = fp_mnemonic_suffix(from);
+                writeln!(self.out, "  xorp{suf} %xmm1, %xmm1")?;
+                writeln!(self.out, "  ucomis{suf} %xmm1, %xmm0")?;
+                writeln!(self.out, "  setne %al")?;
+                writeln!(self.out, "  setp %dl")?;
+                writeln!(self.out, "  or %dl, %al")?;
+            } else {
+                self.cmp_zero(from)?;
+                writeln!(self.out, "  setne %al")?;
+            }
             writeln!(self.out, "  movzx %al, %eax")?;
             return Ok(());
         }
 
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         enum CastTypeId {
             I8,
             U8,
@@ -553,6 +562,8 @@ impl<'a> Codegen<'a> {
             U32,
             I64,
             U64,
+            F32,
+            F64,
         }
 
         use CastTypeId::*;
@@ -570,31 +581,79 @@ impl<'a> Codegen<'a> {
                     Type::UInt => Ok(U32),
                     Type::Long => Ok(I64),
                     Type::ULong => Ok(U64),
+                    Type::Float => Ok(F32),
+                    Type::Double => Ok(F64),
                     _ => Err(()),
                 }
             }
         }
 
-        let Ok(from) = CastTypeId::try_from(from) else {
+        let Ok(from_) = CastTypeId::try_from(from) else {
             return Ok(());
         };
-        let Ok(to) = CastTypeId::try_from(to) else {
+        let Ok(to_) = CastTypeId::try_from(to) else {
             return Ok(());
         };
 
-        if from == to {
+        if from_ == to_ {
             return Ok(());
         }
 
-        match (from, to) {
+        // Short-circuit for float-to-float cast
+        match (from_, to_) {
+            (F32, F64) => return Ok(writeln!(self.out, "  cvtss2sd %xmm0, %xmm0")?),
+            (F64, F32) => return Ok(writeln!(self.out, "  cvtsd2ss %xmm0, %xmm0")?),
+            _ => {},
+        };
+
+        // Cast float to integer
+        if from.is_flonum() {
+            let suf = fp_mnemonic_suffix(from);
+            match to_ {
+                U32 | I64 | U64 => writeln!(self.out, "  cvtts{suf}2siq %xmm0, %rax")?,
+                _ => writeln!(self.out, "  cvtts{suf}2sil %xmm0, %eax")?,
+            }
+        }
+
+        // Cast integer to integer
+        match (from_, to_) {
             (_, I8) => writeln!(self.out, "  movsbl %al, %eax")?,
             (_, U8) => writeln!(self.out, "  movzbl %al, %eax")?,
-            (U8 | U16 | I32 | U32 | I64 | U64, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
-            (I8 | I16 | I32 | U32 | I64 | U64, U16) => writeln!(self.out, "  movzwl %ax, %eax")?,
-            (I8 | U8 | I16 | U16 | I32, I64 | U64) => writeln!(self.out, "  movsxd %eax, %rax")?,
-            (U32, I64 | U64) => writeln!(self.out, "  mov %eax, %eax")?,
+            (I8 | U8, I16) => {},
+            (_, I16) => writeln!(self.out, "  movswl %ax, %eax")?,
+            (U8, U16) => {},
+            (_, U16) => writeln!(self.out, "  movzwl %ax, %eax")?,
+            (I64 | U64 | F32 | F64, I64 | U64) => {},
+            (U32, I64 | U64 | F32 | F64) => writeln!(self.out, "  mov %eax, %eax")?,
+            (_, I64 | U64) => writeln!(self.out, "  movsxd %eax, %rax")?,
             _ => {},
         }
+
+        // Cast integer to float
+        if to.is_flonum() {
+            let suf = fp_mnemonic_suffix(to);
+            match from_ {
+                U64 => {
+                    writeln!(self.out, "  test %rax, %rax")?;
+                    writeln!(self.out, "  js 1f")?;
+                    writeln!(self.out, "  pxor %xmm0, %xmm0")?;
+                    writeln!(self.out, "  cvtsi2s{suf}q %rax, %xmm0")?;
+                    writeln!(self.out, "  jmp 2f")?;
+                    writeln!(self.out, "1:")?;
+                    writeln!(self.out, "  mov %rax, %rdi")?;
+                    writeln!(self.out, "  and $1, %eax")?;
+                    writeln!(self.out, "  pxor %xmm0, %xmm0")?;
+                    writeln!(self.out, "  shr %rdi")?;
+                    writeln!(self.out, "  or %rax, %rdi")?;
+                    writeln!(self.out, "  cvtsi2s{suf}q %rdi, %xmm0")?;
+                    writeln!(self.out, "  adds{suf} %xmm0, %xmm0")?;
+                    writeln!(self.out, "2:")?;
+                },
+                U32 | I64 => writeln!(self.out, "  cvtsi2s{suf}q %rax, %xmm0")?,
+                _ => writeln!(self.out, "  cvtsi2s{suf}l %eax, %xmm0")?,
+            }
+        }
+
         Ok(())
     }
 
@@ -855,6 +914,12 @@ impl<'a> Codegen<'a> {
             return Ok(());
         }
 
+        if ty.is_flonum() {
+            let suf = fp_mnemonic_suffix(ty);
+            writeln!(self.out, "  movs{suf} (%rax), %xmm0")?;
+            return Ok(());
+        }
+
         let width = ScalarWidth::from_size(self.types.size(ty));
         writeln!(
             self.out,
@@ -878,6 +943,12 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, "  mov {i}(%rax), %r8b")?;
                 writeln!(self.out, "  mov %r8b, {i}(%rdi)")?;
             }
+            return Ok(());
+        }
+
+        if ty.is_flonum() {
+            let suf = fp_mnemonic_suffix(ty);
+            writeln!(self.out, "  movs{suf} %xmm0, (%rdi)")?;
             return Ok(());
         }
 
@@ -930,5 +1001,13 @@ impl<'a> Codegen<'a> {
         }
 
         align_to(offset, 16)
+    }
+}
+
+fn fp_mnemonic_suffix(ty: Type) -> &'static str {
+    match ty {
+        Type::Float => "s",
+        Type::Double => "d",
+        _ => unreachable!(),
     }
 }

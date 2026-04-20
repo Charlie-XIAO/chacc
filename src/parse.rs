@@ -421,6 +421,8 @@ impl<'a> Parser<'a> {
     ///   | "short"
     ///   | "int"
     ///   | "long"
+    ///   | "float"
+    ///   | "double"
     ///   | "signed"
     ///   | "unsigned"
     ///   | "const"
@@ -444,6 +446,8 @@ impl<'a> Parser<'a> {
             Short,
             Int,
             Long,
+            Float,
+            Double,
             Other(Type),
         }
 
@@ -518,6 +522,15 @@ impl<'a> Parser<'a> {
                         spec = Some(TypeSpec::Long);
                         long_count += 1;
                     },
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Float => match spec {
+                    None if signed.is_none() => spec = Some(TypeSpec::Float),
+                    _ => bail_multiple_types!(),
+                },
+                Keyword::Double => match spec {
+                    None if signed.is_none() => spec = Some(TypeSpec::Double),
+                    Some(TypeSpec::Long) if signed.is_none() => spec = Some(TypeSpec::Double),
                     _ => bail_multiple_types!(),
                 },
                 Keyword::Struct => match spec {
@@ -667,6 +680,8 @@ impl<'a> Parser<'a> {
             (TypeSpec::Int, _) => Type::Int,
             (TypeSpec::Long, Some(false)) => Type::ULong,
             (TypeSpec::Long, _) => Type::Long,
+            (TypeSpec::Float, _) => Type::Float,
+            (TypeSpec::Double, _) => Type::Double,
             (TypeSpec::Other(ty), _) => ty,
         };
 
