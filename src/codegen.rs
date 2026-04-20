@@ -303,13 +303,22 @@ impl<'a> Codegen<'a> {
         writeln!(self.out, "  sub ${stack_size}, %rsp")?;
 
         if let Some(va_area_id) = va_area_local {
+            let mut gp = 0;
+            let mut fp = 0;
+            for param_id in param_locals.iter() {
+                if locals[*param_id].ty.is_flonum() {
+                    fp += 1;
+                } else {
+                    gp += 1;
+                }
+            }
+
             let offset = locals[va_area_id].offset;
-            let gp_offset = (param_locals.len() * 8) as i64;
             debug_assert_eq!(self.types.size(locals[va_area_id].ty), VA_AREA_SIZE as u64);
 
             // __va_elem
-            writeln!(self.out, "  movl ${gp_offset}, {offset}(%rbp)")?;
-            writeln!(self.out, "  movl $0, {}(%rbp)", offset + 4)?;
+            writeln!(self.out, "  movl ${}, {offset}(%rbp)", gp * 8)?;
+            writeln!(self.out, "  movl ${}, {}(%rbp)", fp * 8 + 48, offset + 4)?;
             writeln!(self.out, "  movq %rbp, {}(%rbp)", offset + 16)?;
             writeln!(self.out, "  addq ${}, {}(%rbp)", offset + 24, offset + 16)?;
 
