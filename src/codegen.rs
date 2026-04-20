@@ -675,15 +675,26 @@ impl<'a> Codegen<'a> {
                     ));
                 }
 
-                for arg in args {
+                for arg in args.iter().rev() {
                     self.gen_expr(arg)?;
-                    self.push()?;
-                }
-                for register in GP_ARG_REGS_64.iter().take(args.len()).rev() {
-                    self.pop(register)?;
+                    if arg.expect_ty().is_flonum() {
+                        self.pushf()?;
+                    } else {
+                        self.push()?;
+                    }
                 }
 
-                writeln!(self.out, "  mov $0, %rax")?;
+                let mut gp = 0;
+                let mut fp = 0;
+                for arg in args {
+                    if arg.expect_ty().is_flonum() {
+                        self.popf(fp)?;
+                        fp += 1;
+                    } else {
+                        self.pop(GP_ARG_REGS_64[gp])?;
+                        gp += 1;
+                    }
+                }
 
                 // After the prologue and local allocation, we have made the
                 // frame size a multiple of 16; each temporary push subtracts
@@ -794,7 +805,7 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(rhs)?;
                     self.pushf()?;
                     self.gen_expr(lhs)?;
-                    self.popf("%xmm1")?;
+                    self.popf(1)?;
 
                     let sz = fp_mnemonic_sz(lhs_ty);
 
@@ -1027,8 +1038,8 @@ impl<'a> Codegen<'a> {
     }
 
     /// Pop the top of the temporary stack into an XMM register.
-    fn popf(&mut self, register: &str) -> Result<()> {
-        writeln!(self.out, "  movsd (%rsp), {register}")?;
+    fn popf(&mut self, register: i32) -> Result<()> {
+        writeln!(self.out, "  movsd (%rsp), %xmm{register}")?;
         writeln!(self.out, "  add $8, %rsp")?;
         self.function_mut().depth -= 1;
         Ok(())

@@ -781,6 +781,8 @@ fn test_function() {
     f.line("int vsprintf(char *buf, char *fmt, va_list ap);");
     f.line("void fmt(char *buf, char *fmt, ...) { va_list ap; *ap = *(__va_elem *)__va_area__; vsprintf(buf, fmt, ap); }");
 
+    f.line("double add_double(double x, double y);");
+    f.line("float add_float(float x, float y);");
     f.main();
 
     f.assert(3, "ret3()");
@@ -836,6 +838,9 @@ fn test_function() {
 
     f.assert(0, r#"({ char buf[100]; sprintf(buf, "%d %d %s", 1, 2, "foo"); strcmp("1 2 foo", buf); })"#);
     f.assert(0, r#"({ char buf[100]; fmt(buf, "%d %d %s", 1, 2, "foo"); strcmp("1 2 foo", buf); })"#);
+
+    f.assert(6, "add_float(2.3, 3.8)");
+    f.assert(6, "add_double(2.3, 3.8)");
 
     f.finish();
     f.run("function");
