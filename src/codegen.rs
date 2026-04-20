@@ -538,9 +538,9 @@ impl<'a> Codegen<'a> {
 
         if to == Type::Bool {
             if from.is_flonum() {
-                let suf = fp_mnemonic_suffix(from);
-                writeln!(self.out, "  xorp{suf} %xmm1, %xmm1")?;
-                writeln!(self.out, "  ucomis{suf} %xmm1, %xmm0")?;
+                let sz = fp_mnemonic_sz(from);
+                writeln!(self.out, "  xorp{sz} %xmm1, %xmm1")?;
+                writeln!(self.out, "  ucomis{sz} %xmm1, %xmm0")?;
                 writeln!(self.out, "  setne %al")?;
                 writeln!(self.out, "  setp %dl")?;
                 writeln!(self.out, "  or %dl, %al")?;
@@ -608,10 +608,10 @@ impl<'a> Codegen<'a> {
 
         // Cast float to integer
         if from.is_flonum() {
-            let suf = fp_mnemonic_suffix(from);
+            let sz = fp_mnemonic_sz(from);
             match to_ {
-                U32 | I64 | U64 => writeln!(self.out, "  cvtts{suf}2siq %xmm0, %rax")?,
-                _ => writeln!(self.out, "  cvtts{suf}2sil %xmm0, %eax")?,
+                U32 | I64 | U64 => writeln!(self.out, "  cvtts{sz}2siq %xmm0, %rax")?,
+                _ => writeln!(self.out, "  cvtts{sz}2sil %xmm0, %eax")?,
             }
         }
 
@@ -631,13 +631,13 @@ impl<'a> Codegen<'a> {
 
         // Cast integer to float
         if to.is_flonum() {
-            let suf = fp_mnemonic_suffix(to);
+            let sz = fp_mnemonic_sz(to);
             match from_ {
                 U64 => {
                     writeln!(self.out, "  test %rax, %rax")?;
                     writeln!(self.out, "  js 1f")?;
                     writeln!(self.out, "  pxor %xmm0, %xmm0")?;
-                    writeln!(self.out, "  cvtsi2s{suf}q %rax, %xmm0")?;
+                    writeln!(self.out, "  cvtsi2s{sz}q %rax, %xmm0")?;
                     writeln!(self.out, "  jmp 2f")?;
                     writeln!(self.out, "1:")?;
                     writeln!(self.out, "  mov %rax, %rdi")?;
@@ -645,12 +645,12 @@ impl<'a> Codegen<'a> {
                     writeln!(self.out, "  pxor %xmm0, %xmm0")?;
                     writeln!(self.out, "  shr %rdi")?;
                     writeln!(self.out, "  or %rax, %rdi")?;
-                    writeln!(self.out, "  cvtsi2s{suf}q %rdi, %xmm0")?;
-                    writeln!(self.out, "  adds{suf} %xmm0, %xmm0")?;
+                    writeln!(self.out, "  cvtsi2s{sz}q %rdi, %xmm0")?;
+                    writeln!(self.out, "  adds{sz} %xmm0, %xmm0")?;
                     writeln!(self.out, "2:")?;
                 },
-                U32 | I64 => writeln!(self.out, "  cvtsi2s{suf}q %rax, %xmm0")?,
-                _ => writeln!(self.out, "  cvtsi2s{suf}l %eax, %xmm0")?,
+                U32 | I64 => writeln!(self.out, "  cvtsi2s{sz}q %rax, %xmm0")?,
+                _ => writeln!(self.out, "  cvtsi2s{sz}l %eax, %xmm0")?,
             }
         }
 
@@ -781,77 +781,112 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, ".L.end.{label}:")?;
             },
             NodeKind::Binary { op, lhs, rhs } => {
-                self.gen_expr(rhs)?;
-                self.push()?;
-                self.gen_expr(lhs)?;
-                self.pop("%rdi")?;
-
                 let lhs_ty = lhs.expect_ty();
-                let width = ScalarWidth::from_promoted_binary_type(lhs_ty, &self.types);
-                let acc = width.acc_reg();
-                let rdi = width.rdi_reg();
-                let rcx = width.rcx_reg();
-                let rdx = width.rdx_reg();
 
-                match op {
-                    BinaryOp::Add => writeln!(self.out, "  add {rdi}, {acc}")?,
-                    BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
-                    BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
-                    BinaryOp::Div | BinaryOp::Mod => {
-                        if self.types.uses_unsigned_arith(node.expect_ty()) {
-                            writeln!(self.out, "  mov $0, {rdx}")?;
-                            writeln!(self.out, "  div {rdi}")?;
-                        } else {
-                            writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
-                            writeln!(self.out, "  idiv {rdi}")?;
-                        }
-                        if *op == BinaryOp::Mod {
-                            writeln!(self.out, "  mov {}, {}", width.rdx_reg(), acc)?;
-                        }
-                    },
-                    BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
-                    BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
-                    BinaryOp::BitXor => writeln!(self.out, "  xor {rdi}, {acc}")?,
-                    BinaryOp::BitShl => {
-                        writeln!(self.out, "  mov {rdi}, {rcx}")?;
-                        writeln!(self.out, "  shl %cl, {acc}")?;
-                    },
-                    BinaryOp::BitShr => {
-                        writeln!(self.out, "  mov {rdi}, {rcx}")?;
-                        if self.types.uses_unsigned_arith(lhs_ty) {
-                            writeln!(self.out, "  shr %cl, {acc}")?;
-                        } else {
-                            writeln!(self.out, "  sar %cl, {acc}")?;
-                        }
-                    },
-                    BinaryOp::Eq => {
-                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        writeln!(self.out, "  sete %al")?;
-                        writeln!(self.out, "  movzb %al, %rax")?;
-                    },
-                    BinaryOp::Ne => {
-                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        writeln!(self.out, "  setne %al")?;
-                        writeln!(self.out, "  movzb %al, %rax")?;
-                    },
-                    BinaryOp::Lt => {
-                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        if self.types.uses_unsigned_arith(lhs_ty) {
-                            writeln!(self.out, "  setb %al")?;
-                        } else {
-                            writeln!(self.out, "  setl %al")?;
-                        }
-                        writeln!(self.out, "  movzb %al, %rax")?;
-                    },
-                    BinaryOp::Le => {
-                        writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                        if self.types.uses_unsigned_arith(lhs_ty) {
-                            writeln!(self.out, "  setbe %al")?;
-                        } else {
-                            writeln!(self.out, "  setle %al")?;
-                        }
-                        writeln!(self.out, "  movzb %al, %rax")?;
-                    },
+                if lhs_ty.is_flonum() {
+                    self.gen_expr(rhs)?;
+                    self.pushf()?;
+                    self.gen_expr(lhs)?;
+                    self.popf("%xmm1")?;
+
+                    let sz = fp_mnemonic_sz(lhs_ty);
+                    writeln!(self.out, "  ucomis{sz} %xmm0, %xmm1")?;
+
+                    match op {
+                        BinaryOp::Eq => {
+                            writeln!(self.out, "  sete %al")?;
+                            writeln!(self.out, "  setnp %dl")?;
+                            writeln!(self.out, "  and %dl, %al")?;
+                        },
+                        BinaryOp::Ne => {
+                            writeln!(self.out, "  setne %al")?;
+                            writeln!(self.out, "  setp %dl")?;
+                            writeln!(self.out, "  or %dl, %al")?;
+                        },
+                        BinaryOp::Lt => writeln!(self.out, "  seta %al")?,
+                        BinaryOp::Le => writeln!(self.out, "  setae %al")?,
+                        _ => {
+                            return Err(self.source.error_at(
+                                node.offset,
+                                "invalid operator for floating-point operands",
+                            ));
+                        },
+                    }
+
+                    writeln!(self.out, "  and $1, %al")?;
+                    writeln!(self.out, "  movzb %al, %rax")?;
+                } else {
+                    self.gen_expr(rhs)?;
+                    self.push()?;
+                    self.gen_expr(lhs)?;
+                    self.pop("%rdi")?;
+
+                    let width = ScalarWidth::from_promoted_binary_type(lhs_ty, &self.types);
+                    let acc = width.acc_reg();
+                    let rdi = width.rdi_reg();
+                    let rcx = width.rcx_reg();
+                    let rdx = width.rdx_reg();
+
+                    match op {
+                        BinaryOp::Add => writeln!(self.out, "  add {rdi}, {acc}")?,
+                        BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
+                        BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
+                        BinaryOp::Div | BinaryOp::Mod => {
+                            if self.types.uses_unsigned_arith(node.expect_ty()) {
+                                writeln!(self.out, "  mov $0, {rdx}")?;
+                                writeln!(self.out, "  div {rdi}")?;
+                            } else {
+                                writeln!(self.out, "  {}", width.signed_div_extend_mnemonic())?;
+                                writeln!(self.out, "  idiv {rdi}")?;
+                            }
+                            if *op == BinaryOp::Mod {
+                                writeln!(self.out, "  mov {}, {}", width.rdx_reg(), acc)?;
+                            }
+                        },
+                        BinaryOp::BitAnd => writeln!(self.out, "  and {rdi}, {acc}")?,
+                        BinaryOp::BitOr => writeln!(self.out, "  or {rdi}, {acc}")?,
+                        BinaryOp::BitXor => writeln!(self.out, "  xor {rdi}, {acc}")?,
+                        BinaryOp::BitShl => {
+                            writeln!(self.out, "  mov {rdi}, {rcx}")?;
+                            writeln!(self.out, "  shl %cl, {acc}")?;
+                        },
+                        BinaryOp::BitShr => {
+                            writeln!(self.out, "  mov {rdi}, {rcx}")?;
+                            if self.types.uses_unsigned_arith(lhs_ty) {
+                                writeln!(self.out, "  shr %cl, {acc}")?;
+                            } else {
+                                writeln!(self.out, "  sar %cl, {acc}")?;
+                            }
+                        },
+                        BinaryOp::Eq => {
+                            writeln!(self.out, "  cmp {rdi}, {acc}")?;
+                            writeln!(self.out, "  sete %al")?;
+                            writeln!(self.out, "  movzb %al, %rax")?;
+                        },
+                        BinaryOp::Ne => {
+                            writeln!(self.out, "  cmp {rdi}, {acc}")?;
+                            writeln!(self.out, "  setne %al")?;
+                            writeln!(self.out, "  movzb %al, %rax")?;
+                        },
+                        BinaryOp::Lt => {
+                            writeln!(self.out, "  cmp {rdi}, {acc}")?;
+                            if self.types.uses_unsigned_arith(lhs_ty) {
+                                writeln!(self.out, "  setb %al")?;
+                            } else {
+                                writeln!(self.out, "  setl %al")?;
+                            }
+                            writeln!(self.out, "  movzb %al, %rax")?;
+                        },
+                        BinaryOp::Le => {
+                            writeln!(self.out, "  cmp {rdi}, {acc}")?;
+                            if self.types.uses_unsigned_arith(lhs_ty) {
+                                writeln!(self.out, "  setbe %al")?;
+                            } else {
+                                writeln!(self.out, "  setle %al")?;
+                            }
+                            writeln!(self.out, "  movzb %al, %rax")?;
+                        },
+                    }
                 }
             },
             NodeKind::Conditional {
@@ -902,6 +937,14 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Push `%xmm0` onto the temporary expression stack.
+    fn pushf(&mut self) -> Result<()> {
+        writeln!(self.out, "  sub $8, %rsp")?;
+        writeln!(self.out, "  movsd %xmm0, (%rsp)")?;
+        self.function_mut().depth += 1;
+        Ok(())
+    }
+
     /// Load a scalar value from where `%rax` points to.
     ///
     /// This does not attempt to load arrays, functions, and aggregates as
@@ -915,8 +958,8 @@ impl<'a> Codegen<'a> {
         }
 
         if ty.is_flonum() {
-            let suf = fp_mnemonic_suffix(ty);
-            writeln!(self.out, "  movs{suf} (%rax), %xmm0")?;
+            let sz = fp_mnemonic_sz(ty);
+            writeln!(self.out, "  movs{sz} (%rax), %xmm0")?;
             return Ok(());
         }
 
@@ -947,8 +990,8 @@ impl<'a> Codegen<'a> {
         }
 
         if ty.is_flonum() {
-            let suf = fp_mnemonic_suffix(ty);
-            writeln!(self.out, "  movs{suf} %xmm0, (%rdi)")?;
+            let sz = fp_mnemonic_sz(ty);
+            writeln!(self.out, "  movs{sz} %xmm0, (%rdi)")?;
             return Ok(());
         }
 
@@ -960,6 +1003,14 @@ impl<'a> Codegen<'a> {
     /// Pop the top of the temporary stack into a register.
     fn pop(&mut self, register: &str) -> Result<()> {
         writeln!(self.out, "  pop {register}")?;
+        self.function_mut().depth -= 1;
+        Ok(())
+    }
+
+    /// Pop the top of the temporary stack into an XMM register.
+    fn popf(&mut self, register: &str) -> Result<()> {
+        writeln!(self.out, "  movsd (%rsp), {register}")?;
+        writeln!(self.out, "  add $8, %rsp")?;
         self.function_mut().depth -= 1;
         Ok(())
     }
@@ -1004,7 +1055,7 @@ impl<'a> Codegen<'a> {
     }
 }
 
-fn fp_mnemonic_suffix(ty: Type) -> &'static str {
+fn fp_mnemonic_sz(ty: Type) -> &'static str {
     match ty {
         Type::Float => "s",
         Type::Double => "d",

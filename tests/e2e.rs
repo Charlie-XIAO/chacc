@@ -672,6 +672,26 @@ fn test_float() {
 
     f.assert(-2147483648, "(double)(unsigned long)(long)-1");
 
+    f.assert(1, "2e3==2e3");
+    f.assert(0, "2e3==2e5");
+    f.assert(1, "2.0==2");
+    f.assert(0, "5.1<5");
+    f.assert(0, "5.0<5");
+    f.assert(1, "4.9<5");
+    f.assert(0, "5.1<=5");
+    f.assert(1, "5.0<=5");
+    f.assert(1, "4.9<=5");
+
+    f.assert(1, "2e3f==2e3");
+    f.assert(0, "2e3f==2e5");
+    f.assert(1, "2.0f==2");
+    f.assert(0, "5.1f<5");
+    f.assert(0, "5.0f<5");
+    f.assert(1, "4.9f<5");
+    f.assert(0, "5.1f<=5");
+    f.assert(1, "5.0f<=5");
+    f.assert(1, "4.9f<=5");
+
     f.finish();
     f.run("float");
 }

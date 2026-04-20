@@ -373,6 +373,13 @@ impl TypeStore {
             return self.ptr(base);
         }
 
+        if matches!(lhs, Type::Double) || matches!(rhs, Type::Double) {
+            return Type::Double;
+        }
+        if matches!(lhs, Type::Float) || matches!(rhs, Type::Float) {
+            return Type::Float;
+        }
+
         lhs = self.promote_int(lhs).unwrap_or(lhs);
         rhs = self.promote_int(rhs).unwrap_or(rhs);
 
