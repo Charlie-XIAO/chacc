@@ -380,9 +380,10 @@ impl<'a> Codegen<'a> {
                 }
                 writeln!(self.out, ".L.begin.{label}:")?;
                 if let Some(cond) = cond {
+                    let ty = cond.expect_ty();
                     self.gen_expr(cond)?;
-                    self.cmp_zero(cond.expect_ty())?;
-                    writeln!(self.out, "  je {brk_label}")?;
+                    self.cmp_zero(ty)?;
+                    self.jump_if_zero(ty, brk_label)?;
                 }
                 self.gen_stmt(body)?;
                 writeln!(self.out, "{cont_label}:")?;
@@ -404,14 +405,14 @@ impl<'a> Codegen<'a> {
                 debug_assert!(init.is_none(), "do-while has no initialization statement");
                 debug_assert!(inc.is_none(), "do-while has no loop increment");
                 let cond = cond.as_ref().expect("do-while must have a condition");
-
+                let ty = cond.expect_ty();
                 let label = self.take_label();
                 writeln!(self.out, ".L.begin.{label}:")?;
                 self.gen_stmt(body)?;
                 writeln!(self.out, "{cont_label}:")?;
                 self.gen_expr(cond)?;
-                self.cmp_zero(cond.expect_ty())?;
-                writeln!(self.out, "  jne .L.begin.{label}")?;
+                self.cmp_zero(ty)?;
+                self.jump_if_nonzero(ty, &format!(".L.begin.{label}"))?;
                 writeln!(self.out, "{brk_label}:")?;
             },
             StmtKind::If {
@@ -419,10 +420,11 @@ impl<'a> Codegen<'a> {
                 then_branch,
                 else_branch,
             } => {
+                let ty = cond.expect_ty();
                 let label = self.take_label();
                 self.gen_expr(cond)?;
-                self.cmp_zero(cond.expect_ty())?;
-                writeln!(self.out, "  je  .L.else.{label}")?;
+                self.cmp_zero(ty)?;
+                self.jump_if_zero(ty, &format!(".L.else.{label}"))?;
                 self.gen_stmt(then_branch)?;
                 writeln!(self.out, "  jmp .L.end.{label}")?;
                 writeln!(self.out, ".L.else.{label}:")?;
@@ -537,17 +539,8 @@ impl<'a> Codegen<'a> {
         }
 
         if to == Type::Bool {
-            if from.is_flonum() {
-                let sz = fp_mnemonic_sz(from);
-                writeln!(self.out, "  xorp{sz} %xmm1, %xmm1")?;
-                writeln!(self.out, "  ucomis{sz} %xmm1, %xmm0")?;
-                writeln!(self.out, "  setne %al")?;
-                writeln!(self.out, "  setp %dl")?;
-                writeln!(self.out, "  or %dl, %al")?;
-            } else {
-                self.cmp_zero(from)?;
-                writeln!(self.out, "  setne %al")?;
-            }
+            self.cmp_zero(from)?;
+            self.set_is_nonzero(from)?;
             writeln!(self.out, "  movzx %al, %eax")?;
             return Ok(());
         }
@@ -739,8 +732,9 @@ impl<'a> Codegen<'a> {
             },
             NodeKind::Not(expr) => {
                 self.gen_expr(expr)?;
-                self.cmp_zero(expr.expect_ty())?;
-                writeln!(self.out, "  sete %al")?;
+                let ty = expr.expect_ty();
+                self.cmp_zero(ty)?;
+                self.set_is_zero(ty)?;
                 writeln!(self.out, "  movzx %al, %rax")?;
             },
             NodeKind::BitNot(expr) => {
@@ -762,13 +756,15 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(rhs)?;
             },
             NodeKind::And { lhs, rhs } => {
+                let lhs_ty = lhs.expect_ty();
+                let rhs_ty = rhs.expect_ty();
                 let label = self.take_label();
                 self.gen_expr(lhs)?;
-                self.cmp_zero(lhs.expect_ty())?;
-                writeln!(self.out, "  je .L.false.{label}")?;
+                self.cmp_zero(lhs_ty)?;
+                self.jump_if_zero(lhs_ty, &format!(".L.false.{label}"))?;
                 self.gen_expr(rhs)?;
-                self.cmp_zero(rhs.expect_ty())?;
-                writeln!(self.out, "  je .L.false.{label}")?;
+                self.cmp_zero(rhs_ty)?;
+                self.jump_if_zero(rhs_ty, &format!(".L.false.{label}"))?;
                 writeln!(self.out, "  mov $1, %rax")?;
                 writeln!(self.out, "  jmp .L.end.{label}")?;
                 writeln!(self.out, ".L.false.{label}:")?;
@@ -776,13 +772,15 @@ impl<'a> Codegen<'a> {
                 writeln!(self.out, ".L.end.{label}:")?;
             },
             NodeKind::Or { lhs, rhs } => {
+                let lhs_ty = lhs.expect_ty();
+                let rhs_ty = rhs.expect_ty();
                 let label = self.take_label();
                 self.gen_expr(lhs)?;
-                self.cmp_zero(lhs.expect_ty())?;
-                writeln!(self.out, "  jne .L.true.{label}")?;
+                self.cmp_zero(lhs_ty)?;
+                self.jump_if_nonzero(lhs_ty, &format!(".L.true.{label}"))?;
                 self.gen_expr(rhs)?;
-                self.cmp_zero(rhs.expect_ty())?;
-                writeln!(self.out, "  jne .L.true.{label}")?;
+                self.cmp_zero(rhs_ty)?;
+                self.jump_if_nonzero(rhs_ty, &format!(".L.true.{label}"))?;
                 writeln!(self.out, "  mov $0, %rax")?;
                 writeln!(self.out, "  jmp .L.end.{label}")?;
                 writeln!(self.out, ".L.true.{label}:")?;
@@ -914,10 +912,11 @@ impl<'a> Codegen<'a> {
                 then_expr,
                 else_expr,
             } => {
+                let ty = cond.expect_ty();
                 let label = self.take_label();
                 self.gen_expr(cond)?;
-                self.cmp_zero(cond.expect_ty())?;
-                writeln!(self.out, "  je  .L.else.{label}")?;
+                self.cmp_zero(ty)?;
+                self.jump_if_zero(ty, &format!(".L.else.{label}"))?;
                 self.gen_expr(then_expr)?;
                 writeln!(self.out, "  jmp .L.end.{label}")?;
                 writeln!(self.out, ".L.else.{label}:")?;
@@ -1044,10 +1043,61 @@ impl<'a> Codegen<'a> {
 
     /// Compare a scalar value against zero.
     fn cmp_zero(&mut self, ty: Type) -> Result<()> {
+        if ty.is_flonum() {
+            let sz = fp_mnemonic_sz(ty);
+            writeln!(self.out, "  xorp{sz} %xmm1, %xmm1")?;
+            writeln!(self.out, "  ucomis{sz} %xmm1, %xmm0")?;
+            return Ok(());
+        }
+
         if ty.is_integer() && self.types.size(ty) <= 4 {
             writeln!(self.out, "  cmp $0, %eax")?;
         } else {
             writeln!(self.out, "  cmp $0, %rax")?;
+        }
+        Ok(())
+    }
+
+    /// Set `%al` to 1 if the previously compared scalar is zero.
+    fn set_is_zero(&mut self, ty: Type) -> Result<()> {
+        writeln!(self.out, "  sete %al")?;
+        if ty.is_flonum() {
+            writeln!(self.out, "  setnp %dl")?;
+            writeln!(self.out, "  and %dl, %al")?;
+        }
+        Ok(())
+    }
+
+    /// Set `%al` to 1 if the previously compared scalar is non-zero.
+    fn set_is_nonzero(&mut self, ty: Type) -> Result<()> {
+        writeln!(self.out, "  setne %al")?;
+        if ty.is_flonum() {
+            writeln!(self.out, "  setp %dl")?;
+            writeln!(self.out, "  or %dl, %al")?;
+        }
+        Ok(())
+    }
+
+    /// Jump to the given label if the previously compared scalar is zero.
+    fn jump_if_zero(&mut self, ty: Type, label: &str) -> Result<()> {
+        if ty.is_flonum() {
+            let skip = self.take_label();
+            writeln!(self.out, "  jp .L.skip.{skip}")?;
+            writeln!(self.out, "  je {label}")?;
+            writeln!(self.out, ".L.skip.{skip}:")?;
+        } else {
+            writeln!(self.out, "  je {label}")?;
+        }
+        Ok(())
+    }
+
+    /// Jump to the given label if the previously compared scalar is non-zero.
+    fn jump_if_nonzero(&mut self, ty: Type, label: &str) -> Result<()> {
+        if ty.is_flonum() {
+            writeln!(self.out, "  jne {label}")?;
+            writeln!(self.out, "  jp {label}")?;
+        } else {
+            writeln!(self.out, "  jne {label}")?;
         }
         Ok(())
     }

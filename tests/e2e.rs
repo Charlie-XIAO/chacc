@@ -552,6 +552,21 @@ fn test_control() {
     f.assert(7, "({ int i=0; int j=0; do { j++; } while (i++ < 6); j; })");
     f.assert(4, "({ int i=0; int j=0; int k=0; do { if (++j > 3) break; continue; k++; } while (1); j; })");
 
+    f.assert(0, "0.0 && 0.0");
+    f.assert(0, "0.0 && 0.1");
+    f.assert(0, "0.3 && 0.0");
+    f.assert(1, "0.3 && 0.5");
+    f.assert(0, "0.0 || 0.0");
+    f.assert(1, "0.0 || 0.1");
+    f.assert(1, "0.3 || 0.0");
+    f.assert(1, "0.3 || 0.5");
+    f.assert(5, "({ int x; if (0.0) x=3; else x=5; x; })");
+    f.assert(3, "({ int x; if (0.1) x=3; else x=5; x; })");
+    f.assert(5, "({ int x=5; if (0.0) x=3; x; })");
+    f.assert(3, "({ int x=5; if (0.1) x=3; x; })");
+    f.assert(10, "({ double i=10.0; int j=0; for (; i; i--, j++); j; })");
+    f.assert(10, "({ double i=10.0; int j=0; do j++; while(--i); j; })");
+
     f.finish();
     f.run("control");
 }
@@ -712,6 +727,14 @@ fn test_float() {
     f.assert(0, "0.0/0.0 <= 0");
     f.assert(0, "0.0/0.0 > 0");
     f.assert(0, "0.0/0.0 >= 0");
+
+    f.assert(0, "!3.");
+    f.assert(1, "!0.");
+    f.assert(0, "!3.f");
+    f.assert(1, "!0.f");
+
+    f.assert(5, "0.0 ? 3 : 5");
+    f.assert(3, "1.2 ? 3 : 5");
 
     f.finish();
     f.run("float");
