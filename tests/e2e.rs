@@ -847,6 +847,8 @@ fn test_function() {
     f.assert(7, "add_float3(2.5, 2.5, 2.5)");
     f.assert(7, "add_double3(2.5, 2.5, 2.5)");
 
+    f.assert(0, r#"({ char buf[100]; float x = 3.5; sprintf(buf, "%.1f", x); strcmp(buf, "3.5"); })"#);
+
     f.finish();
     f.run("function");
 }

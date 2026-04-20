@@ -2832,9 +2832,12 @@ impl<'a> Parser<'a> {
                 }
                 // Variadic function call applies default argument promotions
                 let ty = arg.expect_ty();
-                if let Some(promoted) = self.types.promote_int(ty)
-                    && promoted != ty
-                {
+                let promoted = if ty.is_flonum() {
+                    Type::Double
+                } else {
+                    self.types.promote_int(ty).unwrap_or(ty)
+                };
+                if promoted != ty {
                     self.apply_cast(&mut arg, promoted)?;
                 }
             }
