@@ -852,6 +852,10 @@ impl<'a> Parser<'a> {
                 // parameter declarations; e.g., "*argv[]" being converted to
                 // "**argv" is because of this rule
                 self.types.ptr(array.base)
+            } else if self.types.is_func(declarator.ty) {
+                // Likewise, a function in a parameter would be decayed to a
+                // pointer to that function
+                self.types.ptr(declarator.ty)
             } else {
                 declarator.ty
             };
