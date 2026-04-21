@@ -361,19 +361,22 @@ impl TypeStore {
         }
     }
 
-    /// Coerce two operand types for a validated binary operation.
+    /// Coerce two operand types for a validated binary/conditional operation.
     ///
-    /// This helper is intentionally `lhs`-biased. If exactly one operand is a
-    /// pointer, it must already have been canonicalized to `lhs` by the
-    /// caller. This method also does not perform pointer legality checks and
-    /// the caller is responsible for those beforehand.
-    pub fn coerce(&mut self, mut lhs: Type, mut rhs: Type) -> Type {
-        debug_assert!(
-            self.base(lhs).is_some() || self.base(rhs).is_none(),
-            "pointer coercion expects any lone pointer operand to be lhs",
-        );
+    /// This assumes the caller has already decided that [usual arithmetic
+    /// conversion][1] is the right operation. It does not try to enforce all
+    /// pointer/function compatibility rules by itself.
+    ///
+    /// [1]: https://en.cppreference.com/cpp/language/usual_arithmetic_conversions
+    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
+        if self.is_func(lhs) {
+            return self.ptr(lhs);
+        }
+        if self.is_func(rhs) {
+            return self.ptr(rhs);
+        }
 
-        if let Some(base) = self.base(lhs) {
+        if let Some(base) = self.base(lhs).or_else(|| self.base(rhs)) {
             return self.ptr(base);
         }
 
@@ -384,8 +387,8 @@ impl TypeStore {
             return Type::Float;
         }
 
-        lhs = self.promote_int(lhs).unwrap_or(lhs);
-        rhs = self.promote_int(rhs).unwrap_or(rhs);
+        let lhs = self.promote_int(lhs).unwrap_or(lhs);
+        let rhs = self.promote_int(rhs).unwrap_or(rhs);
 
         match self.size(lhs).cmp(&self.size(rhs)) {
             Ordering::Less => return rhs,

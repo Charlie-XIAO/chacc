@@ -1436,6 +1436,7 @@ fn test_union() {
 #[test]
 fn test_usual_conv() {
     let mut f = Fixture::new();
+    f.line("static int ret10(void) { return 10; }");
     f.main();
 
     f.assert("(long)-5", "-10 + (long)5");
@@ -1459,6 +1460,8 @@ fn test_usual_conv() {
     f.assert(1, "({ char x[3]; x[0]=0; x[1]=1; x[2]=2; char *y=x+1; y[0]; })");
     f.assert(0, "({ char x[3]; x[0]=0; x[1]=1; x[2]=2; char *y=x+1; y[-1]; })");
     f.assert(5, "({ struct t {char a;} x, y; x.a=5; y=x; y.a; })");
+
+    f.assert(10, "(1 ? ret10 : (void *)0)()");
 
     f.finish();
     f.run("usual_conv");

@@ -3543,12 +3543,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Apply a usual arithmetic conversion on the given operands.
+    /// Apply [usual arithmetic conversion][1] on the given operands.
     ///
-    /// Returns the coerced common type. This is lhs-biased, see [`coerce`] for
-    /// more details.
+    /// Both operands are casted to the coerced type, and that type is also
+    /// returned for convenience.
     ///
-    /// [`coerce`]: TypeStore::coerce
+    /// [1]: https://en.cppreference.com/cpp/language/usual_arithmetic_conversions
     fn apply_usual_arith_conv(&mut self, lhs: &mut Node, rhs: &mut Node) -> Result<Type> {
         let ty = self.types.coerce(lhs.expect_ty(), rhs.expect_ty());
         self.apply_cast(lhs, ty)?;
@@ -3750,16 +3750,7 @@ impl<'a> Parser<'a> {
                 if then_ty == Type::Void || else_ty == Type::Void {
                     Type::Void
                 } else {
-                    let (lhs, rhs) = if self.types.base(then_ty).is_some()
-                        || self.types.base(else_ty).is_none()
-                    {
-                        (then_expr, else_expr)
-                    } else {
-                        // "else" is pointer but "then" is not, we must
-                        // normalize this lone pointer to lhs
-                        (else_expr, then_expr)
-                    };
-                    self.apply_usual_arith_conv(lhs, rhs)?
+                    self.apply_usual_arith_conv(then_expr, else_expr)?
                 }
             },
             NodeKind::Member { member, .. } => member.ty,
