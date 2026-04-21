@@ -268,10 +268,14 @@ impl TypeStore {
     }
 
     /// Return the function type if it is one.
-    pub fn as_func(&self, ty: Type) -> Option<&FuncType> {
+    ///
+    /// If `accept_ptr` is true, a function pointer type is also accepted and
+    /// the pointed function type is returned.
+    pub fn as_func(&self, ty: Type, accept_ptr: bool) -> Option<&FuncType> {
         let data = self.get(ty)?;
         match &data.kind {
             TypeKind::Func(func) => Some(func),
+            _ if accept_ptr => self.base(ty).and_then(|base| self.as_func(base, false)),
             _ => None,
         }
     }

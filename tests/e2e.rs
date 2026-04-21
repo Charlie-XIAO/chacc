@@ -790,6 +790,7 @@ fn test_function() {
     f.line("float add_float(float x, float y);");
     f.line("float add_float3(float x, float y, float z) { return x + y + z; }");
     f.line("double add_double3(double x, double y, double z) { return x + y + z; }");
+    f.line("int (*fnptr(int (*fn)(int n, ...)))(int, ...) { return fn; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -854,6 +855,11 @@ fn test_function() {
 
     f.assert(0, r#"({ char buf[100]; float x = 3.5; sprintf(buf, "%.1f", x); strcmp(buf, "3.5"); })"#);
     f.assert(0, r#"({ char buf[100]; float x = 3.5; fmt(buf, "%.1f", x); strcmp(buf, "3.5"); })"#);
+
+    f.assert(5, "(add2)(2,3)");
+    f.assert(5, "(&add2)(2,3)");
+    f.assert(7, "({ int (*fn)(int,int) = add2; fn(2,5); })");
+    f.assert(6, "fnptr(add_all)(3, 1, 2, 3)");
 
     f.finish();
     f.run("function");

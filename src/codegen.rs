@@ -142,6 +142,21 @@ impl ScalarWidth {
     }
 }
 
+/// Subset of [`Function`] necessary for codegen.
+struct FunctionData {
+    name: SmolStr,
+    is_defined: bool,
+}
+
+impl From<&Function> for FunctionData {
+    fn from(function: &Function) -> Self {
+        Self {
+            name: function.name.clone(),
+            is_defined: function.body.is_some(),
+        }
+    }
+}
+
 /// A state snapshot when generating a function.
 struct FunctionState {
     name: SmolStr,
@@ -154,7 +169,7 @@ pub struct Codegen<'a> {
     source: &'a Source,
     out: BufWriter<File>,
     types: TypeStore,
-    function_names: Vec<SmolStr>,
+    functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
     next_label: usize,
     last_loc: Option<(u32, u32)>,
@@ -171,7 +186,7 @@ impl<'a> Codegen<'a> {
             source,
             out,
             types: TypeStore::default(),
-            function_names: Vec::new(),
+            functions: Vec::new(),
             globals: Vec::new(),
             next_label: 1,
             last_loc: None,
@@ -205,10 +220,7 @@ impl<'a> Codegen<'a> {
 
         self.types = types;
         self.types.frozen = true;
-        self.function_names = functions
-            .iter()
-            .map(|function| function.name.clone())
-            .collect();
+        self.functions = functions.iter().map(Into::into).collect();
         self.globals = globals;
 
         self.gen_globals()?;
@@ -513,8 +525,12 @@ impl<'a> Codegen<'a> {
                     Ok(())
                 },
                 EntityRef::Function(function_id) => {
-                    let name = &self.function_names[*function_id];
-                    writeln!(self.out, "  lea {name}(%rip), %rax")?;
+                    let function = &self.functions[*function_id];
+                    if function.is_defined {
+                        writeln!(self.out, "  lea {}(%rip), %rax", function.name)?;
+                    } else {
+                        writeln!(self.out, "  mov {}@GOTPCREL(%rip), %rax", function.name)?;
+                    }
                     Ok(())
                 },
             },
@@ -684,7 +700,7 @@ impl<'a> Codegen<'a> {
                 },
                 _ => unreachable!(),
             },
-            NodeKind::FuncCall { name, args } => {
+            NodeKind::FuncCall { callee, args } => {
                 if args.len() > MAX_FUNC_PARAMS {
                     return Err(self.source.error_at(
                         node.offset,
@@ -700,6 +716,8 @@ impl<'a> Codegen<'a> {
                         self.push()?;
                     }
                 }
+
+                self.gen_expr(callee)?;
 
                 let mut gp = 0;
                 let mut fp = 0;
@@ -720,10 +738,10 @@ impl<'a> Codegen<'a> {
                 // bytes to realign %rsp before calling and then add it back
                 let depth = self.function().depth;
                 if depth.is_multiple_of(2) {
-                    writeln!(self.out, "  call {name}")?;
+                    writeln!(self.out, "  call *%rax")?;
                 } else {
                     writeln!(self.out, "  sub $8, %rsp")?;
-                    writeln!(self.out, "  call {name}")?;
+                    writeln!(self.out, "  call *%rax")?;
                     writeln!(self.out, "  add $8, %rsp")?;
                 }
 

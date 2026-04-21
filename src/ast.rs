@@ -163,7 +163,7 @@ pub enum NodeKind {
     /// A floating-point numeric literal.
     Flonum(f64),
     /// A function call.
-    FuncCall { name: SmolStr, args: Vec<Node> },
+    FuncCall { callee: Box<Node>, args: Vec<Node> },
     /// An address-of expression "&".
     Addr(Box<Node>),
     /// A pointer dereference "*".
@@ -233,11 +233,13 @@ impl Node {
 
     /// Construct a function call node.
     pub fn func_call(
-        name: impl Into<SmolStr>,
+        callee: impl Into<Box<Node>>,
         args: Vec<Node>,
         return_ty: Type,
         offset: usize,
     ) -> Self {
+        let callee = callee.into();
+        debug_assert!(callee.ty.is_some(), "callee node type is not set");
         debug_assert!(
             args.iter().all(|arg| arg.ty.is_some()),
             "not all children node types are set",
@@ -246,10 +248,7 @@ impl Node {
         Self {
             offset,
             ty: Some(return_ty),
-            kind: NodeKind::FuncCall {
-                name: name.into(),
-                args,
-            },
+            kind: NodeKind::FuncCall { callee, args },
         }
     }
 

@@ -117,13 +117,6 @@ enum OrdinaryIdent {
 }
 
 impl OrdinaryIdent {
-    fn into_function(self) -> Option<usize> {
-        match self {
-            OrdinaryIdent::Function(id) => Some(id),
-            _ => None,
-        }
-    }
-
     fn into_typedef(self) -> Option<Type> {
         match self {
             OrdinaryIdent::Typedef(ty) => Some(ty),
@@ -721,7 +714,9 @@ impl<'a> Parser<'a> {
             // directly take its params
             self.pos = inner_pos;
             let mut declarator = self.parse_declarator(ty, in_param)?;
-            declarator.params = params;
+            if !self.types.is_func(declarator.ty) {
+                declarator.params = params;
+            }
             self.pos = next_pos;
             return Ok(declarator);
         }
@@ -1307,7 +1302,7 @@ impl<'a> Parser<'a> {
                 .source
                 .error_at(declarator.offset, "missing function name"));
         };
-        let Some(func_ty) = self.types.as_func(declarator.ty) else {
+        let Some(func_ty) = self.types.as_func(declarator.ty, false) else {
             return Err(self.error_current("expected a function"));
         };
         let is_variadic = func_ty.is_variadic;
@@ -1453,7 +1448,7 @@ impl<'a> Parser<'a> {
         if self.current().is_keyword(Keyword::Return) {
             self.advance();
             let func_ty = self.functions[self.active_function.unwrap()].ty;
-            let return_ty = self.types.as_func(func_ty).unwrap().return_ty;
+            let return_ty = self.types.as_func(func_ty, false).unwrap().return_ty;
 
             if self.current().is_punct(";") {
                 if return_ty != Type::Void {
@@ -2572,8 +2567,13 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <postfix> ::=
-    ///   "(" <typename> ")" "{" <initializer> "}"
-    ///   | <primary> ("[" <expr> "]" | ("." | "->") <ident> | "++" | "--")*
+    ///   "(" <typename> ")" "{" <initializer> "}" | <primary> <postfix-tail>*
+    /// <postfix-tail> ::=
+    ///   "[" <expr> "]"
+    ///   | <func-call>
+    ///   | ("." | "->") <ident>
+    ///   | "++"
+    ///   | "--"
     /// ```
     fn parse_postfix(&mut self) -> Result<Node> {
         let (is_compound_literal, _) = self.speculate(|parser| {
@@ -2602,6 +2602,11 @@ impl<'a> Parser<'a> {
 
         loop {
             let offset = self.current().offset;
+
+            if self.current().is_punct("(") {
+                node = self.parse_func_call(node)?;
+                continue;
+            }
 
             if self.current().is_punct("[") {
                 self.advance();
@@ -2650,7 +2655,6 @@ impl<'a> Parser<'a> {
     ///   | "(" <expr> ")"
     ///   | "sizeof" ("(" <typename> ")" | <unary>)
     ///   | "_Alignof" ("(" <typename> ")" | <unary>)
-    ///   | <func-call>
     ///   | <ident>
     ///   | <str>
     ///   | <num>
@@ -2733,10 +2737,6 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(name) = self.current().as_ident() {
-            if self.peek(1).is_some_and(|tok| tok.is_punct("(")) {
-                return self.parse_func_call(name);
-            }
-
             self.advance();
 
             let node = match self.find_ident(name) {
@@ -2749,6 +2749,11 @@ impl<'a> Parser<'a> {
                 Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
                 Some(OrdinaryIdent::Enumerator(val)) => {
                     Node::num(val.bits(), val.ty().into(), offset)
+                },
+                _ if self.current().is_punct("(") => {
+                    return Err(self
+                        .source
+                        .error_at(offset, "implicit declaration of a function"));
                 },
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
@@ -2786,27 +2791,16 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <func-call> ::= <ident> "(" (<assign> ("," <assign>)*)? ")"
+    /// <func-call> ::= "(" (<assign> ("," <assign>)*)? ")"
     /// ```
-    fn parse_func_call(&mut self, name: &str) -> Result<Node> {
+    fn parse_func_call(&mut self, mut callee: Node) -> Result<Node> {
         let offset = self.current().offset;
-        self.advance();
         self.skip_punct("(")?;
 
-        let Some(ident) = self.find_ident(name) else {
-            return Err(self
-                .source
-                .error_at(offset, "implicit declaration of a function"));
-        };
-        let Some(func_id) = ident.into_function() else {
+        self.infer_type(&mut callee)?;
+        let Some(func) = self.types.as_func(callee.expect_ty(), true).cloned() else {
             return Err(self.source.error_at(offset, "not a function"));
         };
-
-        let func = self
-            .types
-            .as_func(self.functions[func_id].ty)
-            .unwrap()
-            .clone();
         let mut param_tys = func.params.iter().copied();
 
         let mut args = Vec::new();
@@ -2848,7 +2842,7 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(name, args, func.return_ty, offset))
+        Ok(Node::func_call(callee, args, func.return_ty, offset))
     }
 
     /// ```bnf
@@ -3619,11 +3613,16 @@ impl<'a> Parser<'a> {
         }
 
         node.ty = Some(match &mut node.kind {
-            NodeKind::FuncCall { args, .. } => {
+            NodeKind::FuncCall { callee, args } => {
+                self.infer_type(callee)?;
                 for arg in args {
                     self.infer_type(arg)?;
                 }
-                Type::Long
+                let ty = callee.expect_ty();
+                let Some(func) = self.types.as_func(ty, true) else {
+                    return Err(self.source.error_at(node.offset, "not a function"));
+                };
+                func.return_ty
             },
             NodeKind::Addr(expr) => {
                 self.infer_type(expr)?;
@@ -3874,7 +3873,8 @@ impl<'a> Parser<'a> {
                 self.collect_labels(lhs, labels)?;
                 self.collect_labels(rhs, labels)?;
             },
-            NodeKind::FuncCall { args, .. } => {
+            NodeKind::FuncCall { callee, args } => {
+                self.collect_labels(callee, labels)?;
                 for arg in args {
                     self.collect_labels(arg, labels)?;
                 }
@@ -3988,7 +3988,8 @@ impl<'a> Parser<'a> {
                 self.resolve_gotos(lhs, labels)?;
                 self.resolve_gotos(rhs, labels)?;
             },
-            NodeKind::FuncCall { args, .. } => {
+            NodeKind::FuncCall { callee, args } => {
+                self.resolve_gotos(callee, labels)?;
                 for arg in args {
                     self.resolve_gotos(arg, labels)?;
                 }
