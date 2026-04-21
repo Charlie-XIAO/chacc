@@ -1,5 +1,7 @@
 //! Errors and diagnostics for chacc.
 
+use std::path::PathBuf;
+
 use smol_str::SmolStr;
 
 /// The severity level of a diagnostic message.
@@ -42,10 +44,20 @@ impl std::fmt::Display for Diagnostic {
 /// The error type for chacc.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
+    #[error("compilation terminated")]
+    Terminate,
+    #[error("fatal error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("fatal error: {0}: {1}")]
+    IoWithPath(PathBuf, std::io::Error),
     #[error("{0}")]
     Diagnostic(#[from] Diagnostic),
+}
+
+impl Error {
+    pub fn is_diagnostic(&self) -> bool {
+        matches!(self, Error::Diagnostic(_))
+    }
 }
 
 /// Replaces [`std::result::Result`], using [`Error`] as the default error type.

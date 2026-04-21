@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use line_index::{LineIndex, TextSize};
 use smol_str::{SmolStr, ToSmolStr};
 
-use crate::error::{Diagnostic, DiagnosticLevel, Error};
+use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
 /// A source file.
 #[derive(Debug)]
@@ -34,14 +34,15 @@ pub struct Source {
 
 impl Source {
     /// Construct a source file from a path.
-    pub fn from_path(path: impl Into<PathBuf>) -> std::io::Result<Self> {
+    pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let content = std::fs::read_to_string(&path)?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
         Ok(Self::new(SourceFile::Path(path), content))
     }
 
     /// Construct a source file from stdin.
-    pub fn from_stdin() -> std::io::Result<Self> {
+    pub fn from_stdin() -> Result<Self> {
         let mut content = String::new();
         std::io::stdin().read_to_string(&mut content)?;
         Ok(Self::new(SourceFile::Stdin, content))

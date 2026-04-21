@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+lexopt = "0.3"
 line-index = "0.1"
 smol_str = "0.3"
 thiserror = "2"
