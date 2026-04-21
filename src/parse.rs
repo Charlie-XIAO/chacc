@@ -1177,9 +1177,9 @@ impl<'a> Parser<'a> {
         if let Some(tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
-                let ty = self
-                    .find_tag(tag)
-                    .ok_or_else(|| self.source.error_at(offset, "unknown enum type"))?;
+                let Some(ty) = self.find_tag(tag) else {
+                    return Err(self.source.error_at(offset, "unknown enum type"))?;
+                };
                 if ty != Type::Enum {
                     return Err(self.source.error_at(offset, "not an enum tag"));
                 }
@@ -2837,9 +2837,7 @@ impl<'a> Parser<'a> {
                 } else {
                     self.types.promote_int(ty).unwrap_or(ty)
                 };
-                if promoted != ty {
-                    self.apply_cast(&mut arg, promoted)?;
-                }
+                self.apply_cast(&mut arg, promoted)?;
             }
 
             args.push(arg);
@@ -3663,10 +3661,9 @@ impl<'a> Parser<'a> {
             },
             NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
-                let ty = self
-                    .types
-                    .promote_int(expr.expect_ty())
-                    .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?;
+                let Some(ty) = self.types.promote_int(expr.expect_ty()) else {
+                    return Err(self.source.error_at(node.offset, "invalid operand type"));
+                };
                 self.apply_cast(expr, ty)?;
                 ty
             },
@@ -3701,21 +3698,38 @@ impl<'a> Parser<'a> {
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                // TODO: handle invalid operands, e.g., bitwise operations on
-                // flonum
-                let ty = self.apply_usual_arith_conv(lhs, rhs)?;
+                let lhs_ty = lhs.expect_ty();
+                let rhs_ty = rhs.expect_ty();
+
                 match op {
-                    BinaryOp::Add
-                    | BinaryOp::Sub
-                    | BinaryOp::Mul
-                    | BinaryOp::Div
-                    | BinaryOp::Mod
-                    | BinaryOp::BitAnd
-                    | BinaryOp::BitOr
-                    | BinaryOp::BitXor
-                    | BinaryOp::BitShl
-                    | BinaryOp::BitShr => ty,
-                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => Type::Int,
+                    BinaryOp::Add | BinaryOp::Sub => self.apply_usual_arith_conv(lhs, rhs)?,
+                    BinaryOp::Mul | BinaryOp::Div => {
+                        if !lhs_ty.is_numeric() || !rhs_ty.is_numeric() {
+                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                        }
+                        self.apply_usual_arith_conv(lhs, rhs)?
+                    },
+                    BinaryOp::Mod | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                        if !lhs_ty.is_integer() || !rhs_ty.is_integer() {
+                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                        }
+                        self.apply_usual_arith_conv(lhs, rhs)?
+                    },
+                    BinaryOp::BitShl | BinaryOp::BitShr => {
+                        let Some(lhs_ty) = self.types.promote_int(lhs_ty) else {
+                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                        };
+                        let Some(rhs_ty) = self.types.promote_int(rhs_ty) else {
+                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                        };
+                        self.apply_cast(lhs, lhs_ty)?;
+                        self.apply_cast(rhs, rhs_ty)?;
+                        lhs_ty
+                    },
+                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => {
+                        self.apply_usual_arith_conv(lhs, rhs)?;
+                        Type::Int
+                    },
                 }
             },
             NodeKind::Conditional {

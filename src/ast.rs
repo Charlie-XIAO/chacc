@@ -413,9 +413,16 @@ impl Node {
     }
 
     /// Construct a type cast node.
+    ///
+    /// If the type of the child expression is the same as the target type, this
+    /// directly returns the child expression without wrapping in a cast node.
     pub fn cast(expr: impl Into<Box<Node>>, ty: Type, offset: usize) -> Self {
         let expr = expr.into();
         debug_assert!(expr.ty.is_some(), "child node type is not set");
+
+        if expr.expect_ty() == ty {
+            return *expr;
+        }
 
         Self {
             offset,
