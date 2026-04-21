@@ -435,6 +435,8 @@ fn test_const() {
 #[test]
 fn test_constexpr() {
     let mut f = Fixture::new();
+    f.line("float g40 = 1.5;");
+    f.line("double g41 = 0.0 ? 55 : (0, 1 + 1 * 5.0 / 2 * (double)2 * (int)2.0);");
     f.main();
 
     f.assert(10, "({ enum { ten=1+2+3+4 }; ten; })");
@@ -479,6 +481,9 @@ fn test_constexpr() {
     f.assert(4, "({ char x[(unsigned long)-1/((long)1<<62)+1]; sizeof(x); })");
     f.assert(1, "({ char x[(unsigned)1<-1]; sizeof(x); })");
     f.assert(1, "({ char x[(unsigned)1<=-1]; sizeof(x); })");
+
+    f.assert(1, "g40==1.5");
+    f.assert(1, "g41==11");
 
     f.finish();
     f.run("constexpr");

@@ -1197,7 +1197,7 @@ impl<'a> Parser<'a> {
         self.skip_punct("{")?;
 
         let mut first = true;
-        let mut val = ConstValue::raw(0, ConstType::Int);
+        let mut val = ConstValue::int(0, ConstType::Int);
         while !self.maybe_skip_list_end(true) {
             if !first {
                 self.skip_punct(",")?;
@@ -1223,7 +1223,7 @@ impl<'a> Parser<'a> {
             }
 
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::Enumerator(val));
-            val = val.add(ConstValue::raw(1, val.ty()), val.ty());
+            val = val.add(ConstValue::int(1, val.ty()), val.ty());
         }
 
         let ty = Type::Enum;
@@ -3470,7 +3470,14 @@ impl<'a> Parser<'a> {
 
         match init.kind {
             InitializerKind::Expr(mut rhs) => match self.eval_global_init(&mut rhs)? {
-                GlobalInitValue::Num(val) => write(val, self.types.size(init.ty)),
+                GlobalInitValue::Num(val) => {
+                    let Some(const_ty) = self.types.to_const(init.ty) else {
+                        return Err(self
+                            .source
+                            .error_at(rhs.offset, "not a compile-time constant"));
+                    };
+                    write(val.cast(const_ty), self.types.size(init.ty))
+                },
                 GlobalInitValue::Reloc(label, addend) => {
                     if self.types.size(init.ty) != 8 {
                         // Global relocations are emitted as ".quad" so they must
@@ -3694,6 +3701,8 @@ impl<'a> Parser<'a> {
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
+                // TODO: handle invalid operands, e.g., bitwise operations on
+                // flonum
                 let ty = self.apply_usual_arith_conv(lhs, rhs)?;
                 match op {
                     BinaryOp::Add
@@ -4003,7 +4012,8 @@ impl<'a> Parser<'a> {
         };
 
         Ok(match &mut node.kind {
-            NodeKind::Num(val) => ConstValue::raw(*val, ty),
+            NodeKind::Num(val) => ConstValue::int(*val, ty),
+            NodeKind::Flonum(val) => ConstValue::float(*val, ty),
             NodeKind::Neg(expr) => self.eval(expr)?.neg(ty),
             NodeKind::Not(expr) => self.eval(expr)?.not(ty),
             NodeKind::BitNot(expr) => self.eval(expr)?.bit_not(ty),
@@ -4037,7 +4047,7 @@ impl<'a> Parser<'a> {
                 then_expr,
                 else_expr,
             } => {
-                if self.eval(cond)?.is_true() {
+                if self.eval(cond)?.into() {
                     self.eval(then_expr)?
                 } else {
                     self.eval(else_expr)?
@@ -4087,6 +4097,11 @@ impl<'a> Parser<'a> {
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
                         | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
+                            if rhs.ty().is_flonum() {
+                                return Err(self
+                                    .source
+                                    .error_at(node.offset, "invalid initializer"));
+                            }
                             GlobalInitValue::Reloc(label, addend.wrapping_add(rhs.bits() as i64))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
@@ -4096,6 +4111,11 @@ impl<'a> Parser<'a> {
                             GlobalInitValue::Num(lhs.sub(rhs, const_ty))
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
+                            if rhs.ty().is_flonum() {
+                                return Err(self
+                                    .source
+                                    .error_at(node.offset, "invalid initializer"));
+                            }
                             GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs.bits() as i64))
                         },
                         _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
@@ -4108,7 +4128,7 @@ impl<'a> Parser<'a> {
                 then_expr,
                 else_expr,
             } => {
-                if self.eval(cond)?.is_true() {
+                if self.eval(cond)?.into() {
                     self.eval_global_init(then_expr)?
                 } else {
                     self.eval_global_init(else_expr)?

@@ -432,6 +432,8 @@ impl TypeStore {
             Type::UInt => Some(ConstType::UInt),
             Type::Long => Some(ConstType::Long),
             Type::ULong => Some(ConstType::ULong),
+            Type::Float => Some(ConstType::Float),
+            Type::Double => Some(ConstType::Double),
             _ if self.is_ptr(ty) => Some(ConstType::Ptr),
             _ => None,
         }
@@ -497,6 +499,8 @@ impl From<ConstType> for Type {
             ConstType::UInt => Type::UInt,
             ConstType::Long => Type::Long,
             ConstType::ULong | ConstType::Ptr => Type::ULong,
+            ConstType::Float => Type::Float,
+            ConstType::Double => Type::Double,
         }
     }
 }
