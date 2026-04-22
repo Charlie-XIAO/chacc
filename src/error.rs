@@ -50,13 +50,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("fatal error: {0}: {1}")]
     IoWithPath(PathBuf, std::io::Error),
-    #[error("{0}")]
-    Diagnostic(#[from] Diagnostic),
 }
 
 impl Error {
-    pub fn is_diagnostic(&self) -> bool {
-        matches!(self, Error::Diagnostic(_))
+    /// Returns whether this is a termination.
+    pub fn is_terminate(&self) -> bool {
+        matches!(self, Self::Terminate)
     }
 }
 

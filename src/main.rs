@@ -15,8 +15,8 @@ fn main() -> ExitCode {
     match driver.run() {
         Ok(()) => driver.code().unwrap_or(ExitCode::SUCCESS),
         Err(e) => {
-            if e.is_diagnostic() {
-                eprintln!("{e}")
+            if e.is_terminate() {
+                // Termination is not an error that needs to be reported
             } else if driver.cc1 {
                 eprintln!("cc1: {e}");
             } else {

@@ -74,8 +74,11 @@ impl Source {
 
     /// Return an error diagnostic at the given offset.
     pub fn error_at(&self, offset: usize, message: impl Into<SmolStr>) -> Error {
-        self.diagnostic_at(offset, DiagnosticLevel::Error, message)
-            .into()
+        eprintln!(
+            "{}",
+            self.diagnostic_at(offset, DiagnosticLevel::Error, message)
+        );
+        Error::Terminate
     }
 
     /// Emit a warning message at the given byte offset.
