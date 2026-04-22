@@ -167,7 +167,7 @@ struct FunctionState {
 /// A x86-64 assembly code generator.
 pub struct Codegen<'a> {
     source: &'a Source,
-    out: BufWriter<File>,
+    out: BufWriter<Box<dyn Write>>,
     types: TypeStore,
     functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
@@ -178,13 +178,18 @@ pub struct Codegen<'a> {
 
 impl<'a> Codegen<'a> {
     /// Create a code generator from source.
+    ///
+    /// If the output is "-", write to standard output.
     pub fn new(source: &'a Source, output: &'a Path) -> Result<Self> {
-        let out_file = File::create(output)?;
-        let out = BufWriter::new(out_file);
+        let out: Box<dyn Write> = if output.as_os_str() == "-" {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(File::create(output)?)
+        };
 
         Ok(Self {
             source,
-            out,
+            out: BufWriter::new(out),
             types: TypeStore::default(),
             functions: Vec::new(),
             globals: Vec::new(),
@@ -216,7 +221,7 @@ impl<'a> Codegen<'a> {
             globals,
         } = program;
 
-        writeln!(self.out, "  .file 1 \"{}\"", self.source.file())?;
+        writeln!(self.out, "  .file 1 \"{}\"", self.source.name())?;
 
         self.types = types;
         self.types.frozen = true;

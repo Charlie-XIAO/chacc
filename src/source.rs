@@ -1,65 +1,48 @@
 //! Program source definition.
 
-use std::io::Read;
-use std::path::PathBuf;
+use std::{io::Read, path::Path};
 
 use line_index::{LineIndex, TextSize};
 use smol_str::{SmolStr, ToSmolStr};
 
 use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
-/// A source file.
-#[derive(Debug)]
-pub enum SourceFile {
-    Stdin,
-    Path(PathBuf),
-}
-
-impl std::fmt::Display for SourceFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SourceFile::Stdin => write!(f, "<stdin>"),
-            SourceFile::Path(path) => write!(f, "{}", path.display()),
-        }
-    }
-}
-
 /// A C program source to be compiled.
 #[derive(Debug)]
 pub struct Source {
-    file: SourceFile,
+    name: SmolStr,
     content: SmolStr,
     line_index: LineIndex,
 }
 
 impl Source {
     /// Construct a source file from a path.
-    pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
-        let path = path.into();
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
-        Ok(Self::new(SourceFile::Path(path), content))
-    }
+    ///
+    /// If the path is "-", read from standard input.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
 
-    /// Construct a source file from stdin.
-    pub fn from_stdin() -> Result<Self> {
-        let mut content = String::new();
-        std::io::stdin().read_to_string(&mut content)?;
-        Ok(Self::new(SourceFile::Stdin, content))
-    }
+        let (content, name) = if path.as_os_str() == "-" {
+            let mut content = String::new();
+            std::io::stdin().read_to_string(&mut content)?;
+            (content, "<stdin>".to_smolstr())
+        } else {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| Error::IoWithPath(path.to_path_buf(), e))?;
+            (content, path.display().to_smolstr())
+        };
 
-    fn new(file: SourceFile, content: impl Into<SmolStr>) -> Self {
-        let content = content.into();
         let line_index = LineIndex::new(&content);
-        Self {
-            file,
-            content,
+
+        Ok(Self {
+            name,
+            content: content.into(),
             line_index,
-        }
+        })
     }
 
-    pub fn file(&self) -> &SourceFile {
-        &self.file
+    pub fn name(&self) -> SmolStr {
+        self.name.clone()
     }
 
     pub fn content(&self) -> &str {
@@ -106,7 +89,7 @@ impl Source {
 
         Diagnostic {
             level,
-            source_name: self.file.to_smolstr(),
+            source_name: self.name.clone(),
             source_content: self.content.clone(),
             message: message.into(),
             line: (line_col.line as usize) + 1,

@@ -84,7 +84,7 @@ impl Fixture {
         let tmp = tempdir().expect("failed to create temporary directory");
         let source = tmp.path().join(format!("{stem}.c"));
         let preprocessed = tmp.path().join(format!("{stem}.i"));
-        let asm = tmp.path().join(format!("{stem}.s"));
+        let obj = tmp.path().join(format!("{stem}.o"));
         let exe = tmp.path().join(stem);
 
         std::fs::write(&source, &self.source).expect("failed to write fixture");
@@ -104,14 +104,14 @@ impl Fixture {
 
         Command::chacc()
             .arg("-o")
-            .arg(&asm)
+            .arg(&obj)
             .arg(&preprocessed)
             .run_checked(&format!("compiling {}", source.display()));
 
         Command::cc()
             .arg("-o")
             .arg(&exe)
-            .arg(&asm)
+            .arg(&obj)
             .arg(tests_dir.join("test.c"))
             .run_checked(&format!("linking {}", source.display()));
 
@@ -1558,11 +1558,47 @@ fn test_output_flag() {
     let input = tmp.path().join("input.c");
     std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input f");
 
-    let asm = tmp.path().join("out.s");
+    let obj = tmp.path().join("out.o");
     Command::chacc()
         .arg("-o")
-        .arg(&asm)
+        .arg(&obj)
         .arg(&input)
         .run_checked("compiling with -o flag");
-    assert!(asm.is_file(), "expected {} to be created", asm.display());
+    assert!(obj.is_file(), "expected {} to be created", obj.display());
+}
+
+#[test]
+fn test_assemble_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let input = tmp.path().join("input.c");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
+
+    let output = Command::chacc()
+        .arg("-S")
+        .arg("-o")
+        .arg("-")
+        .arg(&input)
+        .run_checked("compiling with -S flag");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("main:"));
+}
+
+#[test]
+fn test_default_output_file() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let input = tmp.path().join("out.c");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
+
+    Command::chacc()
+        .arg("out.c")
+        .current_dir(tmp.path())
+        .run_checked("compiling with default object output");
+    assert!(tmp.path().join("out.o").is_file());
+
+    Command::chacc()
+        .arg("-S")
+        .arg("out.c")
+        .current_dir(tmp.path())
+        .run_checked("compiling with default assembly output");
+    assert!(tmp.path().join("out.s").is_file());
 }

@@ -35,16 +35,16 @@ compile code:
     set -eou pipefail
 
     ID=$(shuf -i 10000-99999 -n 1)
-    ASM_FILE="tmp_${ID}.s"
+    OBJ_FILE="tmp_${ID}.o"
     BIN_FILE="tmp_${ID}"
 
-    printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${ASM_FILE}" -
-    cc -x assembler -o "${BIN_FILE}" "${ASM_FILE}"
+    printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${OBJ_FILE}" -
+    cc -o "${BIN_FILE}" "${OBJ_FILE}"
 
     set +e
     "./${BIN_FILE}"
     echo $?
     set -e
 
-    echo "ASM: ${ASM_FILE}"
+    echo "OBJ: ${OBJ_FILE}"
     echo "BIN: ${BIN_FILE}"

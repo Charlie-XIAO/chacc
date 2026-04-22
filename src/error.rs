@@ -46,6 +46,8 @@ impl std::fmt::Display for Diagnostic {
 pub enum Error {
     #[error("compilation terminated")]
     Terminate,
+    #[error("{0} (run with -h/--help for usage)")]
+    Cli(#[from] lexopt::Error),
     #[error("fatal error: {0}")]
     Io(#[from] std::io::Error),
     #[error("fatal error: {0}: {1}")]
