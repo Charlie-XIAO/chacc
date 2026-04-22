@@ -9,13 +9,17 @@ fn tests_dir() -> PathBuf {
 }
 
 trait CommandExt {
-    fn cc() -> Command {
+    fn cc(dir: impl AsRef<Path>) -> Command {
         let cc = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
-        Command::new(cc)
+        let mut command = Command::new(cc);
+        command.current_dir(dir);
+        command
     }
 
-    fn chacc() -> Command {
-        Command::new(env!("CARGO_BIN_EXE_chacc"))
+    fn chacc(dir: impl AsRef<Path>) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_chacc"));
+        command.current_dir(dir);
+        command
     }
 
     fn run_checked(&mut self, what: &str) -> Output;
@@ -89,7 +93,7 @@ impl Fixture {
 
         std::fs::write(&source, &self.source).expect("failed to write fixture");
 
-        Command::cc()
+        Command::cc(tmp.path())
             .args([
                 OsStr::new("-E"),
                 OsStr::new("-P"),
@@ -102,13 +106,13 @@ impl Fixture {
             ])
             .run_checked(&format!("preprocessing {}", source.display()));
 
-        Command::chacc()
+        Command::chacc(tmp.path())
             .arg("-o")
             .arg(&obj)
             .arg(&preprocessed)
             .run_checked(&format!("compiling {}", source.display()));
 
-        Command::cc()
+        Command::cc(tmp.path())
             .arg("-o")
             .arg(&exe)
             .arg(&obj)
@@ -1544,7 +1548,7 @@ fn test_variable() {
 
 #[test]
 fn test_help_flag() {
-    let output = Command::chacc()
+    let output = Command::chacc(".")
         .arg("--help")
         .run_checked("running with --help flag");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1559,7 +1563,7 @@ fn test_output_flag() {
     std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input f");
 
     let obj = tmp.path().join("out.o");
-    Command::chacc()
+    Command::chacc(tmp.path())
         .arg("-o")
         .arg(&obj)
         .arg(&input)
@@ -1573,7 +1577,7 @@ fn test_assemble_flag() {
     let input = tmp.path().join("input.c");
     std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
-    let output = Command::chacc()
+    let output = Command::chacc(tmp.path())
         .arg("-S")
         .arg("-o")
         .arg("-")
@@ -1586,19 +1590,42 @@ fn test_assemble_flag() {
 #[test]
 fn test_default_output_file() {
     let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("out.c");
+    let input = tmp.path().join("input.c");
     std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
-    Command::chacc()
-        .arg("out.c")
-        .current_dir(tmp.path())
+    Command::chacc(tmp.path())
+        .arg("input.c")
         .run_checked("compiling with default object output");
-    assert!(tmp.path().join("out.o").is_file());
+    assert!(tmp.path().join("a.out").is_file());
 
-    Command::chacc()
+    Command::chacc(tmp.path())
         .arg("-S")
-        .arg("out.c")
-        .current_dir(tmp.path())
+        .arg("input.c")
         .run_checked("compiling with default assembly output");
-    assert!(tmp.path().join("out.s").is_file());
+    assert!(tmp.path().join("input.s").is_file());
+}
+
+#[test]
+fn test_save_temps_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let input = tmp.path().join("input.c");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir(&output_dir).expect("failed to create output directory");
+
+    Command::chacc(tmp.path())
+        .arg("-save-temps")
+        .arg(&input)
+        .run_checked("compiling with -save-temps");
+    assert!(tmp.path().join("a.out").is_file());
+    assert!(tmp.path().join("a-input.s").is_file());
+
+    Command::chacc(tmp.path())
+        .arg("-save-temps")
+        .arg("-o")
+        .arg(output_dir.join("output.o"))
+        .arg(&input)
+        .run_checked("compiling with -save-temps and -o");
+    assert!(output_dir.join("output.o").is_file());
+    assert!(output_dir.join("output-input.s").is_file());
 }

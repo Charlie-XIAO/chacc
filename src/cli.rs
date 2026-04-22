@@ -1,7 +1,7 @@
 //! The CLI interface of chacc.
 
-use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use lexopt::Arg;
 
@@ -17,6 +17,7 @@ fn help() {
     println!("  -o/--output <path>  Output path, or \"-\" for stdout.");
     println!("  -S                  Compile only; do not assemble or link.");
     println!("  -B <dir>            Add a directory to the search path for tools.");
+    println!("  -save-temps         Keep intermediate files.");
     println!("  -###                Print subprocess commands.");
     println!("  --pass-exit-codes   Exit with the highest error code from a phase.");
     println!("  -h, --help          Show this help message.");
@@ -28,6 +29,7 @@ pub struct Cli {
     pub output: PathBuf,
     pub compile_only: bool,
     pub tool_search_paths: Vec<PathBuf>,
+    pub save_temps: bool,
     pub print_subprocess_commands: bool,
     pub pass_exit_codes: bool,
     pub cc1: bool,
@@ -39,6 +41,7 @@ struct CliPartial {
     output: Option<PathBuf>,
     compile_only: bool,
     tool_search_paths: Vec<PathBuf>,
+    save_temps: bool,
     print_subprocess_commands: bool,
     pass_exit_codes: bool,
     cc1: bool,
@@ -53,25 +56,10 @@ impl TryFrom<CliPartial> for Cli {
         let input = input.ok_or("no input file")?;
 
         let output = output.unwrap_or_else(|| {
-            if input.as_os_str() == "-" {
-                return PathBuf::from("a.out");
-            }
-
-            let with_ext = |ext: &str| {
-                let file_name = input
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .expect("input path should have a file name");
-                let stem = file_name
-                    .rsplit_once('.')
-                    .map_or(file_name, |(stem, _)| stem);
-                PathBuf::from(format!("{stem}{ext}"))
-            };
-
             if partial.compile_only {
-                with_ext(".s")
+                Path::new(input.file_stem().unwrap_or(OsStr::new("in"))).with_extension("s")
             } else {
-                with_ext(".o")
+                PathBuf::from("a.out")
             }
         });
 
@@ -80,6 +68,7 @@ impl TryFrom<CliPartial> for Cli {
             output,
             compile_only: partial.compile_only,
             tool_search_paths: partial.tool_search_paths,
+            save_temps: partial.save_temps,
             print_subprocess_commands: partial.print_subprocess_commands,
             pass_exit_codes: partial.pass_exit_codes,
             cc1: partial.cc1,
@@ -100,6 +89,11 @@ impl Cli {
         loop {
             if let Some(mut raw) = parser.try_raw_args() {
                 match raw.peek().and_then(|arg| arg.to_str()) {
+                    Some("-save-temps") => {
+                        raw.next();
+                        cli.save_temps = true;
+                        continue;
+                    },
                     Some("-###") => {
                         raw.next();
                         cli.print_subprocess_commands = true;
@@ -150,16 +144,26 @@ impl Cli {
         Ok(cli.try_into()?)
     }
 
-    /// Get a temporary output file name with the given extension.
-    pub fn temp_output(&self, ext: &str) -> OsString {
-        let mut path = self
+    /// Get a temporary output file path with the given extension.
+    ///
+    /// If `base` is provided, the temporary file will be created in that
+    /// directory; otherwise, it will be created in the same directory as the
+    /// final output file.
+    pub fn temp_output_path(&self, ext: &str, base: Option<&Path>) -> PathBuf {
+        let mut file_name = self
             .output
             .file_stem()
-            .unwrap_or(OsStr::new("tmp"))
+            .unwrap_or(OsStr::new("out"))
             .to_owned();
-        path.push("--");
-        path.push(ext);
-        path
+        file_name.push("-");
+        file_name.push(self.input.file_stem().unwrap_or(OsStr::new("in")));
+
+        let path = if let Some(base) = base {
+            base.join(file_name)
+        } else {
+            self.output.with_file_name(file_name)
+        };
+        path.with_extension(ext)
     }
 
     /// Resolve the path of a tool.

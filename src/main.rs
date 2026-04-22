@@ -50,8 +50,16 @@ impl Driver {
             return Ok(());
         }
 
-        let tmp = TempDir::with_prefix("chacc")?;
-        let asm_path = tmp.path().join(self.cli.temp_output(".s"));
+        // Create temporarily directory only if we are not keeping temp files
+        let tmp = if self.cli.save_temps {
+            None
+        } else {
+            Some(TempDir::with_prefix("chacc")?)
+        };
+
+        let asm_path = self
+            .cli
+            .temp_output_path("s", tmp.as_ref().map(TempDir::path));
         self.run_cc1(None, Some(&asm_path))?;
         self.run_assemble(Some(&asm_path), None)?;
 

@@ -1,6 +1,7 @@
 //! Program source definition.
 
-use std::{io::Read, path::Path};
+use std::io::Read;
+use std::path::Path;
 
 use line_index::{LineIndex, TextSize};
 use smol_str::{SmolStr, ToSmolStr};
@@ -27,7 +28,7 @@ impl Source {
             std::io::stdin().read_to_string(&mut content)?;
             (content, "<stdin>".to_smolstr())
         } else {
-            let content = std::fs::read_to_string(&path)
+            let content = std::fs::read_to_string(path)
                 .map_err(|e| Error::IoWithPath(path.to_path_buf(), e))?;
             (content, path.display().to_smolstr())
         };
