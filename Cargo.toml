@@ -4,14 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hexf-parse = "0.2"
 lexopt = "0.3"
 line-index = "0.1"
-smol_str = "0.3"
-thiserror = "2"
 rustc-hash = "2"
+smol_str = "0.3"
 strum = { version = "0.28", features = ["derive"] }
-hexf-parse = "0.2"
+thiserror = "2"
 tempfile = "3"
+which = "8"
 
 [profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+panic = "abort"
 strip = true

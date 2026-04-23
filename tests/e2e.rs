@@ -18,6 +18,7 @@ trait CommandExt {
 
     fn chacc(dir: impl AsRef<Path>) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_chacc"));
+        command.arg("-###");
         command.current_dir(dir);
         command
     }
@@ -107,6 +108,7 @@ impl Fixture {
             .run_checked(&format!("preprocessing {}", source.display()));
 
         Command::chacc(tmp.path())
+            .arg("-c")
             .arg("-o")
             .arg(&obj)
             .arg(&preprocessed)
@@ -1560,19 +1562,20 @@ fn test_help_flag() {
 fn test_output_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
     let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input f");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
-    let obj = tmp.path().join("out.o");
+    let exe = tmp.path().join("out");
     Command::chacc(tmp.path())
         .arg("-o")
-        .arg(&obj)
+        .arg(&exe)
         .arg(&input)
         .run_checked("compiling with -o flag");
-    assert!(obj.is_file(), "expected {} to be created", obj.display());
+    assert!(exe.is_file());
+    Command::new(&exe).run_checked("running output executable");
 }
 
 #[test]
-fn test_assemble_flag() {
+fn test_stop_after_assemble_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
     let input = tmp.path().join("input.c");
     std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
@@ -1588,6 +1591,22 @@ fn test_assemble_flag() {
 }
 
 #[test]
+fn test_stop_after_compile_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let input = tmp.path().join("input.c");
+    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
+
+    let obj = tmp.path().join("output.o");
+    Command::chacc(tmp.path())
+        .arg("-c")
+        .arg("-o")
+        .arg(&obj)
+        .arg(&input)
+        .run_checked("compiling with -c flag");
+    assert!(obj.is_file());
+}
+
+#[test]
 fn test_default_output_file() {
     let tmp = tempdir().expect("failed to create temporary directory");
     let input = tmp.path().join("input.c");
@@ -1595,10 +1614,19 @@ fn test_default_output_file() {
 
     Command::chacc(tmp.path())
         .arg("input.c")
-        .run_checked("compiling with default object output");
-    assert!(tmp.path().join("a.out").is_file());
+        .run_checked("compiling with default executable output");
+    let exe = tmp.path().join("a.out");
+    assert!(exe.is_file());
+    Command::new(exe).run_checked("running output executable");
 
     Command::chacc(tmp.path())
+        .arg("-c")
+        .arg("input.c")
+        .run_checked("compiling with default object output");
+    assert!(tmp.path().join("input.o").is_file());
+
+    Command::chacc(tmp.path())
+        .arg("-c")
         .arg("-S")
         .arg("input.c")
         .run_checked("compiling with default assembly output");
@@ -1618,14 +1646,17 @@ fn test_save_temps_flag() {
         .arg(&input)
         .run_checked("compiling with -save-temps");
     assert!(tmp.path().join("a.out").is_file());
+    assert!(tmp.path().join("a-input.o").is_file());
     assert!(tmp.path().join("a-input.s").is_file());
 
+    let exe = output_dir.join("output");
     Command::chacc(tmp.path())
         .arg("-save-temps")
         .arg("-o")
-        .arg(output_dir.join("output.o"))
+        .arg(&exe)
         .arg(&input)
         .run_checked("compiling with -save-temps and -o");
-    assert!(output_dir.join("output.o").is_file());
+    assert!(exe.is_file());
+    assert!(output_dir.join("output-input.o").is_file());
     assert!(output_dir.join("output-input.s").is_file());
 }
