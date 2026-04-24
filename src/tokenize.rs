@@ -1,4 +1,4 @@
-//! Tokenizer and diagnostic helpers.
+//! Tokenize C source code into a flat token stream.
 
 use std::rc::Rc;
 
@@ -87,14 +87,6 @@ impl<'a> Token<'a> {
         Self {
             offset,
             kind: TokenKind::Ident(lexeme),
-        }
-    }
-
-    /// Construct a keyword token.
-    pub fn keyword(offset: usize, keyword: Keyword) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Keyword(keyword),
         }
     }
 
@@ -226,6 +218,7 @@ impl<'a> Token<'a> {
     }
 }
 
+/// Tokenizer for C source code.
 pub struct Tokenizer<'a> {
     source: &'a Source,
     pos: usize,
@@ -285,7 +278,7 @@ impl<'a> Tokenizer<'a> {
             }
 
             if is_ident1(&ch) {
-                self.read_ident_or_keyword();
+                self.read_ident();
                 continue;
             }
 
@@ -527,21 +520,14 @@ impl<'a> Tokenizer<'a> {
         Ok((decoded, 1))
     }
 
-    /// Read an identifier or keyword token.
-    fn read_ident_or_keyword(&mut self) {
+    /// Read an identifier token.
+    fn read_ident(&mut self) {
         let offset = self.pos;
         let content = self.source.content();
 
         let len = content[self.pos..].bytes().take_while(is_ident2).count();
         let lexeme = &content[offset..offset + len];
-
-        let token = if let Ok(keyword) = Keyword::try_from(lexeme) {
-            Token::keyword(offset, keyword)
-        } else {
-            Token::ident(offset, lexeme)
-        };
-
-        self.tokens.push(token);
+        self.tokens.push(Token::ident(offset, lexeme));
         self.pos += len;
     }
 

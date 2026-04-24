@@ -12,6 +12,7 @@ mod constexpr;
 mod driver;
 mod error;
 mod parse;
+mod preprocess;
 mod source;
 mod tokenize;
 mod types;

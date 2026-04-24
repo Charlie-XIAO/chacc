@@ -20,6 +20,7 @@ use crate::cli::{Cli, CliInput, CliInputKind};
 use crate::codegen::Codegen;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
+use crate::preprocess::Preprocessor;
 use crate::source::Source;
 use crate::tokenize::Tokenizer;
 
@@ -134,6 +135,7 @@ impl Driver {
             // is exactly one input and one output
             let source = Source::new(&self.cli.inputs[0].path)?;
             let tokens = Tokenizer::new(&source).tokenize()?;
+            let tokens = Preprocessor::new(tokens).preprocess()?;
             let program = Parser::new(&source, tokens).parse_program()?;
             let codegen = Codegen::new(&source, self.cli.output.as_ref().unwrap())?;
             codegen.generate(program)?;
