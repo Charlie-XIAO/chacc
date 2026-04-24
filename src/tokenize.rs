@@ -62,10 +62,10 @@ pub enum Keyword {
 
 /// Token kinds recognized by the tokenizer.
 #[derive(Clone, Debug)]
-pub enum TokenKind<'a> {
-    Ident(&'a str),
+pub enum TokenKind {
+    Ident(SmolStr),
     Keyword(Keyword),
-    Punct(&'a str),
+    Punct(SmolStr),
     Num(u64, Type),
     Flonum(f64, Type),
     /// A string literal, with null terminator preserved.
@@ -75,23 +75,28 @@ pub enum TokenKind<'a> {
 
 /// A token.
 #[derive(Clone, Debug)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
+pub struct Token {
+    pub kind: TokenKind,
     /// The byte offset of the token in the input string.
     pub offset: usize,
     /// Whether this token begins a logical source line.
     pub at_bol: bool,
 }
 
-impl<'a> Token<'a> {
+impl Token {
     /// Return whether this token is a punctuator.
     pub fn is_punct(&self, expected: &str) -> bool {
-        matches!(self.kind, TokenKind::Punct(p) if p == expected)
+        matches!(self.kind, TokenKind::Punct(ref p) if p == expected)
     }
 
-    /// Return whether this token is a keyword.
+    /// Return whether this token is a certain keyword.
     pub fn is_keyword(&self, expected: Keyword) -> bool {
         matches!(self.kind, TokenKind::Keyword(p) if p == expected)
+    }
+
+    /// Return whether this token is a certain identifier.
+    pub fn is_ident(&self, expected: &str) -> bool {
+        matches!(self.kind, TokenKind::Ident(ref name) if name == expected)
     }
 
     /// Return whether this token is the EOF sentinel.
@@ -140,9 +145,9 @@ impl<'a> Token<'a> {
     }
 
     /// Return the lexeme if this is an identifier token.
-    pub fn as_ident(&self) -> Option<&'a str> {
+    pub fn as_ident(&self) -> Option<SmolStr> {
         match self.kind {
-            TokenKind::Ident(name) => Some(name),
+            TokenKind::Ident(ref name) => Some(name.clone()),
             _ => None,
         }
     }
@@ -177,7 +182,7 @@ pub struct Tokenizer<'a> {
     source: &'a Source,
     pos: usize,
     at_bol: bool,
-    tokens: Vec<Token<'a>>,
+    tokens: Vec<Token>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -197,7 +202,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Push a token with the given kind at the given offset.
-    fn push(&mut self, kind: TokenKind<'a>, offset: usize) {
+    fn push(&mut self, kind: TokenKind, offset: usize) {
         self.tokens.push(Token {
             kind,
             offset,
@@ -207,7 +212,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize the entire source into a flat token list.
-    pub fn tokenize(mut self) -> Result<Vec<Token<'a>>> {
+    pub fn tokenize(mut self) -> Result<Vec<Token>> {
         let content = self.source.content();
 
         while self.pos < content.len() {
@@ -499,7 +504,7 @@ impl<'a> Tokenizer<'a> {
 
         let len = content[self.pos..].bytes().take_while(is_ident2).count();
         let lexeme = &content[offset..offset + len];
-        self.push(TokenKind::Ident(lexeme), offset);
+        self.push(TokenKind::Ident(lexeme.into()), offset);
         self.pos += len;
     }
 
@@ -530,7 +535,7 @@ impl<'a> Tokenizer<'a> {
             return false;
         }
 
-        self.push(TokenKind::Punct(&rest[..punct_len]), offset);
+        self.push(TokenKind::Punct(rest[..punct_len].into()), offset);
         self.pos += punct_len;
         true
     }

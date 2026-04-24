@@ -186,7 +186,7 @@ impl Cli {
                     let kind = match path.extension().and_then(OsStr::to_str) {
                         // TODO: "-" requires either -E or -x, when supported
                         _ if path.as_os_str() == "-" => CliInputKind::C,
-                        Some("c" | "i") => CliInputKind::C,
+                        Some("c") => CliInputKind::C,
                         Some("s") => CliInputKind::Assembler,
                         _ => CliInputKind::Object,
                     };

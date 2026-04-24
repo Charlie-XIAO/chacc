@@ -33,18 +33,11 @@ all: ci doc build
 compile code:
     #!/usr/bin/env bash
     set -eou pipefail
-
     ID=$(shuf -i 10000-99999 -n 1)
-    OBJ_FILE="tmp_${ID}.o"
-    BIN_FILE="tmp_${ID}"
-
-    printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${OBJ_FILE}" -
-    cc -o "${BIN_FILE}" "${OBJ_FILE}"
-
+    OUTPUT="tmp_${ID}"
+    printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${OUTPUT}" -
     set +e
     "./${BIN_FILE}"
     echo $?
     set -e
-
-    echo "OBJ: ${OBJ_FILE}"
-    echo "BIN: ${BIN_FILE}"
+    echo "Output: ${OUTPUT}"

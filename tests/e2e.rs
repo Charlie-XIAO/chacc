@@ -3,6 +3,7 @@ use std::io::Result;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use rustc_hash::FxHashMap;
 use tempfile::tempdir;
 
 fn tests_dir() -> PathBuf {
@@ -79,12 +80,16 @@ impl CommandExt for Command {
 #[derive(Debug, Default)]
 struct Fixture {
     source: String,
+    includes: FxHashMap<&'static str, &'static str>,
 }
 
 impl Fixture {
     fn new() -> Self {
         let mut f = Self::default();
-        f.line("#include \"test.h\"");
+        f.line("int assert(int expected, int actual, char *code);");
+        f.line("int strcmp(char *lhs, char *rhs);");
+        f.line("int memcmp(char *lhs, char *rhs, int n);");
+        f.line("void exit(int code);");
         f
     }
 
@@ -100,12 +105,12 @@ impl Fixture {
         self.line("  int __n_failed = 0;");
     }
 
-    fn assert<E, A>(&mut self, expected: E, actual: A)
+    fn assert<E>(&mut self, expected: E, actual: &str)
     where
         E: std::fmt::Display,
-        A: std::fmt::Display,
     {
-        self.line(&format!("  __n_failed += ASSERT({expected}, {actual});"));
+        let line = format!("  __n_failed += assert(({expected}), ({actual}), ({actual:?}));");
+        self.line(&line);
     }
 
     fn finish(&mut self) {
@@ -118,30 +123,24 @@ impl Fixture {
 
     fn run(&self, stem: &str) {
         let tests_dir = tests_dir();
+
         let tmp = tempdir().expect("failed to create temporary directory");
         let source = tmp.path().join(format!("{stem}.c"));
-        let preprocessed = tmp.path().join(format!("{stem}.i"));
         let obj = tmp.path().join(format!("{stem}.o"));
         let exe = tmp.path().join(stem);
 
         std::fs::write(&source, &self.source).expect("failed to write fixture");
 
-        Command::cc(tmp.path())
-            .arg("-E")
-            .arg("-P")
-            .arg("-C")
-            .arg("-I")
-            .arg(&tests_dir)
-            .arg(&source)
-            .arg("-o")
-            .arg(&preprocessed)
-            .run_checked(&format!("preprocessing {}", source.display()), None);
+        for (name, content) in &self.includes {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, content).expect("failed to write fixture include");
+        }
 
         Command::chacc(tmp.path())
             .arg("-c")
             .arg("-o")
             .arg(&obj)
-            .arg(&preprocessed)
+            .arg(&source)
             .run_checked(&format!("compiling {}", source.display()), None);
 
         Command::cc(tmp.path())
@@ -1181,9 +1180,16 @@ fn test_literal() {
 #[test]
 fn test_macro() {
     let mut f = Fixture::new();
+    f.includes.insert("include1.h", "#include \"include2.h\"\nint include1 = 5;");
+    f.includes.insert("include2.h", "int include2 = 7;");
+
+    f.line("#include \"include1.h\"");
     f.line("#");
     f.line("/* */ #");
     f.main();
+
+    f.assert(5, "include1");
+    f.assert(7, "include2");
 
     f.finish();
     f.run("macro");

@@ -144,7 +144,7 @@ struct ScopeFrame {
 /// Stateful parser over the token stream during parsing.
 pub struct Parser<'a> {
     source: &'a Source,
-    tokens: Vec<Token<'a>>,
+    tokens: Vec<Token>,
     pos: usize,
 
     // Mutable states
@@ -164,7 +164,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a parser over a token stream.
-    pub fn new(source: &'a Source, tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(source: &'a Source, tokens: Vec<Token>) -> Self {
         Self {
             source,
             tokens,
@@ -189,12 +189,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Return the current token.
-    fn current(&self) -> &Token<'a> {
+    fn current(&self) -> &Token {
         &self.tokens[self.pos]
     }
 
     /// Return the token at the given lookahead distance.
-    fn peek(&self, offset: usize) -> Option<&Token<'a>> {
+    fn peek(&self, offset: usize) -> Option<&Token> {
         self.tokens.get(self.pos + offset)
     }
 
@@ -241,7 +241,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Assume and consume an identifier.
-    fn consume_ident(&mut self) -> Result<&'a str> {
+    fn consume_ident(&mut self) -> Result<SmolStr> {
         let Some(ident) = self.current().as_ident() else {
             return Err(self.error_current("expected an identifier"));
         };
@@ -294,7 +294,7 @@ impl<'a> Parser<'a> {
         let Some(name) = self.current().as_ident() else {
             return false;
         };
-        self.find_ident(name)
+        self.find_ident(&name)
             .and_then(OrdinaryIdent::into_typedef)
             .is_some()
     }
@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
             let keyword = self.current().as_keyword();
             let ident = self.current().as_ident();
             let typedef_ty = ident
-                .and_then(|ident| self.find_ident(ident))
+                .and_then(|ident| self.find_ident(&ident))
                 .and_then(OrdinaryIdent::into_typedef);
 
             if spec.is_some() && typedef_ty.is_some() {
@@ -729,7 +729,7 @@ impl<'a> Parser<'a> {
         let (ty, params) = self.parse_type_suffix(ty, in_param)?;
 
         Ok(Declarator {
-            name: name.map(Into::into),
+            name,
             ty,
             offset,
             params,
@@ -987,9 +987,9 @@ impl<'a> Parser<'a> {
                 {
                     // "struct T;" in file/block scope, which is a forward
                     // declaration within the same scope
-                    let Some(ty) = self.find_tag_current(tag) else {
+                    let Some(ty) = self.find_tag_current(&tag) else {
                         let ty = self.types.struct_or_union(is_struct, None);
-                        self.push_scope_tag(tag.to_smolstr(), ty);
+                        self.push_scope_tag(tag, ty);
                         return Ok(ty);
                     };
 
@@ -1008,9 +1008,9 @@ impl<'a> Parser<'a> {
                 // rather than a declaration, so we should look it up not only
                 // in the current scope; only if it is not found in any visible
                 // scope should we introduce a new incomplete type
-                let Some(ty) = self.find_tag(tag) else {
+                let Some(ty) = self.find_tag(&tag) else {
                     let ty = self.types.struct_or_union(is_struct, None);
-                    self.push_scope_tag(tag.to_smolstr(), ty);
+                    self.push_scope_tag(tag, ty);
                     return Ok(ty);
                 };
 
@@ -1026,13 +1026,13 @@ impl<'a> Parser<'a> {
             }
 
             // "struct T {...}", which is a concrete definition
-            let Some(ty) = self.find_tag_current(tag) else {
+            let Some(ty) = self.find_tag_current(&tag) else {
                 // Note: We have to create an incomplete type first, then parse
                 // the members and complete the type; this is to handle self-
                 // referential structs, so members can see that this type is
                 // already declared and will not create a separate declaration
                 let ty = self.types.struct_or_union(is_struct, None);
-                self.push_scope_tag(tag.to_smolstr(), ty);
+                self.push_scope_tag(tag, ty);
                 self.advance();
                 let members = self.parse_members_decl(is_struct, member_context)?;
                 self.types.complete_struct_or_union(is_struct, members, ty);
@@ -1173,7 +1173,7 @@ impl<'a> Parser<'a> {
         let offset = self.current().offset;
         let tag = self.current().as_ident();
 
-        if let Some(tag) = tag {
+        if let Some(ref tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
                 let Some(ty) = self.find_tag(tag) else {
@@ -1210,7 +1210,7 @@ impl<'a> Parser<'a> {
                 val = self.parse_constexpr()?;
             }
 
-            if let Some(ident) = self.find_ident_current(name) {
+            if let Some(ident) = self.find_ident_current(&name) {
                 return match ident {
                     OrdinaryIdent::Enumerator(_) => {
                         Err(self.source.error_at(offset, "redeclaration of enumerator"))
@@ -1227,7 +1227,7 @@ impl<'a> Parser<'a> {
 
         let ty = Type::Enum;
         if let Some(tag) = tag {
-            self.push_scope_tag(tag.to_smolstr(), ty);
+            self.push_scope_tag(tag, ty);
         }
         Ok(ty)
     }
@@ -2743,7 +2743,7 @@ impl<'a> Parser<'a> {
         if let Some(name) = self.current().as_ident() {
             self.advance();
 
-            let node = match self.find_ident(name) {
+            let node = match self.find_ident(&name) {
                 Some(OrdinaryIdent::Local(local_id)) => {
                     Node::entity(EntityRef::Local(local_id), offset)
                 },

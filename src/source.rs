@@ -1,7 +1,7 @@
 //! Program source definition.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use line_index::{LineIndex, TextSize};
 use smol_str::{SmolStr, ToSmolStr};
@@ -11,6 +11,7 @@ use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 /// A C program source to be compiled.
 #[derive(Debug)]
 pub struct Source {
+    path: PathBuf,
     name: SmolStr,
     content: SmolStr,
     line_index: LineIndex,
@@ -20,26 +21,31 @@ impl Source {
     /// Construct a source file from a path.
     ///
     /// If the path is "-", read from standard input.
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
 
         let (content, name) = if path.as_os_str() == "-" {
             let mut content = String::new();
             std::io::stdin().read_to_string(&mut content)?;
             (content, "<stdin>".to_smolstr())
         } else {
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| Error::IoWithPath(path.to_path_buf(), e))?;
+            let content =
+                std::fs::read_to_string(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
             (content, path.display().to_smolstr())
         };
 
         let line_index = LineIndex::new(&content);
 
         Ok(Self {
+            path,
             name,
             content: content.into(),
             line_index,
         })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn name(&self) -> SmolStr {
