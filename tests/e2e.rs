@@ -1179,6 +1179,18 @@ fn test_literal() {
 
 #[rustfmt::skip]
 #[test]
+fn test_macro() {
+    let mut f = Fixture::new();
+    f.line("#");
+    f.line("/* */ #");
+    f.main();
+
+    f.finish();
+    f.run("macro");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_pointer() {
     let mut f = Fixture::new();
     f.main();

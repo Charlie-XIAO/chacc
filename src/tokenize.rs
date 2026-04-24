@@ -79,57 +79,11 @@ pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     /// The byte offset of the token in the input string.
     pub offset: usize,
+    /// Whether this token begins a logical source line.
+    pub at_bol: bool,
 }
 
 impl<'a> Token<'a> {
-    /// Construct an identifier token.
-    pub fn ident(offset: usize, lexeme: &'a str) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Ident(lexeme),
-        }
-    }
-
-    /// Construct a punctuation token.
-    pub fn punct(offset: usize, lexeme: &'a str) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Punct(lexeme),
-        }
-    }
-
-    /// Construct an integer numeric literal token.
-    pub fn num(offset: usize, value: u64, ty: Type) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Num(value, ty),
-        }
-    }
-
-    /// Construct a floating-point numeric literal token.
-    pub fn flonum(offset: usize, value: f64, ty: Type) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Flonum(value, ty),
-        }
-    }
-
-    /// Construct a string literal token.
-    pub fn str(offset: usize, content: impl Into<Rc<[u8]>>) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Str(content.into()),
-        }
-    }
-
-    /// Construct the EOF sentinel.
-    pub fn eof(offset: usize) -> Self {
-        Self {
-            offset,
-            kind: TokenKind::Eof,
-        }
-    }
-
     /// Return whether this token is a punctuator.
     pub fn is_punct(&self, expected: &str) -> bool {
         matches!(self.kind, TokenKind::Punct(p) if p == expected)
@@ -138,6 +92,11 @@ impl<'a> Token<'a> {
     /// Return whether this token is a keyword.
     pub fn is_keyword(&self, expected: Keyword) -> bool {
         matches!(self.kind, TokenKind::Keyword(p) if p == expected)
+    }
+
+    /// Return whether this token is the EOF sentinel.
+    pub fn is_eof(&self) -> bool {
+        matches!(self.kind, TokenKind::Eof)
     }
 
     /// Return whether this token is a typename keyword.
@@ -211,17 +170,13 @@ impl<'a> Token<'a> {
             _ => None,
         }
     }
-
-    /// Return whether this token is the EOF sentinel.
-    pub fn is_eof(&self) -> bool {
-        matches!(self.kind, TokenKind::Eof)
-    }
 }
 
 /// Tokenizer for C source code.
 pub struct Tokenizer<'a> {
     source: &'a Source,
     pos: usize,
+    at_bol: bool,
     tokens: Vec<Token<'a>>,
 }
 
@@ -231,6 +186,7 @@ impl<'a> Tokenizer<'a> {
         Self {
             source,
             pos: 0,
+            at_bol: true,
             tokens: Vec::new(),
         }
     }
@@ -238,6 +194,16 @@ impl<'a> Tokenizer<'a> {
     /// Return an error diagnostic at the current token.
     fn error_current(&self, message: impl Into<SmolStr>) -> Error {
         self.source.error_at(self.pos, message)
+    }
+
+    /// Push a token with the given kind at the given offset.
+    fn push(&mut self, kind: TokenKind<'a>, offset: usize) {
+        self.tokens.push(Token {
+            kind,
+            offset,
+            at_bol: self.at_bol,
+        });
+        self.at_bol = false;
     }
 
     /// Tokenize the entire source into a flat token list.
@@ -248,6 +214,12 @@ impl<'a> Tokenizer<'a> {
             let ch = content.as_bytes()[self.pos];
 
             if self.read_comment()? {
+                continue;
+            }
+
+            if ch == b'\n' {
+                self.pos += 1;
+                self.at_bol = true;
                 continue;
             }
 
@@ -289,7 +261,7 @@ impl<'a> Tokenizer<'a> {
             return Err(self.error_current("invalid token"));
         }
 
-        self.tokens.push(Token::eof(self.pos));
+        self.push(TokenKind::Eof, self.pos);
         Ok(self.tokens)
     }
 
@@ -363,11 +335,11 @@ impl<'a> Tokenizer<'a> {
         if is_hex_flonum || is_dec_flonum {
             let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum)
                 .ok_or_else(|| self.error_current("invalid floating-point literal"))?;
-            self.tokens.push(Token::flonum(offset, num, ty));
+            self.push(TokenKind::Flonum(num, ty), offset);
         } else {
             let (num, ty) = parse_integer_literal(lexeme)
                 .ok_or_else(|| self.error_current("invalid integer literal"))?;
-            self.tokens.push(Token::num(offset, num, ty));
+            self.push(TokenKind::Num(num, ty), offset);
         }
 
         self.pos = end;
@@ -384,7 +356,7 @@ impl<'a> Tokenizer<'a> {
             match bytes[i] {
                 b'"' => {
                     content.push(b'\0');
-                    self.tokens.push(Token::str(self.pos, content));
+                    self.push(TokenKind::Str(content.into()), self.pos);
                     self.pos = i + 1; // Skip past closing quote
                     return Ok(());
                 },
@@ -440,7 +412,7 @@ impl<'a> Tokenizer<'a> {
             .filter(|&pos| bytes[i + pos] == b'\'')
         {
             Some(0) => {
-                self.tokens.push(Token::num(self.pos, ch as _, Type::Int));
+                self.push(TokenKind::Num(ch as _, Type::Int), self.pos);
                 self.pos = i + 1; // Skip past closing quote
                 Ok(())
             },
@@ -527,7 +499,7 @@ impl<'a> Tokenizer<'a> {
 
         let len = content[self.pos..].bytes().take_while(is_ident2).count();
         let lexeme = &content[offset..offset + len];
-        self.tokens.push(Token::ident(offset, lexeme));
+        self.push(TokenKind::Ident(lexeme), offset);
         self.pos += len;
     }
 
@@ -558,7 +530,7 @@ impl<'a> Tokenizer<'a> {
             return false;
         }
 
-        self.tokens.push(Token::punct(offset, &rest[..punct_len]));
+        self.push(TokenKind::Punct(&rest[..punct_len]), offset);
         self.pos += punct_len;
         true
     }
