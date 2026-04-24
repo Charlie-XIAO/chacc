@@ -1,8 +1,7 @@
 //! The CLI interface of chacc.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::path::PathBuf;
 
 use lexopt::Arg;
 
@@ -39,14 +38,14 @@ pub enum CliInputKind {
 
 #[derive(Debug)]
 pub struct CliInput {
-    pub path: Rc<Path>,
+    pub path: PathBuf,
     pub kind: CliInputKind,
 }
 
 #[derive(Debug)]
 pub struct Cli {
-    pub input: CliInput,
-    pub output: Rc<Path>,
+    pub inputs: Vec<CliInput>,
+    pub output: Option<PathBuf>,
     pub stop_after_compile: bool,
     pub stop_after_assemble: bool,
     pub tool_search_paths: Vec<PathBuf>,
@@ -58,7 +57,7 @@ pub struct Cli {
 
 #[derive(Debug, Default)]
 struct CliPartial {
-    input: Option<CliInput>,
+    inputs: Vec<CliInput>,
     output: Option<PathBuf>,
     stop_after_compile: bool,
     stop_after_assemble: bool,
@@ -73,34 +72,53 @@ impl TryFrom<CliPartial> for Cli {
     type Error = lexopt::Error;
 
     fn try_from(cli: CliPartial) -> Result<Self, Self::Error> {
-        let CliPartial { input, output, .. } = cli;
+        let CliPartial {
+            inputs,
+            output,
+            stop_after_compile,
+            stop_after_assemble,
+            tool_search_paths,
+            save_temps,
+            print_subprocess_commands,
+            pass_exit_codes,
+            cc1,
+        } = cli;
 
-        let input = input.ok_or("no input file")?;
-
-        let output = output.unwrap_or_else(|| {
-            if cli.stop_after_compile {
-                Path::new(input.path.file_stem().unwrap_or(OsStr::new("in"))).with_extension("s")
-            } else if cli.stop_after_assemble {
-                Path::new(input.path.file_stem().unwrap_or(OsStr::new("in"))).with_extension("o")
-            } else {
-                PathBuf::from("a.out")
+        if cli.cc1 {
+            if inputs.len() != 1 {
+                return Err("cc1 mode expected exactly one input file".into());
             }
-        });
+            if output.is_none() {
+                return Err("cc1 mode expects an output file".into());
+            }
+        }
 
-        if !cli.cc1 && output.as_os_str() == "-" && !cli.stop_after_compile {
+        if !cli.cc1
+            && !cli.stop_after_compile
+            && let Some(ref output) = output
+            && output.as_os_str() == "-"
+        {
             return Err("-S required when output is to stdout".into());
         }
 
+        if inputs.is_empty() {
+            return Err("no input file".into());
+        }
+
+        if inputs.len() > 1 && output.is_some() && (stop_after_compile || stop_after_assemble) {
+            return Err("cannot specify '-o' with '-c' or '-S' with multiple files".into());
+        }
+
         Ok(Cli {
-            input,
-            output: output.into_boxed_path().into(),
-            stop_after_compile: cli.stop_after_compile,
-            stop_after_assemble: cli.stop_after_assemble,
-            tool_search_paths: cli.tool_search_paths,
-            save_temps: cli.save_temps,
-            print_subprocess_commands: cli.print_subprocess_commands,
-            pass_exit_codes: cli.pass_exit_codes,
-            cc1: cli.cc1,
+            inputs,
+            output,
+            stop_after_compile,
+            stop_after_assemble,
+            tool_search_paths,
+            save_temps,
+            print_subprocess_commands,
+            pass_exit_codes,
+            cc1,
         })
     }
 }
@@ -164,9 +182,6 @@ impl Cli {
                     std::process::exit(0);
                 },
                 Arg::Value(path) => {
-                    if cli.input.is_some() {
-                        return Err("multiple input files are not supported yet".into());
-                    }
                     let path = PathBuf::from(path);
                     let kind = match path.extension().and_then(OsStr::to_str) {
                         // TODO: "-" requires either -E or -x, when supported
@@ -175,10 +190,7 @@ impl Cli {
                         Some("s") => CliInputKind::Assembler,
                         _ => CliInputKind::Object,
                     };
-                    cli.input = Some(CliInput {
-                        path: path.into_boxed_path().into(),
-                        kind,
-                    });
+                    cli.inputs.push(CliInput { path, kind });
                 },
                 _ => return Err(arg.unexpected()),
             }

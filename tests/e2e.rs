@@ -1,4 +1,5 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
+use std::io::Result;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -6,6 +7,27 @@ use tempfile::tempdir;
 
 fn tests_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")
+}
+
+fn create_c(dir: &Path) -> Result<PathBuf> {
+    let main = dir.join("main.c");
+    std::fs::write(&main, "int main() { return 42; }\n")?;
+    Ok(main)
+}
+
+fn create_multi_c(dir: &Path) -> Result<Vec<PathBuf>> {
+    let foo = dir.join("foo.c");
+    let bar = dir.join("bar.c");
+    let baz = dir.join("baz.c");
+
+    std::fs::write(
+        &foo,
+        "int bar(); int baz(); int main() { return bar() + baz(); }\n",
+    )?;
+    std::fs::write(&bar, "int bar() { return 30; }")?;
+    std::fs::write(&baz, "int baz() { return 12; }")?;
+
+    Ok(vec![foo, bar, baz])
 }
 
 trait CommandExt {
@@ -23,11 +45,11 @@ trait CommandExt {
         command
     }
 
-    fn run_checked(&mut self, what: &str) -> Output;
+    fn run_checked(&mut self, what: &str, code: Option<i32>) -> Output;
 }
 
 impl CommandExt for Command {
-    fn run_checked(&mut self, what: &str) -> Output {
+    fn run_checked(&mut self, what: &str, code: Option<i32>) -> Output {
         let output = self
             .output()
             .unwrap_or_else(|err| panic!("{what} failed to start: {err}"));
@@ -39,7 +61,17 @@ impl CommandExt for Command {
             String::from_utf8_lossy(&output.stderr),
         );
 
-        assert!(output.status.success(), "{what} failed");
+        if let Some(code) = code {
+            assert!(!output.status.success(), "{what} didn't fail");
+            assert_eq!(
+                output.status.code(),
+                Some(code),
+                "{what} got unexpected exit code"
+            );
+        } else {
+            assert!(output.status.success(), "{what} failed");
+        }
+
         output
     }
 }
@@ -95,36 +127,34 @@ impl Fixture {
         std::fs::write(&source, &self.source).expect("failed to write fixture");
 
         Command::cc(tmp.path())
-            .args([
-                OsStr::new("-E"),
-                OsStr::new("-P"),
-                OsStr::new("-C"),
-                OsStr::new("-I"),
-                tests_dir.as_os_str(),
-                source.as_os_str(),
-                OsStr::new("-o"),
-                preprocessed.as_os_str(),
-            ])
-            .run_checked(&format!("preprocessing {}", source.display()));
+            .arg("-E")
+            .arg("-P")
+            .arg("-C")
+            .arg("-I")
+            .arg(&tests_dir)
+            .arg(&source)
+            .arg("-o")
+            .arg(&preprocessed)
+            .run_checked(&format!("preprocessing {}", source.display()), None);
 
         Command::chacc(tmp.path())
             .arg("-c")
             .arg("-o")
             .arg(&obj)
             .arg(&preprocessed)
-            .run_checked(&format!("compiling {}", source.display()));
+            .run_checked(&format!("compiling {}", source.display()), None);
 
         Command::cc(tmp.path())
             .arg("-o")
             .arg(&exe)
             .arg(&obj)
             .arg(tests_dir.join("test.c"))
-            .run_checked(&format!("linking {}", source.display()));
+            .run_checked(&format!("linking {}", source.display()), None);
 
-        Command::new(&exe).run_checked(&format!(
-            "running {}",
-            source.file_name().unwrap().to_string_lossy()
-        ));
+        Command::new(&exe).run_checked(
+            &format!("running {}", source.file_name().unwrap().to_string_lossy()),
+            None,
+        );
     }
 }
 
@@ -1552,7 +1582,7 @@ fn test_variable() {
 fn test_help_flag() {
     let output = Command::chacc(".")
         .arg("--help")
-        .run_checked("running with --help flag");
+        .run_checked("running with --help flag", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage:"));
     assert!(stdout.contains("chacc"));
@@ -1561,102 +1591,148 @@ fn test_help_flag() {
 #[test]
 fn test_output_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
-    let exe = tmp.path().join("out");
+    let input = create_c(tmp.path()).expect("failed to create input");
+    let exe = tmp.path().join("app.exe");
     Command::chacc(tmp.path())
         .arg("-o")
         .arg(&exe)
         .arg(&input)
-        .run_checked("compiling with -o flag");
+        .run_checked("compiling with -o flag", None);
     assert!(exe.is_file());
-    Command::new(&exe).run_checked("running output executable");
+    Command::new(&exe).run_checked("running output executable", Some(42));
+
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let exe = tmp.path().join("app-multi.exe");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-o").arg(&exe);
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling multiple inputs with -o flag", None);
+    assert!(exe.is_file());
+    Command::new(&exe).run_checked("running output executable", Some(42));
 }
 
 #[test]
 fn test_stop_after_assemble_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
+    let input = create_c(tmp.path()).expect("failed to create input");
     let output = Command::chacc(tmp.path())
         .arg("-S")
         .arg("-o")
         .arg("-")
         .arg(&input)
-        .run_checked("compiling with -S flag");
+        .run_checked("compiling with -S", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("main:"));
+
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-S");
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling multiple inputs with -S", None);
+    for input in &inputs {
+        assert!(input.with_extension("s").exists());
+    }
+
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-S").arg("-o").arg("-");
+    for input in &inputs {
+        command.arg(input);
+    }
+    let output = command.run_checked("compiling multiple inputs with -S and -o", Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot specify '-o' with '-c' or '-S' with multiple files"));
 }
 
 #[test]
 fn test_stop_after_compile_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
 
-    let obj = tmp.path().join("output.o");
+    let input = create_c(tmp.path()).expect("failed to create input");
+    let obj = input.with_extension("o");
     Command::chacc(tmp.path())
         .arg("-c")
         .arg("-o")
         .arg(&obj)
         .arg(&input)
-        .run_checked("compiling with -c flag");
-    assert!(obj.is_file());
-}
+        .run_checked("compiling with -c", None);
+    assert!(obj.exists());
 
-#[test]
-fn test_default_output_file() {
-    let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-c");
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling multiple inputs with -c", None);
+    for input in &inputs {
+        assert!(input.with_extension("o").exists());
+    }
 
-    Command::chacc(tmp.path())
-        .arg("input.c")
-        .run_checked("compiling with default executable output");
-    let exe = tmp.path().join("a.out");
-    assert!(exe.is_file());
-    Command::new(exe).run_checked("running output executable");
-
-    Command::chacc(tmp.path())
-        .arg("-c")
-        .arg("input.c")
-        .run_checked("compiling with default object output");
-    assert!(tmp.path().join("input.o").is_file());
-
-    Command::chacc(tmp.path())
-        .arg("-c")
-        .arg("-S")
-        .arg("input.c")
-        .run_checked("compiling with default assembly output");
-    assert!(tmp.path().join("input.s").is_file());
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-c").arg("-o").arg(&obj);
+    for input in &inputs {
+        command.arg(input);
+    }
+    let output = command.run_checked("compiling multiple inputs with -c and -o", Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot specify '-o' with '-c' or '-S' with multiple files"));
 }
 
 #[test]
 fn test_save_temps_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
-    let input = tmp.path().join("input.c");
-    std::fs::write(&input, "int main() { return 0; }\n").expect("failed to write input");
     let output_dir = tmp.path().join("output");
     std::fs::create_dir(&output_dir).expect("failed to create output directory");
 
-    Command::chacc(tmp.path())
-        .arg("-save-temps")
-        .arg(&input)
-        .run_checked("compiling with -save-temps");
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-save-temps");
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling with -save-temps", None);
     assert!(tmp.path().join("a.out").is_file());
-    assert!(tmp.path().join("a-input.o").is_file());
-    assert!(tmp.path().join("a-input.s").is_file());
+    for input in &inputs {
+        let mut file_name = OsString::from("a-");
+        file_name.push(input.file_stem().unwrap());
+        let path = tmp.path().join(file_name);
+        assert!(path.with_extension("o").is_file());
+        assert!(path.with_extension("s").is_file());
+    }
 
-    let exe = output_dir.join("output");
-    Command::chacc(tmp.path())
-        .arg("-save-temps")
-        .arg("-o")
-        .arg(&exe)
-        .arg(&input)
-        .run_checked("compiling with -save-temps and -o");
+    let exe = output_dir.join("app.exe");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-save-temps").arg("-o").arg(&exe);
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling with -save-temps and -o", None);
     assert!(exe.is_file());
-    assert!(output_dir.join("output-input.o").is_file());
-    assert!(output_dir.join("output-input.s").is_file());
+    for input in &inputs {
+        let mut file_name = OsString::from("app-");
+        file_name.push(input.file_stem().unwrap());
+        let path = output_dir.join(file_name);
+        assert!(path.with_extension("o").is_file());
+        assert!(path.with_extension("s").is_file());
+    }
+
+    let tmp = tempdir().expect("failed to create temporary directory");
+
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-save-temps").arg("-c");
+    for input in &inputs {
+        command.arg(input);
+    }
+    command.run_checked("compiling with -save-temps and -c", None);
+    for input in &inputs {
+        assert!(input.with_extension("o").is_file());
+        assert!(input.with_extension("s").is_file());
+    }
 }
