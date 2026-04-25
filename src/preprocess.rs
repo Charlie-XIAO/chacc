@@ -28,6 +28,23 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
+    /// Consume the next token if it is in the middle of a logical line.
+    fn next_if_mol(&mut self) -> Option<Token> {
+        self.input.next_if(|token| !token.at_bol && !token.is_eof())
+    }
+
+    /// Skip extra tokens in the same logical line, if any.
+    ///
+    /// Returns the offset of the first skipped token, if any. Returns `None` if
+    /// no tokens were skipped.
+    fn skip_line(&mut self) -> Option<usize> {
+        let Some(token) = self.next_if_mol() else {
+            return None;
+        };
+        while self.next_if_mol().is_some() {}
+        Some(token.offset)
+    }
+
     /// Preprocess the token stream.
     pub fn preprocess(mut self) -> Result<Vec<Token>> {
         self.process_directives()?;
@@ -49,11 +66,7 @@ impl<'a> Preprocessor<'a> {
                 continue;
             }
 
-            let Some(directive) = self
-                .input
-                .next_if(|directive| !directive.at_bol && !directive.is_eof())
-            else {
-                // Skip if newline or EOF follows the directive token
+            let Some(directive) = self.next_if_mol() else {
                 continue;
             };
 
@@ -101,6 +114,10 @@ impl<'a> Preprocessor<'a> {
         tokens.pop_if(|token| token.is_eof());
         self.output.extend(tokens);
 
+        if let Some(offset) = self.skip_line() {
+            self.source
+                .warn_at(offset, "extra tokens at end of #include directive");
+        }
         Ok(())
     }
 
