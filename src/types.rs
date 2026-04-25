@@ -8,10 +8,6 @@ use smol_str::SmolStr;
 use crate::constexpr::ConstType;
 use crate::utils::align_to;
 
-/// A stable handle to a non-trivial type stored in [`TypeStore`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TypeId(usize);
-
 /// Expression types used for semantic analysis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Type {
@@ -31,7 +27,7 @@ pub enum Type {
     Float,
     Double,
     /// A non-trivial type stored in [`TypeStore`].
-    Stored(TypeId),
+    Stored(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -100,21 +96,21 @@ impl TypeStore {
 
     fn push(&mut self, kind: TypeKind, size: u64, align: u64) -> Type {
         debug_assert!(!self.frozen, "cannot push new type to a frozen type store");
-        let ty = Type::Stored(TypeId(self.types.len()));
+        let ty = Type::Stored(self.types.len());
         self.types.push(TypeData { kind, size, align });
         ty
     }
 
     fn get(&self, ty: Type) -> Option<&TypeData> {
         match ty {
-            Type::Stored(TypeId(id)) => Some(&self.types[id]),
+            Type::Stored(id) => Some(&self.types[id]),
             _ => None,
         }
     }
 
     fn get_mut(&mut self, ty: Type) -> Option<&mut TypeData> {
         match ty {
-            Type::Stored(TypeId(id)) => Some(&mut self.types[id]),
+            Type::Stored(id) => Some(&mut self.types[id]),
             _ => None,
         }
     }
