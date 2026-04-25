@@ -14,9 +14,10 @@ fn help() {
     println!("  <input>             Input file, or \"-\" for stdin.");
     println!();
     println!("Options:");
-    println!("  -o <file>           Output file, or \"-\" for stdout only with -S.");
-    println!("  -S                  Compile only; do not assemble or link.");
-    println!("  -c                  Compile and assemble, but do not link.");
+    println!("  -o <file>           Output file, or \"-\" for stdout only with -E or -S.");
+    println!("  -E                  Only run the preprocessor.");
+    println!("  -S                  Only run preprocess and compile stages.");
+    println!("  -c                  Only run preprocess, compile, and assemble stages.");
     println!("  -B <dir>            Add a directory to the search path for tools.");
     println!("  -save-temps         Keep intermediate files.");
     println!("  -###                Print subprocess commands.");
@@ -46,8 +47,9 @@ pub struct CliInput {
 pub struct Cli {
     pub inputs: Vec<CliInput>,
     pub output: Option<PathBuf>,
-    pub stop_after_compile: bool,
-    pub stop_after_assemble: bool,
+    pub preprocess_only: bool,
+    pub compile_only: bool,
+    pub assemble_only: bool,
     pub tool_search_paths: Vec<PathBuf>,
     pub save_temps: bool,
     pub print_subprocess_commands: bool,
@@ -59,8 +61,9 @@ pub struct Cli {
 struct CliPartial {
     inputs: Vec<CliInput>,
     output: Option<PathBuf>,
-    stop_after_compile: bool,
-    stop_after_assemble: bool,
+    preprocess_only: bool,
+    compile_only: bool,
+    assemble_only: bool,
     tool_search_paths: Vec<PathBuf>,
     save_temps: bool,
     print_subprocess_commands: bool,
@@ -75,8 +78,9 @@ impl TryFrom<CliPartial> for Cli {
         let CliPartial {
             inputs,
             output,
-            stop_after_compile,
-            stop_after_assemble,
+            preprocess_only,
+            compile_only,
+            assemble_only,
             tool_search_paths,
             save_temps,
             print_subprocess_commands,
@@ -94,26 +98,31 @@ impl TryFrom<CliPartial> for Cli {
         }
 
         if !cli.cc1
-            && !cli.stop_after_compile
+            && !cli.preprocess_only
+            && !cli.compile_only
             && let Some(ref output) = output
             && output.as_os_str() == "-"
         {
-            return Err("-S required when output is to stdout".into());
+            return Err("'-S' or '-E' required when output is to stdout".into());
         }
 
         if inputs.is_empty() {
             return Err("no input file".into());
         }
 
-        if inputs.len() > 1 && output.is_some() && (stop_after_compile || stop_after_assemble) {
-            return Err("cannot specify '-o' with '-c' or '-S' with multiple files".into());
+        if inputs.len() > 1
+            && output.is_some()
+            && (preprocess_only || compile_only || assemble_only)
+        {
+            return Err("cannot specify '-o' with '-c', '-S', or '-E' with multiple files".into());
         }
 
         Ok(Cli {
             inputs,
             output,
-            stop_after_compile,
-            stop_after_assemble,
+            preprocess_only,
+            compile_only,
+            assemble_only,
             tool_search_paths,
             save_temps,
             print_subprocess_commands,
@@ -168,11 +177,14 @@ impl Cli {
                 Arg::Short('o') => {
                     cli.output = Some(PathBuf::from(parser.value()?));
                 },
+                Arg::Short('E') => {
+                    cli.preprocess_only = true;
+                },
                 Arg::Short('S') => {
-                    cli.stop_after_compile = true;
+                    cli.compile_only = true;
                 },
                 Arg::Short('c') => {
-                    cli.stop_after_assemble = true;
+                    cli.assemble_only = true;
                 },
                 Arg::Short('B') => {
                     cli.tool_search_paths.push(PathBuf::from(parser.value()?));

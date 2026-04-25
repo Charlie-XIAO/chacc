@@ -56,6 +56,13 @@ impl Source {
         &self.content
     }
 
+    /// Get a slice of the source content.
+    pub fn slice(&self, offset: usize, len: usize) -> Result<&str> {
+        self.content
+            .get(offset..offset + len)
+            .ok_or_else(|| self.error_at(offset, "out of range"))
+    }
+
     /// Get the line and column number (1-based) of the given byte offset.
     pub fn line_col(&self, offset: usize) -> (u32, u32) {
         let line_col = self.line_index.line_col(text_size(offset));

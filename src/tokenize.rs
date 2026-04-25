@@ -77,10 +77,12 @@ pub enum TokenKind {
 #[derive(Clone, Debug)]
 pub struct Token {
     pub kind: TokenKind,
-    /// The byte offset of the token in the input string.
     pub offset: usize,
+    pub len: usize,
     /// Whether this token begins a logical source line.
     pub at_bol: bool,
+    /// Whether this token follows a space.
+    pub follows_space: bool,
 }
 
 impl Token {
@@ -182,6 +184,7 @@ pub struct Tokenizer<'a> {
     source: &'a Source,
     pos: usize,
     at_bol: bool,
+    follows_space: bool,
     tokens: Vec<Token>,
 }
 
@@ -192,6 +195,7 @@ impl<'a> Tokenizer<'a> {
             source,
             pos: 0,
             at_bol: true,
+            follows_space: false,
             tokens: Vec::new(),
         }
     }
@@ -201,14 +205,17 @@ impl<'a> Tokenizer<'a> {
         self.source.error_at(self.pos, message)
     }
 
-    /// Push a token with the given kind at the given offset.
-    fn push(&mut self, kind: TokenKind, offset: usize) {
+    /// Push a token with the given kind.
+    fn push(&mut self, kind: TokenKind, offset: usize, len: usize) {
         self.tokens.push(Token {
             kind,
             offset,
+            len,
             at_bol: self.at_bol,
+            follows_space: self.follows_space,
         });
         self.at_bol = false;
+        self.follows_space = false;
     }
 
     /// Tokenize the entire source into a flat token list.
@@ -219,17 +226,20 @@ impl<'a> Tokenizer<'a> {
             let ch = content.as_bytes()[self.pos];
 
             if self.read_comment()? {
+                self.follows_space = true;
                 continue;
             }
 
             if ch == b'\n' {
                 self.pos += 1;
                 self.at_bol = true;
+                self.follows_space = false;
                 continue;
             }
 
             if ch.is_ascii_whitespace() {
                 self.pos += 1;
+                self.follows_space = true;
                 continue;
             }
 
@@ -266,7 +276,7 @@ impl<'a> Tokenizer<'a> {
             return Err(self.error_current("invalid token"));
         }
 
-        self.push(TokenKind::Eof, self.pos);
+        self.push(TokenKind::Eof, self.pos, 0);
         Ok(self.tokens)
     }
 
@@ -340,11 +350,11 @@ impl<'a> Tokenizer<'a> {
         if is_hex_flonum || is_dec_flonum {
             let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum)
                 .ok_or_else(|| self.error_current("invalid floating-point literal"))?;
-            self.push(TokenKind::Flonum(num, ty), offset);
+            self.push(TokenKind::Flonum(num, ty), offset, lexeme.len());
         } else {
             let (num, ty) = parse_integer_literal(lexeme)
                 .ok_or_else(|| self.error_current("invalid integer literal"))?;
-            self.push(TokenKind::Num(num, ty), offset);
+            self.push(TokenKind::Num(num, ty), offset, lexeme.len());
         }
 
         self.pos = end;
@@ -361,7 +371,7 @@ impl<'a> Tokenizer<'a> {
             match bytes[i] {
                 b'"' => {
                     content.push(b'\0');
-                    self.push(TokenKind::Str(content.into()), self.pos);
+                    self.push(TokenKind::Str(content.into()), self.pos, i - self.pos + 1);
                     self.pos = i + 1; // Skip past closing quote
                     return Ok(());
                 },
@@ -417,7 +427,11 @@ impl<'a> Tokenizer<'a> {
             .filter(|&pos| bytes[i + pos] == b'\'')
         {
             Some(0) => {
-                self.push(TokenKind::Num(ch as _, Type::Int), self.pos);
+                self.push(
+                    TokenKind::Num(ch as _, Type::Int),
+                    self.pos,
+                    i - self.pos + 1,
+                );
                 self.pos = i + 1; // Skip past closing quote
                 Ok(())
             },
@@ -504,7 +518,7 @@ impl<'a> Tokenizer<'a> {
 
         let len = content[self.pos..].bytes().take_while(is_ident2).count();
         let lexeme = &content[offset..offset + len];
-        self.push(TokenKind::Ident(lexeme.into()), offset);
+        self.push(TokenKind::Ident(lexeme.into()), offset, len);
         self.pos += len;
     }
 
@@ -535,7 +549,11 @@ impl<'a> Tokenizer<'a> {
             return false;
         }
 
-        self.push(TokenKind::Punct(rest[..punct_len].into()), offset);
+        self.push(
+            TokenKind::Punct(rest[..punct_len].into()),
+            offset,
+            punct_len,
+        );
         self.pos += punct_len;
         true
     }

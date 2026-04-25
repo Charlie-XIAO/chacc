@@ -1,8 +1,6 @@
 //! Generate x86-64 assembly from an AST.
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::io::Write;
 
 use smol_str::{SmolStr, format_smolstr};
 
@@ -165,9 +163,9 @@ struct FunctionState {
 }
 
 /// A x86-64 assembly code generator.
-pub struct Codegen<'a> {
+pub struct Codegen<'a, W: Write> {
     source: &'a Source,
-    out: BufWriter<Box<dyn Write>>,
+    out: &'a mut W,
     types: TypeStore,
     functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
@@ -176,20 +174,12 @@ pub struct Codegen<'a> {
     function: Option<FunctionState>,
 }
 
-impl<'a> Codegen<'a> {
+impl<'a, W: Write> Codegen<'a, W> {
     /// Create a code generator from source.
-    ///
-    /// If the output is "-", write to standard output.
-    pub fn new(source: &'a Source, output: &'a Path) -> Result<Self> {
-        let out: Box<dyn Write> = if output.as_os_str() == "-" {
-            Box::new(std::io::stdout())
-        } else {
-            Box::new(File::create(output)?)
-        };
-
+    pub fn new(source: &'a Source, out: &'a mut W) -> Result<Self> {
         Ok(Self {
             source,
-            out: BufWriter::new(out),
+            out,
             types: TypeStore::default(),
             functions: Vec::new(),
             globals: Vec::new(),

@@ -1,15 +1,17 @@
 //! The chacc compiler driver.
 //!
 //! Similar to gcc, apart from being a C compiler, chacc is also a higher-level
-//! driver that manages the entire compilation process, which involves cc1
-//! (chacc's actual compiler proper), [as] (the GNU assembler), and [ld] (the
-//! GNU linker).
+//! driver that manages the entire compilation process, which involves [cc1]
+//! (the chacc compiler proper), [as] (the GNU assembler), and [ld] (the GNU
+//! linker).
 //!
 //! [as]: https://man7.org/linux/man-pages/man1/as.1.html
 //! [ld]: https://man7.org/linux/man-pages/man1/ld.1.html
 
 use std::ffi::OsStr;
+use std::fs::File;
 use std::hash::{Hash, Hasher};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -20,9 +22,28 @@ use crate::cli::{Cli, CliInput, CliInputKind};
 use crate::codegen::Codegen;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
-use crate::preprocess::Preprocessor;
+use crate::preprocess::{PreprocessedTokens, PreprocessedWriter, Preprocessor};
 use crate::source::Source;
 use crate::tokenize::Tokenizer;
+
+/// The chacc compiler proper (cc1 mode).
+fn cc1<W: Write>(input: &Path, out: &mut W, preprocess_only: bool) -> Result<()> {
+    let source = Source::new(input)?;
+    let tokens = Tokenizer::new(&source).tokenize()?;
+
+    if preprocess_only {
+        let mut sink = PreprocessedWriter::new(out);
+        Preprocessor::new(&source, tokens, &mut sink).preprocess(true)?;
+        return Ok(());
+    }
+
+    let mut sink = PreprocessedTokens::default();
+    Preprocessor::new(&source, tokens, &mut sink).preprocess(true)?;
+    let tokens = sink.into_parser_tokens();
+    let program = Parser::new(&source, tokens).parse_program()?;
+    Codegen::new(&source, out)?.generate(program)?;
+    Ok(())
+}
 
 /// A compilation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,13 +84,26 @@ impl From<CliInputKind> for Stage {
     }
 }
 
+/// [`Job`] for the compilation stage.
+#[derive(Debug)]
+struct CompileJob {
+    input: PathBuf,
+    output: PathBuf,
+    preprocess_only: bool,
+}
+
+/// [`Job`] for the assembling stage.
+#[derive(Debug)]
+struct AssembleJob {
+    input: PathBuf,
+    output: PathBuf,
+}
+
 /// A single-file compilation job.
 #[derive(Debug, Default)]
 struct Job {
-    /// Input and output for compilation, if needed.
-    compile: Option<(PathBuf, PathBuf)>,
-    /// Input and output for assembling, if needed.
-    assemble: Option<(PathBuf, PathBuf)>,
+    compile: Option<CompileJob>,
+    assemble: Option<AssembleJob>,
     tempdir: Option<TempDir>,
 }
 
@@ -130,16 +164,8 @@ impl Driver {
 
     /// Run the driver to execute the compilation process.
     pub fn run(&mut self) -> Result<()> {
-        if self.cli.cc1 {
-            // Core compilation logic in cc1 mode; the CLI guarantees that there
-            // is exactly one input and one output
-            let source = Source::new(&self.cli.inputs[0].path)?;
-            let tokens = Tokenizer::new(&source).tokenize()?;
-            let tokens = Preprocessor::new(&source, tokens).preprocess()?;
-            let program = Parser::new(&source, tokens).parse_program()?;
-            let codegen = Codegen::new(&source, self.cli.output.as_ref().unwrap())?;
-            codegen.generate(program)?;
-            return Ok(());
+        if self.cc1() {
+            return self.run_cc1();
         }
 
         let plan = self.plan()?;
@@ -147,24 +173,27 @@ impl Driver {
         // Note: We must keep jobs alive so that the temporary directories do
         // not get deleted until the end of the compilation process
         for job in &plan.jobs {
-            if let Some((input, output)) = &job.compile {
+            if let Some(compile_job) = &job.compile {
                 self.run_subprocess("compile", {
                     let mut command = Command::new(std::env::current_exe()?);
                     command.arg("-cc1");
+                    if compile_job.preprocess_only {
+                        command.arg("-E");
+                    }
                     command.arg("-o");
-                    command.arg(output);
-                    command.arg(input);
+                    command.arg(&compile_job.output);
+                    command.arg(&compile_job.input);
                     command
                 })?;
             }
 
-            if let Some((input, output)) = &job.assemble {
+            if let Some(assemble_job) = &job.assemble {
                 self.run_subprocess("assemble", {
                     let mut command = Command::new(self.cli.resolve_tool("as"));
                     command.arg("-c");
-                    command.arg(input);
+                    command.arg(&assemble_job.input);
                     command.arg("-o");
-                    command.arg(output);
+                    command.arg(&assemble_job.output);
                     command
                 })?;
             }
@@ -200,6 +229,33 @@ impl Driver {
         Ok(())
     }
 
+    // Run the driver in cc1 mode.
+    fn run_cc1(&mut self) -> Result<()> {
+        let input = self
+            .cli
+            .inputs
+            .first()
+            .expect("cc1 mode guarantees exactly one input")
+            .path
+            .as_ref();
+
+        let output = self
+            .cli
+            .output
+            .as_ref()
+            .expect("cc1 mode guarantees an output");
+
+        if output.as_os_str() == "-" {
+            let out = std::io::stdout();
+            let mut out = BufWriter::new(out.lock());
+            return cc1(input, &mut out, self.cli.preprocess_only);
+        }
+
+        let out = File::create(output)?;
+        let mut out = BufWriter::new(out);
+        cc1(input, &mut out, self.cli.preprocess_only)
+    }
+
     /// Produce the compilation plan.
     fn plan(&self) -> Result<Plan> {
         let mut plan = Plan::default();
@@ -216,9 +272,9 @@ impl Driver {
             *stem_counts.entry(stem).or_insert(0) += 1;
         }
 
-        let final_stage = if self.cli.stop_after_compile {
+        let final_stage = if self.cli.preprocess_only || self.cli.compile_only {
             Stage::Compile
-        } else if self.cli.stop_after_assemble {
+        } else if self.cli.assemble_only {
             Stage::Assemble
         } else {
             Stage::Link
@@ -259,11 +315,15 @@ impl Driver {
             {
                 let next = if stage == final_stage {
                     // Final non-linking stage, either output path if provided,
-                    // or use input path with the appropriate extension
-                    self.cli
-                        .output
-                        .clone()
-                        .unwrap_or_else(|| input.path.with_extension(stage.ext()))
+                    // or use input path with the appropriate extension, or
+                    // default to "-" if preprocessing only
+                    self.cli.output.clone().unwrap_or_else(|| {
+                        if self.cli.preprocess_only {
+                            PathBuf::from("-")
+                        } else {
+                            input.path.with_extension(stage.ext())
+                        }
+                    })
                 } else if !self.cli.save_temps {
                     // Intermediate stage without keeping temps, just create
                     // "out.*" because we have per-job temporary directory and
@@ -293,12 +353,23 @@ impl Driver {
                         .with_extension(stage.ext())
                 };
 
-                let job_stage = match stage {
-                    Stage::Compile => &mut job.compile,
-                    Stage::Assemble => &mut job.assemble,
+                match stage {
+                    Stage::Compile => {
+                        job.compile = Some(CompileJob {
+                            input: current,
+                            output: next.clone(),
+                            preprocess_only: self.cli.preprocess_only,
+                        });
+                    },
+                    Stage::Assemble => {
+                        job.assemble = Some(AssembleJob {
+                            input: current,
+                            output: next.clone(),
+                        });
+                    },
                     Stage::Link => unreachable!(),
                 };
-                *job_stage = Some((current, next.clone()));
+
                 current = next;
                 current_stage = stage.next();
             }

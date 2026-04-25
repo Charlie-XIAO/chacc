@@ -1633,7 +1633,47 @@ fn test_output_flag() {
 }
 
 #[test]
-fn test_stop_after_assemble_flag() {
+fn test_preprocess_only_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+
+    let input = create_c(tmp.path()).expect("failed to create input");
+    let output = Command::chacc(tmp.path())
+        .arg("-E")
+        .arg("-o")
+        .arg("-")
+        .arg(&input)
+        .run_checked("compiling with -E", None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let content = std::fs::read_to_string(&input).expect("failed to read input");
+    assert!(stdout.contains(&content));
+
+    let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-E");
+    for input in &inputs {
+        command.arg(input);
+    }
+    let output = command.run_checked("compiling multiple inputs with -E", None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for input in &inputs {
+        let content = std::fs::read_to_string(input).expect("failed to read input");
+        assert!(stdout.contains(&content));
+    }
+
+    let mut command = Command::chacc(tmp.path());
+    command.arg("-E").arg("-o").arg("-");
+    for input in &inputs {
+        command.arg(input);
+    }
+    let output = command.run_checked("compiling multiple inputs with -S and -o", Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot specify '-o'"));
+    assert!(stderr.contains("'-E'"));
+    assert!(stderr.contains("with multiple files"));
+}
+
+#[test]
+fn test_assemble_only_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
@@ -1664,11 +1704,13 @@ fn test_stop_after_assemble_flag() {
     }
     let output = command.run_checked("compiling multiple inputs with -S and -o", Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot specify '-o' with '-c' or '-S' with multiple files"));
+    assert!(stderr.contains("cannot specify '-o'"));
+    assert!(stderr.contains("'-S'"));
+    assert!(stderr.contains("with multiple files"));
 }
 
 #[test]
-fn test_stop_after_compile_flag() {
+fn test_compile_only_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
@@ -1699,7 +1741,9 @@ fn test_stop_after_compile_flag() {
     }
     let output = command.run_checked("compiling multiple inputs with -c and -o", Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot specify '-o' with '-c' or '-S' with multiple files"));
+    assert!(stderr.contains("cannot specify '-o'"));
+    assert!(stderr.contains("'-c'"));
+    assert!(stderr.contains("with multiple files"));
 }
 
 #[test]
