@@ -11,11 +11,11 @@ use crate::ast::{
     BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
     NodeKind, Program, Relocation, Stmt, StmtKind,
 };
-use crate::constexpr::{ConstType, ConstValue};
+use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::source::Source;
 use crate::tokenize::{Keyword, Token};
-use crate::types::{ArrayType, Member, StructOrUnionType, Type, TypeStore};
+use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 
 /// Declaration of a function parameter.
@@ -664,17 +664,17 @@ impl<'a> Parser<'a> {
 
         let ty = match (spec, signed) {
             (TypeSpec::Void, _) => Type::Void,
-            (TypeSpec::Bool, _) => Type::Bool,
-            (TypeSpec::Char, Some(false)) => Type::UChar,
-            (TypeSpec::Char, _) => Type::Char,
-            (TypeSpec::Short, Some(false)) => Type::UShort,
-            (TypeSpec::Short, _) => Type::Short,
-            (TypeSpec::Int, Some(false)) => Type::UInt,
-            (TypeSpec::Int, _) => Type::Int,
-            (TypeSpec::Long, Some(false)) => Type::ULong,
-            (TypeSpec::Long, _) => Type::Long,
-            (TypeSpec::Float, _) => Type::Float,
-            (TypeSpec::Double, _) => Type::Double,
+            (TypeSpec::Bool, _) => Type::BOOL,
+            (TypeSpec::Char, Some(false)) => Type::UCHAR,
+            (TypeSpec::Char, _) => Type::CHAR,
+            (TypeSpec::Short, Some(false)) => Type::USHORT,
+            (TypeSpec::Short, _) => Type::SHORT,
+            (TypeSpec::Int, Some(false)) => Type::UINT,
+            (TypeSpec::Int, _) => Type::INT,
+            (TypeSpec::Long, Some(false)) => Type::ULONG,
+            (TypeSpec::Long, _) => Type::LONG,
+            (TypeSpec::Float, _) => Type::FLOAT,
+            (TypeSpec::Double, _) => Type::DOUBLE,
             (TypeSpec::Other(ty), _) => ty,
         };
 
@@ -1196,7 +1196,7 @@ impl<'a> Parser<'a> {
         self.skip_punct("{")?;
 
         let mut first = true;
-        let mut val = ConstValue::int(0, ConstType::Int);
+        let mut val = ConstValue::int(0, ConstType::INT);
         while !self.maybe_skip_list_end(true) {
             if !first {
                 self.skip_punct(",")?;
@@ -1331,7 +1331,7 @@ impl<'a> Parser<'a> {
         let param_locals = self.create_param_locals(declarator.params)?;
 
         let va_area_local = if is_variadic {
-            let ty = self.types.array(Type::Char, Some(VA_AREA_SIZE));
+            let ty = self.types.array(Type::CHAR, Some(VA_AREA_SIZE));
             Some(self.create_local("__va_area__", ty, None))
         } else {
             None
@@ -1495,9 +1495,9 @@ impl<'a> Parser<'a> {
             self.infer_type(&mut cond)?;
             self.skip_punct(")")?;
 
-            let Some(ty) = self
-                .types
-                .promote_int(cond.expect_ty())
+            let Some(ty) = cond
+                .expect_ty()
+                .promote_int()
                 .and_then(|ty| self.types.to_const(ty))
             else {
                 return Err(self
@@ -1910,7 +1910,7 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
         if let Some(array) = self.types.as_array(ty).cloned() {
-            let elements = if array.base == Type::Char
+            let elements = if array.base == Type::CHAR
                 && let Some(content) = self.current().as_str()
             {
                 self.parse_string_initializer(content, &array)
@@ -2008,7 +2008,7 @@ impl<'a> Parser<'a> {
     fn parse_string_initializer(
         &mut self,
         content: Rc<[u8]>,
-        array: &ArrayType,
+        array: &ArrayTypeData,
     ) -> Vec<Initializer> {
         let offset = self.current().offset;
         let len = array.len.unwrap_or(content.len());
@@ -2024,8 +2024,8 @@ impl<'a> Parser<'a> {
             .iter()
             .take(len)
             .map(|&byte| Initializer {
-                ty: Type::Char,
-                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::Int, offset)),
+                ty: Type::CHAR,
+                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::INT, offset)),
             })
             .collect();
 
@@ -2038,7 +2038,7 @@ impl<'a> Parser<'a> {
     ///   "{" <initializer> ("," <initializer>)* ","? "}"
     ///   | <initializer> ("," <initializer>)*
     /// ```
-    fn parse_array_initializer(&mut self, array: &ArrayType) -> Result<Vec<Initializer>> {
+    fn parse_array_initializer(&mut self, array: &ArrayTypeData) -> Result<Vec<Initializer>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
@@ -2078,7 +2078,10 @@ impl<'a> Parser<'a> {
     ///   "{" <initializer> ("," <initializer>)* ","? "}"
     ///   | <initializer> ("," <initializer>)*
     /// ```
-    fn parse_struct_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
+    fn parse_struct_initializer(
+        &mut self,
+        sou: &StructOrUnionTypeData,
+    ) -> Result<Vec<Initializer>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
@@ -2124,7 +2127,7 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <union-initializer> ::= "{" <initializer> ","? "}" | <initializer>
     /// ```
-    fn parse_union_initializer(&mut self, sou: &StructOrUnionType) -> Result<Vec<Initializer>> {
+    fn parse_union_initializer(&mut self, sou: &StructOrUnionTypeData) -> Result<Vec<Initializer>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
@@ -2555,14 +2558,14 @@ impl<'a> Parser<'a> {
         if self.current().is_punct("++") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_add(unary, Node::num(1, Type::Int, offset), offset)?;
+            let binary = self.new_add(unary, Node::num(1, Type::INT, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
         if self.current().is_punct("--") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_sub(unary, Node::num(1, Type::Int, offset), offset)?;
+            let binary = self.new_sub(unary, Node::num(1, Type::INT, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
@@ -2699,7 +2702,7 @@ impl<'a> Parser<'a> {
                             .source
                             .error_at(offset, "cannot apply 'sizeof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.size(ty), Type::ULong, offset));
+                    return Ok(Node::num(self.types.size(ty), Type::ULONG, offset));
                 }
 
                 self.pos = pos;
@@ -2708,7 +2711,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.size(operand.expect_ty());
-            return Ok(Node::num(size, Type::ULong, offset));
+            return Ok(Node::num(size, Type::ULONG, offset));
         }
 
         if self.current().is_keyword(Keyword::Alignof) {
@@ -2728,7 +2731,7 @@ impl<'a> Parser<'a> {
                             .source
                             .error_at(offset, "cannot apply '_Alignof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.align(ty), Type::ULong, offset));
+                    return Ok(Node::num(self.types.align(ty), Type::ULONG, offset));
                 }
 
                 self.pos = pos;
@@ -2737,7 +2740,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.align(operand.expect_ty());
-            return Ok(Node::num(size, Type::ULong, offset));
+            return Ok(Node::num(size, Type::ULONG, offset));
         }
 
         if let Some(name) = self.current().as_ident() {
@@ -2765,7 +2768,7 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(content) = self.current().as_str() {
-            let ty = self.types.array(Type::Char, Some(content.len()));
+            let ty = self.types.array(Type::CHAR, Some(content.len()));
             let label = self.unique_label();
             let global_id = self.create_global(
                 label,
@@ -2831,9 +2834,9 @@ impl<'a> Parser<'a> {
                 // Variadic function call applies default argument promotions
                 let ty = arg.expect_ty();
                 let promoted = if ty.is_flonum() {
-                    Type::Double
+                    Type::DOUBLE
                 } else {
-                    self.types.promote_int(ty).unwrap_or(ty)
+                    ty.promote_int().unwrap_or(ty)
                 };
                 self.apply_cast(&mut arg, promoted)?;
             }
@@ -3197,7 +3200,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num + num
-        if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
+        if lhs_ty.is_arith() && rhs_ty.is_arith() {
             return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
         }
 
@@ -3216,7 +3219,7 @@ impl<'a> Parser<'a> {
         let scaled_rhs = Node::binary(
             BinaryOp::Mul,
             rhs,
-            Node::num(base_size, Type::Long, offset),
+            Node::num(base_size, Type::LONG, offset),
             offset,
         );
         let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
@@ -3232,7 +3235,7 @@ impl<'a> Parser<'a> {
         let rhs_ty = rhs.expect_ty();
 
         // num - num
-        if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
+        if lhs_ty.is_arith() && rhs_ty.is_arith() {
             return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
         }
 
@@ -3244,7 +3247,7 @@ impl<'a> Parser<'a> {
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
                 rhs,
-                Node::num(base_size, Type::Long, offset),
+                Node::num(base_size, Type::LONG, offset),
                 offset,
             );
             let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
@@ -3257,11 +3260,11 @@ impl<'a> Parser<'a> {
         {
             let base_size = self.types.size(base_ty);
             let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
-            diff.ty = Some(Type::Long);
+            diff.ty = Some(Type::LONG);
             let node = Node::binary(
                 BinaryOp::Div,
                 diff,
-                Node::num(base_size, Type::Long, offset),
+                Node::num(base_size, Type::LONG, offset),
                 offset,
             );
             return Ok(node);
@@ -3318,8 +3321,8 @@ impl<'a> Parser<'a> {
         self.infer_type(&mut node)?;
         let ty = node.expect_ty();
 
-        let mut addend = Node::num(1, Type::Long, offset);
-        let mut neg_addend = Node::neg(Node::num(1, Type::Long, offset), offset);
+        let mut addend = Node::num(1, Type::LONG, offset);
+        let mut neg_addend = Node::neg(Node::num(1, Type::LONG, offset), offset);
         if !is_inc {
             std::mem::swap(&mut addend, &mut neg_addend);
         }
@@ -3404,7 +3407,7 @@ impl<'a> Parser<'a> {
                 for step in path.iter() {
                     lhs = match step {
                         InitializerStep::Index(index) => {
-                            let index = Node::num(*index as _, Type::ULong, offset);
+                            let index = Node::num(*index as _, Type::ULONG, offset);
                             Node::deref(self.new_add(lhs, index, offset)?, offset)
                         },
                         InitializerStep::Member(member) => {
@@ -3650,9 +3653,8 @@ impl<'a> Parser<'a> {
                 self.infer_type(expr)?;
                 let mut ty = expr.expect_ty();
                 if !ty.is_flonum() {
-                    ty = self
-                        .types
-                        .promote_int(ty)
+                    ty = ty
+                        .promote_int()
                         .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?
                 };
                 self.apply_cast(expr, ty)?;
@@ -3660,11 +3662,11 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Not(expr) => {
                 self.infer_type(expr)?;
-                Type::Int // C logical operators give int 0/1 not bool
+                Type::INT // C logical operators give int 0/1 not bool
             },
             NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
-                let Some(ty) = self.types.promote_int(expr.expect_ty()) else {
+                let Some(ty) = expr.expect_ty().promote_int() else {
                     return Err(self.source.error_at(node.offset, "invalid operand type"));
                 };
                 self.apply_cast(expr, ty)?;
@@ -3696,7 +3698,7 @@ impl<'a> Parser<'a> {
             NodeKind::And { lhs, rhs } | NodeKind::Or { lhs, rhs } => {
                 self.infer_type(lhs)?;
                 self.infer_type(rhs)?;
-                Type::Int // C logical operators give int 0/1 not bool
+                Type::INT // C logical operators give int 0/1 not bool
             },
             NodeKind::Binary { op, lhs, rhs } => {
                 self.infer_type(lhs)?;
@@ -3707,7 +3709,7 @@ impl<'a> Parser<'a> {
                 match op {
                     BinaryOp::Add | BinaryOp::Sub => self.apply_usual_arith_conv(lhs, rhs)?,
                     BinaryOp::Mul | BinaryOp::Div => {
-                        if !lhs_ty.is_numeric() || !rhs_ty.is_numeric() {
+                        if !lhs_ty.is_arith() || !rhs_ty.is_arith() {
                             return Err(self.source.error_at(node.offset, "invalid operands"));
                         }
                         self.apply_usual_arith_conv(lhs, rhs)?
@@ -3719,10 +3721,10 @@ impl<'a> Parser<'a> {
                         self.apply_usual_arith_conv(lhs, rhs)?
                     },
                     BinaryOp::BitShl | BinaryOp::BitShr => {
-                        let Some(lhs_ty) = self.types.promote_int(lhs_ty) else {
+                        let Some(lhs_ty) = lhs_ty.promote_int() else {
                             return Err(self.source.error_at(node.offset, "invalid operands"));
                         };
-                        let Some(rhs_ty) = self.types.promote_int(rhs_ty) else {
+                        let Some(rhs_ty) = rhs_ty.promote_int() else {
                             return Err(self.source.error_at(node.offset, "invalid operands"));
                         };
                         self.apply_cast(lhs, lhs_ty)?;
@@ -3731,7 +3733,7 @@ impl<'a> Parser<'a> {
                     },
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le => {
                         self.apply_usual_arith_conv(lhs, rhs)?;
-                        Type::Int
+                        Type::INT
                     },
                 }
             },
@@ -4148,7 +4150,7 @@ impl<'a> Parser<'a> {
             NodeKind::Cast(expr) => match self.eval_global_init(expr)? {
                 GlobalInitValue::Num(val) => GlobalInitValue::Num(val.cast(const_ty)),
                 GlobalInitValue::Reloc(label, addend) => {
-                    if matches!(ty, Type::Long | Type::ULong) || self.types.is_ptr(ty) {
+                    if matches!(ty, Type::LONG | Type::ULONG) || self.types.is_ptr(ty) {
                         GlobalInitValue::Reloc(label, addend)
                     } else {
                         return Err(self.source.error_at(node.offset, "invalid initializer"));

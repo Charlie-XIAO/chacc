@@ -1,45 +1,7 @@
 //! Compile-time constant evaluation.
 
 use crate::error::Result;
-
-/// The semantic types that can participate in compile-time evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConstType {
-    Bool,
-    Char,
-    UChar,
-    Short,
-    UShort,
-    Int,
-    UInt,
-    Long,
-    ULong,
-    Ptr,
-    Float,
-    Double,
-}
-
-impl ConstType {
-    /// Return the width of the value domain in bits.
-    pub fn width(self) -> u32 {
-        match self {
-            Self::Bool | Self::Char | Self::UChar => 8,
-            Self::Short | Self::UShort => 16,
-            Self::Int | Self::UInt | Self::Float => 32,
-            Self::Long | Self::ULong | Self::Ptr | Self::Double => 64,
-        }
-    }
-
-    /// Return whether this is a signed integer type.
-    pub fn is_signed(self) -> bool {
-        matches!(self, Self::Char | Self::Short | Self::Int | Self::Long)
-    }
-
-    /// Return whether this is a floating-point type.
-    pub fn is_flonum(self) -> bool {
-        matches!(self, Self::Float | Self::Double)
-    }
-}
+use crate::types::ConstType;
 
 /// A raw compile-time constant value representation.
 #[derive(Clone, Copy, Debug)]
@@ -106,7 +68,7 @@ impl ConstValue {
     pub fn float(mut value: f64, ty: ConstType) -> Self {
         debug_assert!(ty.is_flonum());
 
-        if ty == ConstType::Float {
+        if ty == ConstType::FLOAT {
             value = (value as f32) as f64;
         }
         Self {
@@ -125,8 +87,8 @@ impl ConstValue {
         match self.raw {
             RawConstValue::Int(bits) => bits,
             RawConstValue::Float(value) => match self.ty {
-                ConstType::Float => (value as f32).to_bits() as u64,
-                ConstType::Double => value.to_bits(),
+                ConstType::FLOAT => (value as f32).to_bits() as u64,
+                ConstType::DOUBLE => value.to_bits(),
                 _ => unreachable!(),
             },
         }
@@ -169,7 +131,7 @@ impl ConstValue {
 
     /// Cast to another [`ConstType`].
     pub fn cast(self, ty: ConstType) -> Self {
-        if ty == ConstType::Bool {
+        if ty == ConstType::BOOL {
             return Self::bool(self.into(), ty);
         }
         if ty.is_flonum() {

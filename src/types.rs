@@ -5,15 +5,14 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
-use crate::constexpr::ConstType;
 use crate::utils::align_to;
 
-/// Expression types used for semantic analysis.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Type {
-    #[default]
-    Dummy,
-    Void,
+/// Arithmetic types.
+///
+/// **Note:** This is not intended for direct use. Use [`Type`] or [`ConstType`]
+/// instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArithType {
     Bool,
     Char,
     UChar,
@@ -23,37 +22,183 @@ pub enum Type {
     UInt,
     Long,
     ULong,
-    Enum,
     Float,
     Double,
+}
+
+impl ArithType {
+    const fn size(self) -> u64 {
+        match self {
+            Self::Bool | Self::Char | Self::UChar => 1,
+            Self::Short | Self::UShort => 2,
+            Self::Int | Self::UInt | Self::Float => 4,
+            Self::Long | Self::ULong | Self::Double => 8,
+        }
+    }
+
+    const fn is_signed(self) -> bool {
+        matches!(self, Self::Char | Self::Short | Self::Int | Self::Long)
+    }
+
+    const fn is_unsigned(self) -> bool {
+        matches!(self, Self::UChar | Self::UShort | Self::UInt | Self::ULong)
+    }
+
+    const fn is_flonum(self) -> bool {
+        matches!(self, Self::Float | Self::Double)
+    }
+
+    const fn promote_int(self) -> Option<Self> {
+        match self {
+            Self::Bool | Self::Char | Self::UChar | Self::Short | Self::UShort | Self::Int => {
+                Some(Self::Int)
+            },
+            Self::UInt | Self::Long | Self::ULong => Some(self),
+            _ => None,
+        }
+    }
+}
+
+/// Dispatch methods on [`ArithType`].
+///
+/// `enum_ty`, if provided, will be treated the same as [`ArithType::Int`].
+macro_rules! impl_scalar_type {
+    ($ty:ty $(, enum_ty = $enum_ty:ident)?) => {
+        impl $ty {
+            pub const BOOL: Self = Self::Arith(ArithType::Bool);
+            pub const CHAR: Self = Self::Arith(ArithType::Char);
+            pub const UCHAR: Self = Self::Arith(ArithType::UChar);
+            pub const SHORT: Self = Self::Arith(ArithType::Short);
+            pub const USHORT: Self = Self::Arith(ArithType::UShort);
+            pub const INT: Self = Self::Arith(ArithType::Int);
+            pub const UINT: Self = Self::Arith(ArithType::UInt);
+            pub const LONG: Self = Self::Arith(ArithType::Long);
+            pub const ULONG: Self = Self::Arith(ArithType::ULong);
+            pub const FLOAT: Self = Self::Arith(ArithType::Float);
+            pub const DOUBLE: Self = Self::Arith(ArithType::Double);
+
+            /// Return whether this is a signed integer type.
+            pub const fn is_signed(self) -> bool {
+                match self {
+                    Self::Arith(arith) => arith.is_signed(),
+                    $(Self::$enum_ty => true,)?
+                    _ => false,
+                }
+            }
+
+            /// Return whether this is an unsigned integer type.
+            ///
+            /// Note that `_Bool` is intentionally excluded by this method,
+            /// because it does not follow the standard unsigned integer
+            /// arithmetics.
+            pub const fn is_unsigned(self) -> bool {
+                matches!(self, Self::Arith(arith) if arith.is_unsigned())
+            }
+
+            /// Return whether this is an integer type.
+            ///
+            /// This includes signed, unsigned, and `_Bool`.
+            pub const fn is_integer(self) -> bool {
+                self.is_signed() || self.is_unsigned() || matches!(self, Self::BOOL)
+            }
+
+            /// Return whether this is a floating-point type.
+            pub const fn is_flonum(self) -> bool {
+                matches!(self, Self::Arith(arith) if arith.is_flonum())
+            }
+
+            /// Return whether this is an arithmetic type.
+            ///
+            /// This includes both integer and floating-point types.
+            pub const fn is_arith(self) -> bool {
+                self.is_integer() || self.is_flonum()
+            }
+
+            /// Return the resulting type after [integer promotions][1].
+            ///
+            /// If the type is not an integer type, this returns `None`.
+            ///
+            /// [1]: https://en.cppreference.com/w/c/language/conversion.html#Integer_promotions
+            pub const fn promote_int(self) -> Option<Self> {
+                match self {
+                    Self::Arith(arith) => match arith.promote_int() {
+                        Some(promoted) => Some(Self::Arith(promoted)),
+                        None => None,
+                    },
+                    $(Self::$enum_ty => Some(Self::INT),)?
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+/// Expression types that can be evaluated at compile-time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstType {
+    Arith(ArithType),
+    Ptr,
+}
+
+impl_scalar_type!(ConstType);
+
+impl ConstType {
+    /// Return the width of this type in bits.
+    pub const fn width(self) -> u64 {
+        match self {
+            Self::Arith(arith) => arith.size() * 8,
+            Self::Ptr => 64,
+        }
+    }
+}
+
+/// Expression types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Type {
+    #[default]
+    Dummy,
+    Void,
+    Enum,
+    Arith(ArithType),
     /// A non-trivial type stored in [`TypeStore`].
     Stored(usize),
 }
 
+impl_scalar_type!(Type, enum_ty = Enum);
+
+impl From<ConstType> for Type {
+    fn from(ty: ConstType) -> Self {
+        match ty {
+            ConstType::Arith(arith) => Self::Arith(arith),
+            ConstType::Ptr => Self::ULONG,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TypeData {
-    kind: TypeKind,
+    kind: TypeDataKind,
     size: u64,
     align: u64,
 }
 
 #[derive(Debug, Clone)]
-enum TypeKind {
+enum TypeDataKind {
     Ptr(Type),
-    Array(ArrayType),
-    Func(FuncType),
-    StructOrUnion(StructOrUnionType),
+    Array(ArrayTypeData),
+    Func(FuncTypeData),
+    StructOrUnion(StructOrUnionTypeData),
 }
 
 #[derive(Debug, Clone)]
-pub struct ArrayType {
+pub struct ArrayTypeData {
     pub base: Type,
     /// If `None`, this represents an incomplete array type.
     pub len: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-pub struct FuncType {
+pub struct FuncTypeData {
     pub return_ty: Type,
     pub params: Rc<[Type]>,
     pub is_variadic: bool,
@@ -71,7 +216,7 @@ pub struct Member {
 }
 
 #[derive(Debug, Clone)]
-pub struct StructOrUnionType {
+pub struct StructOrUnionTypeData {
     pub is_struct: bool,
     /// If `None`, this represents an incomplete struct or union type.
     pub members: Option<Rc<[Member]>>,
@@ -94,7 +239,7 @@ impl TypeStore {
         self.types.truncate(len);
     }
 
-    fn push(&mut self, kind: TypeKind, size: u64, align: u64) -> Type {
+    fn push(&mut self, kind: TypeDataKind, size: u64, align: u64) -> Type {
         debug_assert!(!self.frozen, "cannot push new type to a frozen type store");
         let ty = Type::Stored(self.types.len());
         self.types.push(TypeData { kind, size, align });
@@ -117,13 +262,13 @@ impl TypeStore {
 
     /// Construct a pointer type to the given base type.
     pub fn ptr(&mut self, base: Type) -> Type {
-        self.push(TypeKind::Ptr(base), 8, 8)
+        self.push(TypeDataKind::Ptr(base), 8, 8)
     }
 
     /// Construct a function type with the given return type and parameters.
     pub fn func(&mut self, return_ty: Type, params: Vec<Type>, is_variadic: bool) -> Type {
         self.push(
-            TypeKind::Func(FuncType {
+            TypeDataKind::Func(FuncTypeData {
                 return_ty,
                 params: params.into(),
                 is_variadic,
@@ -147,7 +292,11 @@ impl TypeStore {
             None => 0,
         };
         let align = self.align(base);
-        self.push(TypeKind::Array(ArrayType { base, len }), size, align)
+        self.push(
+            TypeDataKind::Array(ArrayTypeData { base, len }),
+            size,
+            align,
+        )
     }
 
     /// Construct a struct or union type with the given members.
@@ -158,7 +307,7 @@ impl TypeStore {
     /// must be all 0.
     pub fn struct_or_union(&mut self, is_struct: bool, members: Option<Vec<Member>>) -> Type {
         let ty = self.push(
-            TypeKind::StructOrUnion(StructOrUnionType {
+            TypeDataKind::StructOrUnion(StructOrUnionTypeData {
                 is_struct,
                 members: None,
             }),
@@ -199,7 +348,7 @@ impl TypeStore {
         }
 
         let data = self.get_mut(ty).expect("type not found");
-        let TypeKind::StructOrUnion(sou) = &mut data.kind else {
+        let TypeDataKind::StructOrUnion(sou) = &mut data.kind else {
             panic!("not a struct or union type");
         };
 
@@ -218,10 +367,8 @@ impl TypeStore {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,
-            Type::Bool | Type::Char | Type::UChar => 1,
-            Type::Short | Type::UShort => 2,
-            Type::Int | Type::UInt | Type::Enum | Type::Float => 4,
-            Type::Long | Type::ULong | Type::Double => 8,
+            Type::Enum => ArithType::Int.size(),
+            Type::Arith(arith) => arith.size(),
             Type::Stored(_) => self.get(ty).unwrap().align,
         }
     }
@@ -236,10 +383,8 @@ impl TypeStore {
         match ty {
             Type::Dummy => 0,
             Type::Void => 1,
-            Type::Bool | Type::Char | Type::UChar => 1,
-            Type::Short | Type::UShort => 2,
-            Type::Int | Type::UInt | Type::Enum | Type::Float => 4,
-            Type::Long | Type::ULong | Type::Double => 8,
+            Type::Enum => ArithType::Int.size(),
+            Type::Arith(arith) => arith.size(),
             Type::Stored(_) => self.get(ty).unwrap().size,
         }
     }
@@ -248,17 +393,17 @@ impl TypeStore {
     pub fn base(&self, ty: Type) -> Option<Type> {
         let data = self.get(ty)?;
         match &data.kind {
-            TypeKind::Ptr(base) => Some(*base),
-            TypeKind::Array(ArrayType { base, .. }) => Some(*base),
+            TypeDataKind::Ptr(base) => Some(*base),
+            TypeDataKind::Array(ArrayTypeData { base, .. }) => Some(*base),
             _ => None,
         }
     }
 
     /// Return the array type if it is one.
-    pub fn as_array(&self, ty: Type) -> Option<&ArrayType> {
+    pub fn as_array(&self, ty: Type) -> Option<&ArrayTypeData> {
         let data = self.get(ty)?;
         match &data.kind {
-            TypeKind::Array(array) => Some(array),
+            TypeDataKind::Array(array) => Some(array),
             _ => None,
         }
     }
@@ -267,20 +412,20 @@ impl TypeStore {
     ///
     /// If `accept_ptr` is true, a function pointer type is also accepted and
     /// the pointed function type is returned.
-    pub fn as_func(&self, ty: Type, accept_ptr: bool) -> Option<&FuncType> {
+    pub fn as_func(&self, ty: Type, accept_ptr: bool) -> Option<&FuncTypeData> {
         let data = self.get(ty)?;
         match &data.kind {
-            TypeKind::Func(func) => Some(func),
+            TypeDataKind::Func(func) => Some(func),
             _ if accept_ptr => self.base(ty).and_then(|base| self.as_func(base, false)),
             _ => None,
         }
     }
 
     /// Return the struct or union type if it is one.
-    pub fn as_struct_or_union(&self, ty: Type) -> Option<&StructOrUnionType> {
+    pub fn as_struct_or_union(&self, ty: Type) -> Option<&StructOrUnionTypeData> {
         let data = self.get(ty)?;
         match &data.kind {
-            TypeKind::StructOrUnion(sou) => Some(sou),
+            TypeDataKind::StructOrUnion(sou) => Some(sou),
             _ => None,
         }
     }
@@ -288,13 +433,13 @@ impl TypeStore {
     /// Return whether the type is a pointer.
     pub fn is_ptr(&self, ty: Type) -> bool {
         self.get(ty)
-            .is_some_and(|data| matches!(data.kind, TypeKind::Ptr(_)))
+            .is_some_and(|data| matches!(data.kind, TypeDataKind::Ptr(_)))
     }
 
     /// Return whether the type is a function.
     pub fn is_func(&self, ty: Type) -> bool {
         self.get(ty)
-            .is_some_and(|data| matches!(data.kind, TypeKind::Func(_)))
+            .is_some_and(|data| matches!(data.kind, TypeDataKind::Func(_)))
     }
 
     /// Return whether the type is incomplete.
@@ -307,19 +452,9 @@ impl TypeStore {
         };
         matches!(
             data.kind,
-            TypeKind::Array(ArrayType { len: None, .. })
-                | TypeKind::StructOrUnion(StructOrUnionType { members: None, .. })
+            TypeDataKind::Array(ArrayTypeData { len: None, .. })
+                | TypeDataKind::StructOrUnion(StructOrUnionTypeData { members: None, .. })
         )
-    }
-
-    /// Return whether unsigned machine arithmetic should be used for the type.
-    ///
-    /// This includes unsigned integer types and pointer types.
-    pub fn uses_unsigned_arith(&self, ty: Type) -> bool {
-        ty.is_unsigned_integer()
-            || self
-                .get(ty)
-                .is_some_and(|data| matches!(data.kind, TypeKind::Ptr(_)))
     }
 
     /// Return whether two types are the same.
@@ -339,11 +474,11 @@ impl TypeStore {
         };
 
         match (&this.kind, &other.kind) {
-            (TypeKind::Ptr(left), TypeKind::Ptr(right)) => self.same_type(*left, *right),
-            (TypeKind::Array(left), TypeKind::Array(right)) => {
+            (TypeDataKind::Ptr(left), TypeDataKind::Ptr(right)) => self.same_type(*left, *right),
+            (TypeDataKind::Array(left), TypeDataKind::Array(right)) => {
                 left.len == right.len && self.same_type(left.base, right.base)
             },
-            (TypeKind::Func(left), TypeKind::Func(right)) => {
+            (TypeDataKind::Func(left), TypeDataKind::Func(right)) => {
                 self.same_type(left.return_ty, right.return_ty)
                     && left.is_variadic == right.is_variadic
                     && left.params.len() == right.params.len()
@@ -376,15 +511,15 @@ impl TypeStore {
             return self.ptr(base);
         }
 
-        if matches!(lhs, Type::Double) || matches!(rhs, Type::Double) {
-            return Type::Double;
+        if matches!(lhs, Type::DOUBLE) || matches!(rhs, Type::DOUBLE) {
+            return Type::DOUBLE;
         }
-        if matches!(lhs, Type::Float) || matches!(rhs, Type::Float) {
-            return Type::Float;
+        if matches!(lhs, Type::FLOAT) || matches!(rhs, Type::FLOAT) {
+            return Type::FLOAT;
         }
 
-        let lhs = self.promote_int(lhs).unwrap_or(lhs);
-        let rhs = self.promote_int(rhs).unwrap_or(rhs);
+        let lhs = lhs.promote_int().unwrap_or(lhs);
+        let rhs = rhs.promote_int().unwrap_or(rhs);
 
         match self.size(lhs).cmp(&self.size(rhs)) {
             Ordering::Less => return rhs,
@@ -392,7 +527,7 @@ impl TypeStore {
             _ => {},
         }
 
-        if rhs.is_unsigned_integer() {
+        if rhs.is_unsigned() {
             return rhs;
         }
         lhs
@@ -426,84 +561,10 @@ impl TypeStore {
     /// Convert a [`Type`] to a [`ConstType`] if applicable.
     pub fn to_const(&self, ty: Type) -> Option<ConstType> {
         match ty {
-            Type::Bool => Some(ConstType::Bool),
-            Type::Char => Some(ConstType::Char),
-            Type::UChar => Some(ConstType::UChar),
-            Type::Short => Some(ConstType::Short),
-            Type::UShort => Some(ConstType::UShort),
-            Type::Int | Type::Enum => Some(ConstType::Int),
-            Type::UInt => Some(ConstType::UInt),
-            Type::Long => Some(ConstType::Long),
-            Type::ULong => Some(ConstType::ULong),
-            Type::Float => Some(ConstType::Float),
-            Type::Double => Some(ConstType::Double),
+            Type::Enum => Some(ConstType::INT),
+            Type::Arith(arith) => Some(ConstType::Arith(arith)),
             _ if self.is_ptr(ty) => Some(ConstType::Ptr),
             _ => None,
-        }
-    }
-
-    /// Apply [integer promotions][1] to an integer type.
-    ///
-    /// If a type is not applicable for integer promotion, this returns `None`.
-    ///
-    /// [1]: https://en.cppreference.com/w/c/language/conversion.html#Integer_promotions
-    pub fn promote_int(&self, ty: Type) -> Option<Type> {
-        Some(match ty {
-            Type::Bool
-            | Type::Char
-            | Type::UChar
-            | Type::Short
-            | Type::UShort
-            | Type::Int
-            | Type::Enum => Type::Int,
-            Type::UInt => Type::UInt,
-            Type::Long => Type::Long,
-            Type::ULong => Type::ULong,
-            _ => return None,
-        })
-    }
-}
-
-impl Type {
-    /// Return whether the type is a numeric type.
-    pub fn is_numeric(&self) -> bool {
-        self.is_integer() || self.is_flonum()
-    }
-
-    /// Return whether the type is an integer type.
-    pub fn is_integer(&self) -> bool {
-        self.is_unsigned_integer()
-            || matches!(
-                self,
-                Type::Bool | Type::Char | Type::Short | Type::Int | Type::Long | Type::Enum
-            )
-    }
-
-    /// Return whether the type is an unsigned integer type.
-    pub fn is_unsigned_integer(&self) -> bool {
-        matches!(self, Type::UChar | Type::UShort | Type::UInt | Type::ULong)
-    }
-
-    /// Return whether the type is a floating-point type.
-    pub fn is_flonum(&self) -> bool {
-        matches!(self, Type::Float | Type::Double)
-    }
-}
-
-impl From<ConstType> for Type {
-    fn from(value: ConstType) -> Self {
-        match value {
-            ConstType::Bool => Type::Bool,
-            ConstType::Char => Type::Char,
-            ConstType::UChar => Type::UChar,
-            ConstType::Short => Type::Short,
-            ConstType::UShort => Type::UShort,
-            ConstType::Int => Type::Int,
-            ConstType::UInt => Type::UInt,
-            ConstType::Long => Type::Long,
-            ConstType::ULong | ConstType::Ptr => Type::ULong,
-            ConstType::Float => Type::Float,
-            ConstType::Double => Type::Double,
         }
     }
 }

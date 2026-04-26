@@ -566,7 +566,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             return Ok(());
         }
 
-        if to == Type::Bool {
+        if to == Type::BOOL {
             self.cmp_zero(from)?;
             self.set_is_nonzero(from)?;
             writeln!(self.out, "  movzx %al, %eax")?;
@@ -594,16 +594,16 @@ impl<'a, W: Write> Codegen<'a, W> {
 
             fn try_from(value: Type) -> Result<Self, Self::Error> {
                 match value {
-                    Type::Char => Ok(I8),
-                    Type::UChar => Ok(U8),
-                    Type::Short => Ok(I16),
-                    Type::UShort => Ok(U16),
-                    Type::Int | Type::Enum => Ok(I32),
-                    Type::UInt => Ok(U32),
-                    Type::Long => Ok(I64),
-                    Type::ULong => Ok(U64),
-                    Type::Float => Ok(F32),
-                    Type::Double => Ok(F64),
+                    Type::CHAR => Ok(I8),
+                    Type::UCHAR => Ok(U8),
+                    Type::SHORT => Ok(I16),
+                    Type::USHORT => Ok(U16),
+                    Type::INT | Type::Enum => Ok(I32),
+                    Type::UINT => Ok(U32),
+                    Type::LONG => Ok(I64),
+                    Type::ULONG => Ok(U64),
+                    Type::FLOAT => Ok(F32),
+                    Type::DOUBLE => Ok(F64),
                     _ => Err(()),
                 }
             }
@@ -685,11 +685,11 @@ impl<'a, W: Write> Codegen<'a, W> {
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
             NodeKind::Flonum(value) => match node.expect_ty() {
-                Type::Float => {
+                Type::FLOAT => {
                     writeln!(self.out, "  mov ${:#x}, %eax", (*value as f32).to_bits())?;
                     writeln!(self.out, "  movd %eax, %xmm0")?;
                 },
-                Type::Double => {
+                Type::DOUBLE => {
                     writeln!(self.out, "  movabs ${:#x}, %rax", value.to_bits())?;
                     writeln!(self.out, "  movq %rax, %xmm0")?;
                 },
@@ -745,11 +745,11 @@ impl<'a, W: Write> Codegen<'a, W> {
                 // hold the correct value across a call; hence we need to
                 // normalize the register to the declared return type here
                 match node.expect_ty() {
-                    Type::Bool => writeln!(self.out, "  movzx %al, %eax")?,
-                    Type::Char => writeln!(self.out, "  movsbl %al, %eax")?,
-                    Type::UChar => writeln!(self.out, "  movzbl %al, %eax")?,
-                    Type::Short => writeln!(self.out, "  movswl %ax, %eax")?,
-                    Type::UShort => writeln!(self.out, "  movzwl %ax, %eax")?,
+                    Type::BOOL => writeln!(self.out, "  movzx %al, %eax")?,
+                    Type::CHAR => writeln!(self.out, "  movsbl %al, %eax")?,
+                    Type::UCHAR => writeln!(self.out, "  movzbl %al, %eax")?,
+                    Type::SHORT => writeln!(self.out, "  movswl %ax, %eax")?,
+                    Type::USHORT => writeln!(self.out, "  movzwl %ax, %eax")?,
                     _ => {},
                 }
             },
@@ -891,7 +891,8 @@ impl<'a, W: Write> Codegen<'a, W> {
                         BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
                         BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
                         BinaryOp::Div | BinaryOp::Mod => {
-                            if self.types.uses_unsigned_arith(node.expect_ty()) {
+                            let ty = node.expect_ty();
+                            if ty.is_unsigned() || self.types.is_ptr(ty) {
                                 writeln!(self.out, "  mov $0, {rdx}")?;
                                 writeln!(self.out, "  div {rdi}")?;
                             } else {
@@ -911,7 +912,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                         },
                         BinaryOp::BitShr => {
                             writeln!(self.out, "  mov {rdi}, {rcx}")?;
-                            if self.types.uses_unsigned_arith(lhs_ty) {
+                            if lhs_ty.is_unsigned() || self.types.is_ptr(lhs_ty) {
                                 writeln!(self.out, "  shr %cl, {acc}")?;
                             } else {
                                 writeln!(self.out, "  sar %cl, {acc}")?;
@@ -929,7 +930,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                         },
                         BinaryOp::Lt => {
                             writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                            if self.types.uses_unsigned_arith(lhs_ty) {
+                            if lhs_ty.is_unsigned() || self.types.is_ptr(lhs_ty) {
                                 writeln!(self.out, "  setb %al")?;
                             } else {
                                 writeln!(self.out, "  setl %al")?;
@@ -938,7 +939,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                         },
                         BinaryOp::Le => {
                             writeln!(self.out, "  cmp {rdi}, {acc}")?;
-                            if self.types.uses_unsigned_arith(lhs_ty) {
+                            if lhs_ty.is_unsigned() || self.types.is_ptr(lhs_ty) {
                                 writeln!(self.out, "  setbe %al")?;
                             } else {
                                 writeln!(self.out, "  setle %al")?;
@@ -1027,7 +1028,7 @@ impl<'a, W: Write> Codegen<'a, W> {
         writeln!(
             self.out,
             "  {} (%rax), {}",
-            if self.types.uses_unsigned_arith(ty) {
+            if ty.is_unsigned() || self.types.is_ptr(ty) {
                 width.unsigned_load_mnemonic()
             } else {
                 width.signed_load_mnemonic()
@@ -1175,8 +1176,8 @@ impl<'a, W: Write> Codegen<'a, W> {
 
 fn fp_mnemonic_sz(ty: Type) -> &'static str {
     match ty {
-        Type::Float => "s",
-        Type::Double => "d",
+        Type::FLOAT => "s",
+        Type::DOUBLE => "d",
         _ => unreachable!(),
     }
 }

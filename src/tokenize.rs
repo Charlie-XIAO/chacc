@@ -428,7 +428,7 @@ impl<'a> Tokenizer<'a> {
         {
             Some(0) => {
                 self.push(
-                    TokenKind::Num(ch as _, Type::Int),
+                    TokenKind::Num(ch as _, Type::INT),
                     self.pos,
                     i - self.pos + 1,
                 );
@@ -615,42 +615,42 @@ fn parse_integer_literal(lexeme: &str) -> Option<(u64, Type)> {
 
     let ty = if radix == 10 {
         if l && u {
-            Type::ULong
+            Type::ULONG
         } else if l {
-            Type::Long
+            Type::LONG
         } else if u {
             if num > u32::MAX as _ {
-                Type::ULong
+                Type::ULONG
             } else {
-                Type::UInt
+                Type::UINT
             }
         } else if num > i32::MAX as _ {
-            Type::Long
+            Type::LONG
         } else {
-            Type::Int
+            Type::INT
         }
     } else if l && u {
-        Type::ULong
+        Type::ULONG
     } else if l {
         if num > i64::MAX as _ {
-            Type::ULong
+            Type::ULONG
         } else {
-            Type::Long
+            Type::LONG
         }
     } else if u {
         if num > u32::MAX as _ {
-            Type::ULong
+            Type::ULONG
         } else {
-            Type::UInt
+            Type::UINT
         }
     } else if num > i64::MAX as _ {
-        Type::ULong
+        Type::ULONG
     } else if num > u32::MAX as _ {
-        Type::Long
+        Type::LONG
     } else if num > i32::MAX as _ {
-        Type::UInt
+        Type::UINT
     } else {
-        Type::Int
+        Type::INT
     };
 
     Some((num, ty))
@@ -662,9 +662,9 @@ fn parse_integer_literal(lexeme: &str) -> Option<(u64, Type)> {
 /// valid floating-point literal.
 fn parse_flonum_literal(lexeme: &str, is_hex: bool) -> Option<(f64, Type)> {
     let (suffix_len, ty) = match lexeme.as_bytes().last() {
-        Some(b'f' | b'F') => (1, Type::Float),
-        Some(b'l' | b'L') => (1, Type::Double),
-        _ => (0, Type::Double),
+        Some(b'f' | b'F') => (1, Type::FLOAT),
+        Some(b'l' | b'L') => (1, Type::DOUBLE),
+        _ => (0, Type::DOUBLE),
     };
 
     let body = &lexeme[..lexeme.len() - suffix_len];
