@@ -1205,6 +1205,40 @@ fn test_macro() {
     f.line("#endif");
     f.assert(5, "m");
 
+    f.line("#if 1 // +1");
+    f.line("#if 0 // +2");
+    f.line("#if 1 // +3");
+    f.line("foo bar");
+    f.line("#endif // -3");
+    f.line("#endif // -2");
+    f.line("m = 3;");
+    f.line("#endif // -1");
+    f.assert(3, "m");
+
+    f.line("#if 1-1 // +1");
+    f.line("#if 1 // +2");
+    f.line("#endif // -2");
+    f.line("#if 1 // +3");
+    f.line("#else");
+    f.line("#endif // -3");
+    f.line("#if 0 // +4");
+    f.line("#else");
+    f.line("#endif // -4");
+    f.line("m = 2;");
+    f.line("#else");
+    f.line("#if 1 // +5");
+    f.line("m = 3;");
+    f.line("#endif // -5");
+    f.line("#endif // -1");
+    f.assert(3, "m");
+
+    f.line("#if 1");
+    f.line("m = 2;");
+    f.line("#else");
+    f.line("m = 3;");
+    f.line("#endif");
+    f.assert(2, "m");
+
     f.finish();
     f.run("macro");
 }

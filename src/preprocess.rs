@@ -13,14 +13,28 @@ use crate::source::Source;
 use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer};
 use crate::types::Type;
 
+/// The context of a conditional compilation block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondFrameContext {
+    Then,
+    Else,
+}
+
+/// A frame for conditional compilation.
+#[derive(Debug)]
+struct CondFrame {
+    offset: usize,
+    included: bool,
+    ctx: CondFrameContext,
+}
+
 /// Preprocessor for a C token stream.
 #[derive(Debug)]
 pub struct Preprocessor<'a, S: PreprocessorSink> {
     source: &'a Source,
     input: Peekable<IntoIter<Token>>,
     sink: &'a mut S,
-    /// Offsets of the stack of currently active "#if" inclusions.
-    if_stack: Vec<usize>,
+    conds: Vec<CondFrame>,
 }
 
 impl<'a, S> Preprocessor<'a, S>
@@ -33,7 +47,7 @@ where
             source,
             input: tokens.into_iter().peekable(),
             sink,
-            if_stack: Vec::new(),
+            conds: Vec::new(),
         }
     }
 
@@ -57,8 +71,8 @@ where
         Some(token.offset)
     }
 
-    /// Skip tokens until the matching "#endif".
-    fn skip_until_endif(&mut self) -> Result<()> {
+    /// Skip tokens until the matching "#else" or "#endif".
+    fn skip_until_else_or_endif(&mut self) -> Result<()> {
         let mut depth = 0;
 
         while let Some(token) = self.input.next() {
@@ -76,6 +90,15 @@ where
 
             if directive.is_ident("if") {
                 depth += 1;
+                continue;
+            }
+
+            if directive.is_ident("else") {
+                if depth == 0 {
+                    self.process_else(token.offset)?;
+                    return Ok(());
+                }
+                self.skip_line();
                 continue;
             }
 
@@ -120,10 +143,12 @@ where
             }
 
             if directive.is_ident("if") {
-                self.if_stack.push(token.offset);
-                if !self.process_if(token.offset)? {
-                    self.skip_until_endif()?;
-                }
+                self.process_if(token.offset)?;
+                continue;
+            }
+
+            if directive.is_ident("else") {
+                self.process_else(token.offset)?;
                 continue;
             }
 
@@ -134,17 +159,17 @@ where
 
             return Err(self
                 .source
-                .error_at(token.offset, "invalid preprocessor directive"));
+                .error_at(directive.offset, "invalid preprocessor directive"));
         }
 
-        if let Some(offset) = self.if_stack.last().copied() {
-            return Err(self.source.error_at(offset, "unterminated #if"));
+        if let Some(frame) = self.conds.last() {
+            return Err(self.source.error_at(frame.offset, "unterminated #if"));
         }
         Ok(())
     }
 
     /// Process an "#if" directive.
-    fn process_if(&mut self, offset: usize) -> Result<bool> {
+    fn process_if(&mut self, offset: usize) -> Result<()> {
         let mut tokens = Vec::new();
 
         while let Some(mut token) = self.next_if_mol() {
@@ -170,14 +195,47 @@ where
             follows_space: false,
         });
 
-        Ok(Parser::new(self.source, tokens, true)
-            .parse_constexpr()?
-            .into())
+        let val = Parser::new(self.source, tokens, true).parse_constexpr()?;
+        let included = bool::from(val);
+
+        self.conds.push(CondFrame {
+            offset,
+            included,
+            ctx: CondFrameContext::Then,
+        });
+
+        if !included {
+            self.skip_until_else_or_endif()?;
+        }
+        Ok(())
+    }
+
+    /// Process an "#else" directive.
+    fn process_else(&mut self, offset: usize) -> Result<()> {
+        let Some(frame) = self.conds.last_mut() else {
+            return Err(self.source.error_at(offset, "#else without #if"));
+        };
+        if frame.ctx == CondFrameContext::Else {
+            return Err(self.source.error_at(offset, "#else after #else"));
+        }
+
+        let included = frame.included;
+        frame.included = true;
+        frame.ctx = CondFrameContext::Else;
+
+        if let Some(offset) = self.skip_line() {
+            self.source.warn_at(offset, "extra tokens after #else");
+        }
+
+        if included {
+            self.skip_until_else_or_endif()?;
+        }
+        Ok(())
     }
 
     /// Process an "#endif" directive.
     fn process_endif(&mut self, offset: usize) -> Result<()> {
-        if self.if_stack.pop().is_none() {
+        if self.conds.pop().is_none() {
             return Err(self.source.error_at(offset, "#endif without #if"));
         }
         if let Some(offset) = self.skip_line() {
