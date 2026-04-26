@@ -145,9 +145,11 @@ struct ScopeFrame {
 pub struct Parser<'a> {
     source: &'a Source,
     tokens: Vec<Token>,
-    pos: usize,
+    /// Whether to follow preprocessor rules for certain constructs.
+    preprocess: bool,
 
     // Mutable states
+    pos: usize,
     types: TypeStore,
     locals: Vec<LocalVar>,
     functions: Vec<Function>,
@@ -164,10 +166,16 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a parser over a token stream.
-    pub fn new(source: &'a Source, tokens: Vec<Token>) -> Self {
+    pub fn new(source: &'a Source, tokens: Vec<Token>, preprocess: bool) -> Self {
+        debug_assert!(
+            tokens.last().is_some_and(|t| t.is_eof()),
+            "token stream must end with an EOF sentinel",
+        );
+
         Self {
             source,
             tokens,
+            preprocess,
             pos: 0,
             types: TypeStore::default(),
             locals: Vec::new(),
@@ -1222,7 +1230,7 @@ impl<'a> Parser<'a> {
             }
 
             self.push_scope_ident(name.to_smolstr(), OrdinaryIdent::Enumerator(val));
-            val = val.add(ConstValue::int(1, val.ty()), val.ty());
+            val = val.add(ConstValue::int(1, val.ty), val.ty);
         }
 
         let ty = Type::Enum;
@@ -2387,14 +2395,12 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct(">") {
                 self.advance();
-                // Reuse < with flipped operands
                 node = Node::binary(BinaryOp::Lt, self.parse_shift()?, node, offset);
                 continue;
             }
 
             if self.current().is_punct(">=") {
                 self.advance();
-                // Reuse <= with flipped operands
                 node = Node::binary(BinaryOp::Le, self.parse_shift()?, node, offset);
                 continue;
             }
@@ -2492,7 +2498,7 @@ impl<'a> Parser<'a> {
     fn parse_cast(&mut self) -> Result<Node> {
         let offset = self.current().offset;
 
-        if self.current().is_punct("(") {
+        if !self.preprocess && self.current().is_punct("(") {
             let pos = self.pos;
             self.advance();
 
@@ -2518,7 +2524,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <unary> ::=
-    ///   ("+" | "-" | "*" | "&" | "!" | "~") <cast>
+    ///   ("+" | "-" | "&" | "*" | "!" | "~") <cast>
     ///   | ("++" | "--") <unary>
     ///   | <postfix>
     /// ```
@@ -2535,12 +2541,12 @@ impl<'a> Parser<'a> {
             return Ok(Node::neg(self.parse_cast()?, offset));
         }
 
-        if self.current().is_punct("&") {
+        if !self.preprocess && self.current().is_punct("&") {
             self.advance();
             return Ok(Node::addr(self.parse_cast()?, offset));
         }
 
-        if self.current().is_punct("*") {
+        if !self.preprocess && self.current().is_punct("*") {
             self.advance();
             return Ok(Node::deref(self.parse_cast()?, offset));
         }
@@ -2555,21 +2561,25 @@ impl<'a> Parser<'a> {
             return Ok(Node::bit_not(self.parse_cast()?, offset));
         }
 
-        if self.current().is_punct("++") {
+        if !self.preprocess && self.current().is_punct("++") {
             self.advance();
             let unary = self.parse_unary()?;
             let binary = self.new_add(unary, Node::num(1, Type::INT, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
-        if self.current().is_punct("--") {
+        if !self.preprocess && self.current().is_punct("--") {
             self.advance();
             let unary = self.parse_unary()?;
             let binary = self.new_sub(unary, Node::num(1, Type::INT, offset), offset)?;
             return self.new_compound_assign(binary, offset);
         }
 
-        self.parse_postfix()
+        if self.preprocess {
+            self.parse_primary()
+        } else {
+            self.parse_postfix()
+        }
     }
 
     /// ```bnf
@@ -2674,18 +2684,28 @@ impl<'a> Parser<'a> {
             self.advance();
 
             if self.current().is_punct("{") {
+                if self.preprocess {
+                    return Err(self.error_current(
+                        "statement expression is not valid in preprocessor expressions",
+                    ));
+                }
+
                 self.advance();
                 let body = self.parse_compound_stmt()?;
                 self.skip_punct(")")?;
                 return Ok(Node::stmt_expr(body, offset));
             }
 
-            let node = self.parse_expr()?;
+            let node = if self.preprocess {
+                self.parse_conditional()?
+            } else {
+                self.parse_expr()?
+            };
             self.skip_punct(")")?;
             return Ok(node);
         }
 
-        if self.current().is_keyword(Keyword::Sizeof) {
+        if !self.preprocess && self.current().is_keyword(Keyword::Sizeof) {
             self.advance();
 
             if self.current().is_punct("(") {
@@ -2714,7 +2734,7 @@ impl<'a> Parser<'a> {
             return Ok(Node::num(size, Type::ULONG, offset));
         }
 
-        if self.current().is_keyword(Keyword::Alignof) {
+        if !self.preprocess && self.current().is_keyword(Keyword::Alignof) {
             self.advance();
 
             if self.current().is_punct("(") {
@@ -2744,6 +2764,10 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(name) = self.current().as_ident() {
+            debug_assert!(
+                !self.preprocess,
+                "idents should not leak here in preprocessing mode",
+            );
             self.advance();
 
             let node = match self.find_ident(&name) {
@@ -2755,7 +2779,7 @@ impl<'a> Parser<'a> {
                 },
                 Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
                 Some(OrdinaryIdent::Enumerator(val)) => {
-                    Node::num(val.bits(), val.ty().into(), offset)
+                    Node::num(val.bits(), val.ty.into(), offset)
                 },
                 _ if self.current().is_punct("(") => {
                     return Err(self
@@ -2764,10 +2788,17 @@ impl<'a> Parser<'a> {
                 },
                 _ => return Err(self.source.error_at(offset, "undefined identifier")),
             };
+
             return Ok(node);
         }
 
         if let Some(content) = self.current().as_str() {
+            if self.preprocess {
+                return Err(
+                    self.error_current("string literal is not valid in preprocessor expressions")
+                );
+            }
+
             let ty = self.types.array(Type::CHAR, Some(content.len()));
             let label = self.unique_label();
             let global_id = self.create_global(
@@ -2790,6 +2821,12 @@ impl<'a> Parser<'a> {
         }
 
         if let Some((num, ty)) = self.current().as_flonum() {
+            if self.preprocess {
+                return Err(self.error_current(
+                    "floating-point constant is not valid in preprocessor expressions",
+                ));
+            }
+
             self.advance();
             return Ok(Node::flonum(num, ty, offset));
         }
@@ -2914,9 +2951,14 @@ impl<'a> Parser<'a> {
     ///
     /// Semantically, not every conditional expression is a valid constant
     /// expression, and that restriction is forced by [`Self::eval`].
-    fn parse_constexpr(&mut self) -> Result<ConstValue> {
+    pub fn parse_constexpr(&mut self) -> Result<ConstValue> {
         let mut node = self.parse_conditional()?;
-        self.eval(&mut node)
+        let val = self.eval(&mut node)?;
+
+        if self.preprocess && !self.current().is_eof() {
+            return Err(self.error_current("extraneous tokens"));
+        }
+        Ok(val)
     }
 
     /// Enter a new variable scope.
@@ -4065,7 +4107,13 @@ impl<'a> Parser<'a> {
                     self.eval(else_expr)?
                 }
             },
-            NodeKind::Cast(expr) => self.eval(expr)?.cast(ty),
+            NodeKind::Cast(expr) => {
+                debug_assert!(
+                    !self.preprocess,
+                    "casts should not appear in preprocessing mode",
+                );
+                self.eval(expr)?.cast(ty)
+            },
             NodeKind::Dummy => unreachable!(),
             _ => {
                 return Err(self
@@ -4109,7 +4157,7 @@ impl<'a> Parser<'a> {
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
                         | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
-                            if rhs.ty().is_flonum() {
+                            if rhs.ty.is_flonum() {
                                 return Err(self
                                     .source
                                     .error_at(node.offset, "invalid initializer"));
@@ -4123,7 +4171,7 @@ impl<'a> Parser<'a> {
                             GlobalInitValue::Num(lhs.sub(rhs, const_ty))
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
-                            if rhs.ty().is_flonum() {
+                            if rhs.ty.is_flonum() {
                                 return Err(self
                                     .source
                                     .error_at(node.offset, "invalid initializer"));

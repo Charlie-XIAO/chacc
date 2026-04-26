@@ -57,6 +57,26 @@ impl ArithType {
             _ => None,
         }
     }
+
+    fn coerce(self, other: Self) -> Self {
+        if matches!(self, Self::Double) || matches!(other, Self::Double) {
+            return Self::Double;
+        }
+        if matches!(self, Self::Float) || matches!(other, Self::Float) {
+            return Self::Float;
+        }
+
+        let lhs = self.promote_int().unwrap_or(self);
+        let rhs = other.promote_int().unwrap_or(other);
+
+        match lhs.size().cmp(&rhs.size()) {
+            Ordering::Less => return rhs,
+            Ordering::Greater => return lhs,
+            Ordering::Equal => {},
+        }
+
+        if rhs.is_unsigned() { rhs } else { lhs }
+    }
 }
 
 /// Dispatch methods on [`ArithType`].
@@ -77,13 +97,16 @@ macro_rules! impl_scalar_type {
             pub const FLOAT: Self = Self::Arith(ArithType::Float);
             pub const DOUBLE: Self = Self::Arith(ArithType::Double);
 
+            const fn enum_as_int(self) -> Self {
+                match self {
+                    $(Self::$enum_ty => Self::INT,)?
+                    _ => self,
+                }
+            }
+
             /// Return whether this is a signed integer type.
             pub const fn is_signed(self) -> bool {
-                match self {
-                    Self::Arith(arith) => arith.is_signed(),
-                    $(Self::$enum_ty => true,)?
-                    _ => false,
-                }
+                matches!(self.enum_as_int(), Self::Arith(arith) if arith.is_signed())
             }
 
             /// Return whether this is an unsigned integer type.
@@ -120,12 +143,21 @@ macro_rules! impl_scalar_type {
             ///
             /// [1]: https://en.cppreference.com/w/c/language/conversion.html#Integer_promotions
             pub const fn promote_int(self) -> Option<Self> {
-                match self {
+                match self.enum_as_int() {
                     Self::Arith(arith) => match arith.promote_int() {
                         Some(promoted) => Some(Self::Arith(promoted)),
                         None => None,
                     },
-                    $(Self::$enum_ty => Some(Self::INT),)?
+                    _ => None,
+                }
+            }
+
+            /// Coerce with another type via [usual arithmetic conversions][1].
+            ///
+            /// [1]: https://en.cppreference.com/cpp/language/usual_arithmetic_conversions
+            pub fn coerce(self, other: Self) -> Option<Self> {
+                match (self.enum_as_int(), other.enum_as_int()) {
+                    (Self::Arith(lhs), Self::Arith(rhs)) => Some(Self::Arith(lhs.coerce(rhs))),
                     _ => None,
                 }
             }
@@ -148,6 +180,18 @@ impl ConstType {
         match self {
             Self::Arith(arith) => arith.size() * 8,
             Self::Ptr => 64,
+        }
+    }
+}
+
+impl TryFrom<Type> for ConstType {
+    type Error = ();
+
+    fn try_from(ty: Type) -> Result<Self, Self::Error> {
+        match ty {
+            Type::Arith(arith) => Ok(Self::Arith(arith)),
+            Type::Enum => Ok(Self::INT),
+            _ => Err(()),
         }
     }
 }
@@ -492,47 +536,6 @@ impl TypeStore {
         }
     }
 
-    /// Coerce two operand types for a validated binary/conditional operation.
-    ///
-    /// This assumes the caller has already decided that [usual arithmetic
-    /// conversion][1] is the right operation. It does not try to enforce all
-    /// pointer/function compatibility rules by itself.
-    ///
-    /// [1]: https://en.cppreference.com/cpp/language/usual_arithmetic_conversions
-    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
-        if self.is_func(lhs) {
-            return self.ptr(lhs);
-        }
-        if self.is_func(rhs) {
-            return self.ptr(rhs);
-        }
-
-        if let Some(base) = self.base(lhs).or_else(|| self.base(rhs)) {
-            return self.ptr(base);
-        }
-
-        if matches!(lhs, Type::DOUBLE) || matches!(rhs, Type::DOUBLE) {
-            return Type::DOUBLE;
-        }
-        if matches!(lhs, Type::FLOAT) || matches!(rhs, Type::FLOAT) {
-            return Type::FLOAT;
-        }
-
-        let lhs = lhs.promote_int().unwrap_or(lhs);
-        let rhs = rhs.promote_int().unwrap_or(rhs);
-
-        match self.size(lhs).cmp(&self.size(rhs)) {
-            Ordering::Less => return rhs,
-            Ordering::Greater => return lhs,
-            _ => {},
-        }
-
-        if rhs.is_unsigned() {
-            return rhs;
-        }
-        lhs
-    }
-
     /// Merge two declarations of the same type.
     ///
     /// This method returns `None` except for the following supported cases:
@@ -558,13 +561,32 @@ impl TypeStore {
         }
     }
 
+    /// Coerce two operand types via [usual arithmetic conversions][1].
+    ///
+    /// This method does not try to enforce any pointer/function compatibility
+    /// rules. It is the caller's responsibility to decide that [usual
+    /// arithmetic conversions][1] is the right thing to do.
+    ///
+    /// [1]: https://en.cppreference.com/cpp/language/usual_arithmetic_conversions
+    pub fn coerce(&mut self, lhs: Type, rhs: Type) -> Type {
+        if self.is_func(lhs) {
+            return self.ptr(lhs);
+        }
+        if self.is_func(rhs) {
+            return self.ptr(rhs);
+        }
+
+        if let Some(base) = self.base(lhs).or_else(|| self.base(rhs)) {
+            return self.ptr(base);
+        }
+
+        lhs.coerce(rhs).unwrap_or(lhs)
+    }
+
     /// Convert a [`Type`] to a [`ConstType`] if applicable.
     pub fn to_const(&self, ty: Type) -> Option<ConstType> {
-        match ty {
-            Type::Enum => Some(ConstType::INT),
-            Type::Arith(arith) => Some(ConstType::Arith(arith)),
-            _ if self.is_ptr(ty) => Some(ConstType::Ptr),
-            _ => None,
-        }
+        ConstType::try_from(ty)
+            .ok()
+            .or_else(|| self.is_ptr(ty).then_some(ConstType::Ptr))
     }
 }

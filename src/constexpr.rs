@@ -34,7 +34,7 @@ impl Eq for RawConstValue {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConstValue {
     raw: RawConstValue,
-    ty: ConstType,
+    pub ty: ConstType,
 }
 
 impl ConstValue {
@@ -75,11 +75,6 @@ impl ConstValue {
             raw: RawConstValue::Float(value),
             ty,
         }
-    }
-
-    /// Return the semantic type of the constant.
-    pub fn ty(self) -> ConstType {
-        self.ty
     }
 
     /// Return the storage bit-pattern of the constant.
@@ -222,7 +217,7 @@ impl ConstValue {
         }
 
         Some(Self::int(
-            if self.ty().is_signed() {
+            if self.ty.is_signed() {
                 self.int_bits_as_signed()
                     .wrapping_div(other.int_bits_as_signed()) as u64
             } else {
@@ -246,7 +241,7 @@ impl ConstValue {
         }
 
         Some(Self::int(
-            if self.ty().is_signed() {
+            if self.ty.is_signed() {
                 self.int_bits_as_signed()
                     .wrapping_rem(other.int_bits_as_signed()) as u64
             } else {
@@ -312,7 +307,7 @@ impl ConstValue {
         debug_assert_ne!(other.ty, ConstType::Ptr);
         debug_assert_ne!(ty, ConstType::Ptr);
 
-        let bits = if self.ty().is_signed() {
+        let bits = if self.ty.is_signed() {
             self.int_bits_as_signed()
                 .wrapping_shr(other.int_bits_as_signed() as _) as u64
         } else {
@@ -324,7 +319,7 @@ impl ConstValue {
 
     pub fn eq(self, other: ConstValue, ty: ConstType) -> Self {
         Self::bool(
-            if self.ty().is_flonum() || other.ty().is_flonum() {
+            if self.ty.is_flonum() || other.ty.is_flonum() {
                 f64::from(self) == f64::from(other)
             } else {
                 self.int_bits() == other.int_bits()
@@ -335,7 +330,7 @@ impl ConstValue {
 
     pub fn ne(self, other: ConstValue, ty: ConstType) -> Self {
         Self::bool(
-            if self.ty().is_flonum() || other.ty().is_flonum() {
+            if self.ty.is_flonum() || other.ty.is_flonum() {
                 f64::from(self) != f64::from(other)
             } else {
                 self.int_bits() != other.int_bits()
@@ -346,9 +341,9 @@ impl ConstValue {
 
     pub fn lt(self, other: ConstValue, ty: ConstType) -> Self {
         Self::bool(
-            if self.ty().is_flonum() || other.ty().is_flonum() {
+            if self.ty.is_flonum() || other.ty.is_flonum() {
                 f64::from(self) < f64::from(other)
-            } else if self.ty().is_signed() {
+            } else if self.ty.is_signed() {
                 self.int_bits_as_signed() < other.int_bits_as_signed()
             } else {
                 self.int_bits() < other.int_bits()
@@ -359,9 +354,9 @@ impl ConstValue {
 
     pub fn le(self, other: ConstValue, ty: ConstType) -> Self {
         Self::bool(
-            if self.ty().is_flonum() || other.ty().is_flonum() {
+            if self.ty.is_flonum() || other.ty.is_flonum() {
                 f64::from(self) <= f64::from(other)
-            } else if self.ty().is_signed() {
+            } else if self.ty.is_signed() {
                 self.int_bits_as_signed() <= other.int_bits_as_signed()
             } else {
                 self.int_bits() <= other.int_bits()

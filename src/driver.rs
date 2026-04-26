@@ -40,7 +40,7 @@ fn cc1<W: Write>(input: &Path, out: &mut W, preprocess_only: bool) -> Result<()>
     let mut sink = PreprocessedTokens::default();
     Preprocessor::new(&source, tokens, &mut sink).preprocess(true)?;
     let tokens = sink.into_parser_tokens();
-    let program = Parser::new(&source, tokens).parse_program()?;
+    let program = Parser::new(&source, tokens, false).parse_program()?;
     Codegen::new(&source, out)?.generate(program)?;
     Ok(())
 }

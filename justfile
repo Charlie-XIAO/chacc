@@ -37,7 +37,7 @@ compile code:
     OUTPUT="tmp_${ID}"
     printf '%s' {{ quote(code) }} | cargo run --quiet -- -o "${OUTPUT}" -
     set +e
-    "./${BIN_FILE}"
+    "./${OUTPUT}"
     echo $?
     set -e
     echo "Output: ${OUTPUT}"

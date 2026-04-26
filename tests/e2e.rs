@@ -1191,6 +1191,20 @@ fn test_macro() {
     f.assert(5, "include1");
     f.assert(7, "include2");
 
+    f.line("#if 0");
+    f.line("#include \"/no/such/file\"");
+    f.line("#invalid directive");
+    f.assert(0, "1");
+    f.line("#if nested");
+    f.line("#endif // nested");
+    f.line("#endif");
+
+    f.line("int m = 0;");
+    f.line("#if 1");
+    f.line("m = 5;");
+    f.line("#endif");
+    f.assert(5, "m");
+
     f.finish();
     f.run("macro");
 }
