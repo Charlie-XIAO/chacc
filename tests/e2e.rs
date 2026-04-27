@@ -1239,6 +1239,46 @@ fn test_macro() {
     f.line("#endif");
     f.assert(2, "m");
 
+    f.line("#if 1");
+    f.line("m = 2;");
+    f.line("#else");
+    f.line("m = 3;");
+    f.line("#endif");
+    f.assert(2, "m");
+
+    f.line("#if 0");
+    f.line("m = 1;");
+    f.line("#elif 0");
+    f.line("m = 2;");
+    f.line("#elif 3+5");
+    f.line("m = 3;");
+    f.line("#elif 1*5");
+    f.line("m = 4;");
+    f.line("#endif");
+    f.assert(3, "m");
+
+    f.line("#if 1+5");
+    f.line("m = 1;");
+    f.line("#elif 1");
+    f.line("m = 2;");
+    f.line("#elif 3");
+    f.line("m = 2;");
+    f.line("#endif");
+    f.assert(1, "m");
+
+    f.line("#if 0 // +1");
+    f.line("m = 1;");
+    f.line("#elif 1");
+    f.line("#if 1 // +2");
+    f.line("m = 2;");
+    f.line("#else");
+    f.line("m = 3;");
+    f.line("#endif // -2");
+    f.line("#else");
+    f.line("m = 5;");
+    f.line("#endif // -1");
+    f.assert(2, "m");
+
     f.finish();
     f.run("macro");
 }

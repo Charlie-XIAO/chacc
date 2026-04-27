@@ -7,6 +7,7 @@ use std::vec::IntoIter;
 
 use smol_str::format_smolstr;
 
+use crate::constexpr::ConstValue;
 use crate::error::Result;
 use crate::parse::Parser;
 use crate::source::Source;
@@ -17,6 +18,7 @@ use crate::types::Type;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CondFrameContext {
     Then,
+    Elif,
     Else,
 }
 
@@ -71,8 +73,8 @@ where
         Some(token.offset)
     }
 
-    /// Skip tokens until the matching "#else" or "#endif".
-    fn skip_until_else_or_endif(&mut self) -> Result<()> {
+    /// Skip tokens until the next matching "#else", "#elif", or "#endif".
+    fn skip_cond(&mut self) -> Result<()> {
         let mut depth = 0;
 
         while let Some(token) = self.input.next() {
@@ -90,6 +92,15 @@ where
 
             if directive.is_ident("if") {
                 depth += 1;
+                continue;
+            }
+
+            if directive.is_ident("elif") {
+                if depth == 0 {
+                    self.process_elif(token.offset)?;
+                    return Ok(());
+                }
+                self.skip_line();
                 continue;
             }
 
@@ -147,6 +158,11 @@ where
                 continue;
             }
 
+            if directive.is_ident("elif") {
+                self.process_elif(token.offset)?;
+                continue;
+            }
+
             if directive.is_ident("else") {
                 self.process_else(token.offset)?;
                 continue;
@@ -168,8 +184,11 @@ where
         Ok(())
     }
 
-    /// Process an "#if" directive.
-    fn process_if(&mut self, offset: usize) -> Result<()> {
+    /// Process a preprocessor expression and return its value.
+    ///
+    /// If there is no tokens remaining in the current logical line, this
+    /// returns `Ok(None)`.
+    fn process_constexpr(&mut self) -> Result<Option<ConstValue>> {
         let mut tokens = Vec::new();
 
         while let Some(mut token) = self.next_if_mol() {
@@ -182,9 +201,7 @@ where
         }
 
         let Some(token) = tokens.last() else {
-            return Err(self
-                .source
-                .error_at(offset, "bare #if without an expression"));
+            return Ok(None);
         };
 
         tokens.push(Token {
@@ -196,8 +213,18 @@ where
         });
 
         let val = Parser::new(self.source, tokens, true).parse_constexpr()?;
-        let included = bool::from(val);
+        Ok(Some(val))
+    }
 
+    /// Process an "#if" directive.
+    fn process_if(&mut self, offset: usize) -> Result<()> {
+        let Some(val) = self.process_constexpr()? else {
+            return Err(self
+                .source
+                .error_at(offset, "bare #if without an expression"));
+        };
+
+        let included = val.into();
         self.conds.push(CondFrame {
             offset,
             included,
@@ -205,7 +232,39 @@ where
         });
 
         if !included {
-            self.skip_until_else_or_endif()?;
+            self.skip_cond()?;
+        }
+        Ok(())
+    }
+
+    /// Process an "#elif" directive.
+    fn process_elif(&mut self, offset: usize) -> Result<()> {
+        let Some(mut frame) = self.conds.pop() else {
+            return Err(self.source.error_at(offset, "#elif without #if"));
+        };
+        if frame.ctx == CondFrameContext::Else {
+            return Err(self.source.error_at(offset, "#elif after #else"));
+        }
+
+        frame.ctx = CondFrameContext::Elif;
+        if frame.included {
+            self.conds.push(frame);
+            self.skip_cond()?;
+            return Ok(());
+        }
+
+        let Some(val) = self.process_constexpr()? else {
+            return Err(self
+                .source
+                .error_at(offset, "bare #elif without an expression"));
+        };
+
+        let included = val.into();
+        frame.included = included;
+        self.conds.push(frame);
+
+        if !included {
+            self.skip_cond()?;
         }
         Ok(())
     }
@@ -228,7 +287,7 @@ where
         }
 
         if included {
-            self.skip_until_else_or_endif()?;
+            self.skip_cond()?;
         }
         Ok(())
     }
