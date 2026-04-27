@@ -1294,6 +1294,12 @@ fn test_macro() {
     f.line("#define END )");
     f.line("ASSERT_ 5, if, five END;");
 
+    f.line("#undef ASSERT_");
+    f.line("#undef if");
+    f.line("#undef five");
+    f.line("#undef END");
+    f.line("if (0);");
+
     f.finish();
     f.run("macro");
 }

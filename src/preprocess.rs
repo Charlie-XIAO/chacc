@@ -86,6 +86,7 @@ where
                     for (old, new) in old_body.iter().zip(&body) {
                         if self.source.slice(old.offset, old.len)?
                             != self.source.slice(new.offset, new.len)?
+                            || old.follows_space != new.follows_space
                         {
                             same = false;
                             break;
@@ -224,6 +225,11 @@ where
                 continue;
             }
 
+            if directive.is_ident("undef") {
+                self.process_undef(token.offset)?;
+                continue;
+            }
+
             if directive.is_ident("if") {
                 self.process_if(token.offset)?;
                 continue;
@@ -310,6 +316,27 @@ where
 
         let tokens = self.line();
         self.define_macro(name, tokens, token.offset)?;
+        Ok(())
+    }
+
+    /// Process an "#undef" directive.
+    fn process_undef(&mut self, offset: usize) -> Result<()> {
+        let Some(token) = self.next_if_mol() else {
+            return Err(self
+                .source
+                .error_at(offset, "no macro name given in #undef"));
+        };
+
+        let Some(name) = token.as_ident() else {
+            return Err(self
+                .source
+                .error_at(token.offset, "macro names must be identifiers"));
+        };
+
+        self.macros.remove(&name);
+        if let Some(offset) = self.skip_line() {
+            self.source.warn_at(offset, "extra tokens after #undef");
+        }
         Ok(())
     }
 
