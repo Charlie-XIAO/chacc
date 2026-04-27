@@ -1,11 +1,11 @@
 //! A preprocessor for the C programming language.
 
+use std::collections::VecDeque;
 use std::io::Write;
-use std::iter::Peekable;
 use std::path::Path;
-use std::vec::IntoIter;
 
-use smol_str::format_smolstr;
+use rustc_hash::FxHashMap;
+use smol_str::{SmolStr, format_smolstr};
 
 use crate::constexpr::ConstValue;
 use crate::error::Result;
@@ -34,9 +34,10 @@ struct CondFrame {
 #[derive(Debug)]
 pub struct Preprocessor<'a, S: PreprocessorSink> {
     source: &'a Source,
-    input: Peekable<IntoIter<Token>>,
+    input: VecDeque<Token>,
     sink: &'a mut S,
     conds: Vec<CondFrame>,
+    macros: FxHashMap<SmolStr, Vec<Token>>,
 }
 
 impl<'a, S> Preprocessor<'a, S>
@@ -47,20 +48,81 @@ where
     pub fn new(source: &'a Source, tokens: Vec<Token>, sink: &'a mut S) -> Self {
         Self {
             source,
-            input: tokens.into_iter().peekable(),
+            input: tokens.into(),
             sink,
             conds: Vec::new(),
+            macros: Default::default(),
         }
-    }
-
-    /// Convenience method to emit a token from the original source.
-    fn emit(&mut self, token: Token) -> Result<()> {
-        self.sink.emit(self.source, token)
     }
 
     /// Consume the next token if it is in the middle of a logical line.
     fn next_if_mol(&mut self) -> Option<Token> {
-        self.input.next_if(|token| !token.at_bol && !token.is_eof())
+        self.input
+            .pop_front_if(|token| !token.at_bol && !token.is_eof())
+    }
+
+    /// Consume the rest of the current logical line.
+    fn line(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        while let Some(token) = self.next_if_mol() {
+            tokens.push(token);
+        }
+        tokens
+    }
+
+    /// Define a macro.
+    fn define_macro(&mut self, name: SmolStr, body: Vec<Token>, offset: usize) -> Result<()> {
+        use std::collections::hash_map::Entry;
+
+        match self.macros.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert(body);
+            },
+            Entry::Occupied(mut entry) => {
+                let mut same = true;
+
+                let old_body = entry.get();
+                if old_body.len() == body.len() {
+                    for (old, new) in old_body.iter().zip(&body) {
+                        if self.source.slice(old.offset, old.len)?
+                            != self.source.slice(new.offset, new.len)?
+                        {
+                            same = false;
+                            break;
+                        }
+                    }
+                } else {
+                    same = false;
+                }
+
+                if !same {
+                    self.source.warn_at(offset, "redefinition of macro");
+                    entry.insert(body);
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Expand a macro at the current position.
+    ///
+    /// Returns whether the given token indeed corresponds to a defined macro.
+    /// If not, this returns `false` and does nothing.
+    fn expand_macro(&mut self, token: &Token) -> bool {
+        let Some(name) = token.as_ident() else {
+            return false;
+        };
+        let Some(body) = self.macros.get(&name).cloned() else {
+            return false;
+        };
+
+        // TODO: Replace with VecDeque::prepend once it is stable
+        self.input.reserve(body.len());
+        for token in body.into_iter().rev() {
+            self.input.push_front(token);
+        }
+        true
     }
 
     /// Skip extra tokens in the current logical line, if any.
@@ -77,7 +139,7 @@ where
     fn skip_cond(&mut self) -> Result<()> {
         let mut depth = 0;
 
-        while let Some(token) = self.input.next() {
+        while let Some(token) = self.input.pop_front() {
             if token.is_eof() {
                 return Ok(());
             }
@@ -131,16 +193,20 @@ where
 
     /// Preprocess the token stream.
     pub fn preprocess(mut self, emit_eof: bool) -> Result<()> {
-        while let Some(token) = self.input.next() {
+        while let Some(token) = self.input.pop_front() {
             if token.is_eof() {
                 if emit_eof {
-                    self.emit(token)?;
+                    self.sink.emit(self.source, token)?;
                 }
                 break;
             }
 
+            if self.expand_macro(&token) {
+                continue;
+            }
+
             if !(token.at_bol && token.is_punct("#")) {
-                self.emit(token)?;
+                self.sink.emit(self.source, token)?;
                 continue;
             }
 
@@ -150,6 +216,11 @@ where
 
             if directive.is_ident("include") {
                 self.process_include(token.offset)?;
+                continue;
+            }
+
+            if directive.is_ident("define") {
+                self.process_define(token.offset)?;
                 continue;
             }
 
@@ -184,30 +255,87 @@ where
         Ok(())
     }
 
+    /// Process an "#include" directive.
+    fn process_include(&mut self, offset: usize) -> Result<()> {
+        let Some(token) = self.next_if_mol() else {
+            return Err(self
+                .source
+                .error_at(offset, "bare #include without a filename"));
+        };
+
+        let Some(content) = token.as_str() else {
+            return Err(self.source.error_at(token.offset, "expected a filename"));
+        };
+        let Some(content) = content.as_ref().strip_suffix(b"\0") else {
+            return Err(self.source.error_at(token.offset, "expected a filename"));
+        };
+
+        let path = std::str::from_utf8(content).map_err(|e| {
+            self.source
+                .error_at(token.offset, format_smolstr!("invalid filename: {e}"))
+        })?;
+
+        let path = self
+            .source
+            .path()
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path);
+
+        if let Some(offset) = self.skip_line() {
+            self.source.warn_at(offset, "extra tokens after #include");
+        }
+
+        // TODO: Make parent macros visible inside includes
+        let source = Source::new(&path)?;
+        let tokens = Tokenizer::new(&source).tokenize()?;
+        Preprocessor::new(&source, tokens, self.sink).preprocess(false)?;
+
+        Ok(())
+    }
+
+    /// Process a "#define" directive.
+    fn process_define(&mut self, offset: usize) -> Result<()> {
+        let Some(token) = self.next_if_mol() else {
+            return Err(self
+                .source
+                .error_at(offset, "no macro name given in #define"));
+        };
+
+        let Some(name) = token.as_ident() else {
+            return Err(self
+                .source
+                .error_at(token.offset, "macro names must be identifiers"));
+        };
+
+        let tokens = self.line();
+        self.define_macro(name, tokens, token.offset)?;
+        Ok(())
+    }
+
     /// Process a preprocessor expression and return its value.
     ///
     /// If there is no tokens remaining in the current logical line, this
     /// returns `Ok(None)`.
     fn process_constexpr(&mut self) -> Result<Option<ConstValue>> {
-        let mut tokens = Vec::new();
+        let mut tokens = self.line();
+        if tokens.is_empty() {
+            return Ok(None);
+        }
 
-        while let Some(mut token) = self.next_if_mol() {
+        for token in &mut tokens {
             if token.as_ident().is_some() {
                 // All identifiers are undefined in preprocessor expressions,
                 // and they are simply evaluated as 0
                 token.kind = TokenKind::Num(0, Type::INT);
             }
-            tokens.push(token);
         }
 
-        let Some(token) = tokens.last() else {
-            return Ok(None);
-        };
-
+        let last = tokens.last().unwrap();
         tokens.push(Token {
             kind: TokenKind::Eof,
             len: 0,
-            offset: token.offset + token.len,
+            offset: last.offset + last.len,
             at_bol: false,
             follows_space: false,
         });
@@ -299,43 +427,6 @@ where
         }
         if let Some(offset) = self.skip_line() {
             self.source.warn_at(offset, "extra tokens after #endif");
-        }
-        Ok(())
-    }
-
-    /// Process an "#include" directive.
-    fn process_include(&mut self, offset: usize) -> Result<()> {
-        let Some(token) = self.next_if_mol() else {
-            return Err(self
-                .source
-                .error_at(offset, "bare #include without a filename"));
-        };
-
-        let Some(content) = token.as_str() else {
-            return Err(self.source.error_at(token.offset, "expected a filename"));
-        };
-        let Some(content) = content.as_ref().strip_suffix(b"\0") else {
-            return Err(self.source.error_at(token.offset, "expected a filename"));
-        };
-
-        let path = std::str::from_utf8(content).map_err(|e| {
-            self.source
-                .error_at(token.offset, format_smolstr!("invalid filename: {e}"))
-        })?;
-
-        let path = self
-            .source
-            .path()
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path);
-
-        let source = Source::new(&path)?;
-        let tokens = Tokenizer::new(&source).tokenize()?;
-        Preprocessor::new(&source, tokens, self.sink).preprocess(false)?;
-
-        if let Some(offset) = self.skip_line() {
-            self.source.warn_at(offset, "extra tokens after #include");
         }
         Ok(())
     }

@@ -114,10 +114,7 @@ impl Fixture {
     }
 
     fn finish(&mut self) {
-        self.line("  if (__n_failed > 0) {");
-        self.line("    return 1;");
-        self.line("  }");
-        self.line("  return 0;");
+        self.line("  return __n_failed != 0;");
         self.line("}");
     }
 
@@ -1278,6 +1275,24 @@ fn test_macro() {
     f.line("m = 5;");
     f.line("#endif // -1");
     f.assert(2, "m");
+
+    f.line("int M1 = 5;");
+    f.line("#define M1 3");
+    f.assert(3, "M1");
+    f.line("#define M1 4");
+    f.assert(4, "M1");
+
+    f.line("#define M2 3+4+");
+    f.assert(12, "M2 5");
+
+    f.line("#define M3 3+4");
+    f.assert(23, "M3*5");
+
+    f.line("#define ASSERT_ assert(");
+    f.line("#define if 5");
+    f.line("#define five \"5\"");
+    f.line("#define END )");
+    f.line("ASSERT_ 5, if, five END;");
 
     f.finish();
     f.run("macro");

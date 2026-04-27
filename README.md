@@ -4,6 +4,6 @@
 
 ## Setup
 
-- Install [Rust](https://rust-lang.org/tools/install/) toolchain (recommended 1.90+)
+- Install [Rust](https://rust-lang.org/tools/install/) toolchain (1.93+)
 - (Optional) Install [just](https://just.systems/man/en/) task runner
 - (Optional) Install [cargo-nextest](https://nexte.st/docs/installation/pre-built-binaries/) test runner

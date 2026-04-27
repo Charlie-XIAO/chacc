@@ -134,7 +134,7 @@ impl ConstValue {
         }
 
         let bits = match self.raw {
-            RawConstValue::Int(bits) if self.ty.is_signed() => self.int_bits_as_signed() as u64,
+            RawConstValue::Int(_) if self.ty.is_signed() => self.int_bits_as_signed() as u64,
             RawConstValue::Int(bits) => bits,
             RawConstValue::Float(value) if ty.is_signed() => value as i64 as u64,
             RawConstValue::Float(value) => value as u64,
