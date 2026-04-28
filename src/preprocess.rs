@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
@@ -13,6 +14,7 @@ use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer};
 use crate::types::Type;
+use crate::utils::VecDequeExt;
 
 /// The context of a conditional compilation block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,12 @@ where
             conds: Vec::new(),
             macros: Default::default(),
         }
+    }
+
+    /// Emit a token to the sink, with preprocessor-only metadata cleared.
+    fn emit(&mut self, mut token: Token) -> Result<()> {
+        token.hideset = None;
+        self.sink.emit(self.source_map, token)
     }
 
     /// Consume the next token if it is in the middle of a logical line.
@@ -103,6 +111,44 @@ where
         }
 
         Ok(())
+    }
+
+    /// Try to expand the given token as a macro.
+    ///
+    /// If the given token is not a macro that should be expanded, this returns
+    /// `None`.
+    fn try_expand_macro(&self, token: &Token) -> Option<Vec<Token>> {
+        let name = token.as_ident()?;
+
+        // If this token's hideset already contains this macro name, do not
+        // expand it again; this is how C preprocessor prevents repeated
+        // recursive re-expansion of the same macro on the same token lineage
+        if token
+            .hideset
+            .as_ref()
+            .is_some_and(|hideset| hideset.contains(&name))
+        {
+            return None;
+        }
+
+        let mut body = self.macros.get(&name)?.clone();
+
+        // Shared hideset base for all tokens in the macro body; this includes
+        // not only this macro, but also inherits the triggering token's hideset
+        // so the output tokens retain the prior macro-expansion history
+        let mut base = token.hideset.clone().unwrap_or_default();
+        Rc::make_mut(&mut base).insert(name.clone());
+
+        for token in &mut body {
+            if let Some(mut hideset) = token.hideset.take() {
+                Rc::make_mut(&mut hideset).extend(base.iter().cloned());
+                token.hideset = Some(hideset);
+            } else {
+                token.hideset = Some(base.clone());
+            }
+        }
+
+        Some(body)
     }
 
     /// Skip extra tokens in the current logical line, if any.
@@ -176,20 +222,18 @@ where
         while let Some(token) = self.input.pop_front() {
             if token.is_eof() {
                 if emit_eof {
-                    self.sink.emit(self.source_map, token)?;
+                    self.emit(token)?;
                 }
                 break;
             }
 
-            if let Some(name) = token.as_ident()
-                && let Some(body) = self.macros.get(&name)
-            {
-                deque_prepend(&mut self.input, body.clone());
+            if let Some(body) = self.try_expand_macro(&token) {
+                self.input.prepend_compat(body);
                 continue;
             }
 
             if !(token.at_bol && token.is_punct("#")) {
-                self.sink.emit(self.source_map, token)?;
+                self.emit(token)?;
                 continue;
             }
 
@@ -333,10 +377,8 @@ where
 
         let mut line = VecDeque::from(self.line());
         while let Some(mut token) = line.pop_front() {
-            if let Some(name) = token.as_ident()
-                && let Some(body) = self.macros.get(&name)
-            {
-                deque_prepend(&mut line, body.clone());
+            if let Some(body) = self.try_expand_macro(&token) {
+                line.prepend_compat(body);
                 continue;
             }
 
@@ -362,6 +404,7 @@ where
             },
             at_bol: false,
             follows_space: false,
+            hideset: None,
         });
 
         let val = Parser::new(self.source_map, tokens, true).parse_constexpr()?;
@@ -517,15 +560,5 @@ fn convert_keywords(tokens: &mut [Token]) {
             continue;
         };
         token.kind = TokenKind::Keyword(keyword);
-    }
-}
-
-/// Workaround for [`VecDeque::prepend`].
-///
-/// TODO: Remove once it is stable.
-fn deque_prepend<T>(deque: &mut VecDeque<T>, items: Vec<T>) {
-    deque.reserve(items.len());
-    for token in items.into_iter().rev() {
-        deque.push_front(token);
     }
 }

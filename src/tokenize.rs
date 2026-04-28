@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use rustc_hash::FxHashSet;
 use smol_str::SmolStr;
 
 use crate::error::Result;
@@ -82,6 +83,12 @@ pub struct Token {
     pub at_bol: bool,
     /// Whether this token follows a space.
     pub follows_space: bool,
+    /// Macro names suppressed for this token during preprocessing.
+    ///
+    /// This is used by the preprocessor to prevent recursive re-expansion of
+    /// macros. It should be cleared to free up memory when the preprocessing
+    /// stage completes.
+    pub hideset: Option<Rc<FxHashSet<SmolStr>>>,
 }
 
 impl Token {
@@ -210,6 +217,7 @@ impl<'a> Tokenizer<'a> {
             },
             at_bol: self.at_bol,
             follows_space: self.follows_space,
+            hideset: None,
         });
         self.at_bol = false;
         self.follows_space = false;

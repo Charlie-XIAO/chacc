@@ -1315,6 +1315,18 @@ fn test_macro() {
     f.line("#endif");
     f.assert(5, "m");
 
+    f.line("int M5 = 6;");
+    f.line("#define M5 M5 + 3");
+    f.assert(9, "M5");
+
+    f.line("#define M6 M5 + 3");
+    f.assert(12, "M6");
+
+    f.line("int M7 = 3;");
+    f.line("#define M7 M8 * 5");
+    f.line("#define M8 M7 + 2");
+    f.assert(13, "M7");
+
     f.finish();
     f.run("macro");
 }

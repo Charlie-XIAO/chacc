@@ -1,5 +1,7 @@
 //! Shared utilities across multiple components.
 
+use std::collections::VecDeque;
+
 /// The maximum number of function arguments supported.
 pub const MAX_FUNC_PARAMS: usize = 6;
 
@@ -21,5 +23,22 @@ pub const fn align_to(n: u64, align: u64) -> u64 {
         (n + align - 1) & !(align - 1)
     } else {
         n.div_ceil(align) * align
+    }
+}
+
+/// Extension trait for [`VecDeque`].
+pub trait VecDequeExt<T> {
+    /// Workaround for [`VecDeque::prepend`].
+    ///
+    /// TODO: Remove once it is stable.
+    fn prepend_compat(&mut self, items: Vec<T>);
+}
+
+impl<T> VecDequeExt<T> for VecDeque<T> {
+    fn prepend_compat(&mut self, items: Vec<T>) {
+        self.reserve(items.len());
+        for item in items.into_iter().rev() {
+            self.push_front(item);
+        }
     }
 }
