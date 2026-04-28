@@ -105,26 +105,6 @@ where
         Ok(())
     }
 
-    /// Expand a macro at the current position.
-    ///
-    /// Returns whether the given token indeed corresponds to a defined macro.
-    /// If not, this returns `false` and does nothing.
-    fn expand_macro(&mut self, token: &Token) -> bool {
-        let Some(name) = token.as_ident() else {
-            return false;
-        };
-        let Some(body) = self.macros.get(&name).cloned() else {
-            return false;
-        };
-
-        // TODO: Replace with VecDeque::prepend once it is stable
-        self.input.reserve(body.len());
-        for token in body.into_iter().rev() {
-            self.input.push_front(token);
-        }
-        true
-    }
-
     /// Skip extra tokens in the current logical line, if any.
     ///
     /// Returns the span of the first skipped token, if any. Returns `None` if
@@ -201,7 +181,10 @@ where
                 break;
             }
 
-            if self.expand_macro(&token) {
+            if let Some(name) = token.as_ident()
+                && let Some(body) = self.macros.get(&name)
+            {
+                deque_prepend(&mut self.input, body.clone());
                 continue;
             }
 
@@ -346,17 +329,27 @@ where
     /// If there is no tokens remaining in the current logical line, this
     /// returns `Ok(None)`.
     fn process_constexpr(&mut self) -> Result<Option<ConstValue>> {
-        let mut tokens = self.line();
-        if tokens.is_empty() {
-            return Ok(None);
-        }
+        let mut tokens = Vec::new();
 
-        for token in &mut tokens {
+        let mut line = VecDeque::from(self.line());
+        while let Some(mut token) = line.pop_front() {
+            if let Some(name) = token.as_ident()
+                && let Some(body) = self.macros.get(&name)
+            {
+                deque_prepend(&mut line, body.clone());
+                continue;
+            }
+
             if token.as_ident().is_some() {
                 // All identifiers are undefined in preprocessor expressions,
                 // and they are simply evaluated as 0
                 token.kind = TokenKind::Num(0, Type::INT);
             }
+            tokens.push(token);
+        }
+
+        if tokens.is_empty() {
+            return Ok(None);
         }
 
         let last = tokens.last().unwrap().span;
@@ -524,5 +517,15 @@ fn convert_keywords(tokens: &mut [Token]) {
             continue;
         };
         token.kind = TokenKind::Keyword(keyword);
+    }
+}
+
+/// Workaround for [`VecDeque::prepend`].
+///
+/// TODO: Remove once it is stable.
+fn deque_prepend<T>(deque: &mut VecDeque<T>, items: Vec<T>) {
+    deque.reserve(items.len());
+    for token in items.into_iter().rev() {
+        deque.push_front(token);
     }
 }

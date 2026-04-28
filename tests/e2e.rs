@@ -1300,6 +1300,21 @@ fn test_macro() {
     f.line("#undef END");
     f.line("if (0);");
 
+    f.line("#define M4 5");
+    f.line("#if M4");
+    f.line("m = 5;");
+    f.line("#else");
+    f.line("m = 6;");
+    f.line("#endif");
+    f.assert(5, "m");
+
+    f.line("#if M4-5");
+    f.line("m = 6;");
+    f.line("#elif M4");
+    f.line("m = 5;");
+    f.line("#endif");
+    f.assert(5, "m");
+
     f.finish();
     f.run("macro");
 }
