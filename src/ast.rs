@@ -5,6 +5,7 @@ use std::rc::Rc;
 use smol_str::SmolStr;
 
 use crate::constexpr::ConstValue;
+use crate::source::SourceSpan;
 use crate::types::{Member, Type, TypeStore};
 
 /// The parsed program.
@@ -140,11 +141,10 @@ pub enum BinaryOp {
 }
 
 /// An AST node representing an expression.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Node {
     pub kind: NodeKind,
-    /// The offset from the start of the source code in bytes.
-    pub offset: usize,
+    pub span: SourceSpan,
     /// The type computed for this expression.
     ///
     /// This is `Option` because it is not set during parsing, but only during
@@ -153,10 +153,9 @@ pub struct Node {
 }
 
 /// The specific expression form carried by [`Node`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub enum NodeKind {
     /// A dummy node, used as temporary placeholders.
-    #[default] // For ergonomics
     Dummy,
     /// An integer numeric literal.
     Num(u64),
@@ -213,19 +212,32 @@ pub enum NodeKind {
 }
 
 impl Node {
-    /// Construct an integer numeric literal node.
-    pub fn num(value: u64, ty: Type, offset: usize) -> Self {
+    /// Construct a dummy node, used as temporary placeholders.
+    pub fn dummy() -> Self {
         Self {
-            offset,
+            span: SourceSpan {
+                id: usize::MAX, // Non-existent source
+                offset: 0,
+                len: 0,
+            },
+            ty: None,
+            kind: NodeKind::Dummy,
+        }
+    }
+
+    /// Construct an integer numeric literal node.
+    pub fn num(value: u64, ty: Type, span: SourceSpan) -> Self {
+        Self {
+            span,
             ty: Some(ty),
             kind: NodeKind::Num(value),
         }
     }
 
     /// Construct a floating-point numeric literal node.
-    pub fn flonum(value: f64, ty: Type, offset: usize) -> Self {
+    pub fn flonum(value: f64, ty: Type, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: Some(ty),
             kind: NodeKind::Flonum(value),
         }
@@ -236,7 +248,7 @@ impl Node {
         callee: impl Into<Box<Node>>,
         args: Vec<Node>,
         return_ty: Type,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         let callee = callee.into();
         debug_assert!(callee.ty.is_some(), "callee node type is not set");
@@ -246,70 +258,70 @@ impl Node {
         );
 
         Self {
-            offset,
+            span,
             ty: Some(return_ty),
             kind: NodeKind::FuncCall { callee, args },
         }
     }
 
     /// Construct an address-of node.
-    pub fn addr(node: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn addr(node: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Addr(node.into()),
         }
     }
 
     /// Construct a dereference node.
-    pub fn deref(node: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn deref(node: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Deref(node.into()),
         }
     }
 
     /// Construct a unary negation node.
-    pub fn neg(node: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn neg(node: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Neg(node.into()),
         }
     }
 
     /// Construct a unary not node.
-    pub fn not(node: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn not(node: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Not(node.into()),
         }
     }
 
     /// Construct a unary bit-not node.
-    pub fn bit_not(node: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn bit_not(node: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::BitNot(node.into()),
         }
     }
 
     /// Construct an entity-reference node.
-    pub fn entity(entity: EntityRef, offset: usize) -> Self {
+    pub fn entity(entity: EntityRef, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Entity(entity),
         }
     }
 
     /// Construct an assignment node.
-    pub fn assign(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn assign(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Assign {
                 lhs: lhs.into(),
@@ -319,9 +331,9 @@ impl Node {
     }
 
     /// Construct a comma operator node.
-    pub fn comma(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn comma(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Comma {
                 lhs: lhs.into(),
@@ -331,9 +343,9 @@ impl Node {
     }
 
     /// Construct a logical and node.
-    pub fn and(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn and(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::And {
                 lhs: lhs.into(),
@@ -343,9 +355,9 @@ impl Node {
     }
 
     /// Construct a logical or node.
-    pub fn or(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, offset: usize) -> Self {
+    pub fn or(lhs: impl Into<Box<Node>>, rhs: impl Into<Box<Node>>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Or {
                 lhs: lhs.into(),
@@ -359,10 +371,10 @@ impl Node {
         op: BinaryOp,
         lhs: impl Into<Box<Node>>,
         rhs: impl Into<Box<Node>>,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Binary {
                 op,
@@ -377,10 +389,10 @@ impl Node {
         cond: impl Into<Box<Node>>,
         then_expr: impl Into<Box<Node>>,
         else_expr: impl Into<Box<Node>>,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Conditional {
                 cond: cond.into(),
@@ -391,9 +403,9 @@ impl Node {
     }
 
     /// Construct a struct member access node.
-    pub fn member(parent: impl Into<Box<Node>>, member: Member, offset: usize) -> Self {
+    pub fn member(parent: impl Into<Box<Node>>, member: Member, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::Member {
                 parent: parent.into(),
@@ -403,9 +415,9 @@ impl Node {
     }
 
     /// Construct a statement expression node.
-    pub fn stmt_expr(stmts: Vec<Stmt>, offset: usize) -> Self {
+    pub fn stmt_expr(stmts: Vec<Stmt>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             ty: None,
             kind: NodeKind::StmtExpr(stmts),
         }
@@ -415,7 +427,7 @@ impl Node {
     ///
     /// If the type of the child expression is the same as the target type, this
     /// directly returns the child expression without wrapping in a cast node.
-    pub fn cast(expr: impl Into<Box<Node>>, ty: Type, offset: usize) -> Self {
+    pub fn cast(expr: impl Into<Box<Node>>, ty: Type, span: SourceSpan) -> Self {
         let expr = expr.into();
         debug_assert!(expr.ty.is_some(), "child node type is not set");
 
@@ -424,7 +436,7 @@ impl Node {
         }
 
         Self {
-            offset,
+            span,
             ty: Some(ty),
             kind: NodeKind::Cast(expr),
         }
@@ -440,8 +452,7 @@ impl Node {
 #[derive(Debug)]
 pub struct Stmt {
     pub kind: StmtKind,
-    /// The offset from the start of the source code in bytes.
-    pub offset: usize,
+    pub span: SourceSpan,
 }
 
 /// The specific statement form carried by [`Stmt`].
@@ -511,25 +522,25 @@ pub enum StmtKind {
 
 impl Stmt {
     /// Construct an expression statement.
-    pub fn expr(expr: Node, offset: usize) -> Self {
+    pub fn expr(expr: Node, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Expr(expr),
         }
     }
 
     /// Construct a return statement.
-    pub fn return_(expr: Option<Node>, offset: usize) -> Self {
+    pub fn return_(expr: Option<Node>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Return(expr),
         }
     }
 
     /// Construct a block statement.
-    pub fn block(stmts: Vec<Stmt>, offset: usize) -> Self {
+    pub fn block(stmts: Vec<Stmt>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Block(stmts),
         }
     }
@@ -542,10 +553,10 @@ impl Stmt {
         body: Box<Stmt>,
         brk_label: SmolStr,
         cont_label: SmolStr,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Loop {
                 init: Some(init),
                 cond,
@@ -565,10 +576,10 @@ impl Stmt {
         do_while: bool,
         brk_label: SmolStr,
         cont_label: SmolStr,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Loop {
                 init: None,
                 cond: Some(cond),
@@ -586,10 +597,10 @@ impl Stmt {
         cond: Node,
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::If {
                 cond,
                 then_branch,
@@ -605,10 +616,10 @@ impl Stmt {
         cases: Vec<(ConstValue, SmolStr)>,
         default: Option<SmolStr>,
         brk_label: SmolStr,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Switch {
                 cond,
                 body,
@@ -620,9 +631,9 @@ impl Stmt {
     }
 
     /// Construct a goto statement.
-    pub fn goto(label_name: impl Into<SmolStr>, offset: usize) -> Self {
+    pub fn goto(label_name: impl Into<SmolStr>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Jump {
                 label: None,
                 label_name: Some(label_name.into()),
@@ -631,9 +642,9 @@ impl Stmt {
     }
 
     /// Construct a break/continue statement.
-    pub fn jump(label: impl Into<SmolStr>, offset: usize) -> Self {
+    pub fn jump(label: impl Into<SmolStr>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Jump {
                 label: Some(label.into()),
                 label_name: None,
@@ -646,10 +657,10 @@ impl Stmt {
         label: impl Into<SmolStr>,
         body: Box<Stmt>,
         name: impl Into<SmolStr>,
-        offset: usize,
+        span: SourceSpan,
     ) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Label {
                 label: label.into(),
                 body,
@@ -659,9 +670,9 @@ impl Stmt {
     }
 
     /// Construct a case statement.
-    pub fn case(label: impl Into<SmolStr>, body: Box<Stmt>, offset: usize) -> Self {
+    pub fn case(label: impl Into<SmolStr>, body: Box<Stmt>, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::Label {
                 label: label.into(),
                 body,
@@ -671,9 +682,9 @@ impl Stmt {
     }
 
     /// Construct a statement that zero-fills a local variable.
-    pub fn memzero_local(local_id: usize, offset: usize) -> Self {
+    pub fn memzero_local(local_id: usize, span: SourceSpan) -> Self {
         Self {
-            offset,
+            span,
             kind: StmtKind::MemzeroLocal(local_id),
         }
     }

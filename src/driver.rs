@@ -23,25 +23,26 @@ use crate::codegen::Codegen;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::preprocess::{PreprocessedTokens, PreprocessedWriter, Preprocessor};
-use crate::source::Source;
+use crate::source::SourceMap;
 use crate::tokenize::Tokenizer;
 
 /// The chacc compiler proper (cc1 mode).
 fn cc1<W: Write>(input: &Path, out: &mut W, preprocess_only: bool) -> Result<()> {
-    let source = Source::new(input)?;
-    let tokens = Tokenizer::new(&source).tokenize()?;
+    let mut source_map = SourceMap::default();
+    let source = source_map.push(input)?;
+    let tokens = Tokenizer::new(source).tokenize()?;
 
     if preprocess_only {
         let mut sink = PreprocessedWriter::new(out);
-        Preprocessor::new(&source, tokens, &mut sink).preprocess(true)?;
+        Preprocessor::new(&mut source_map, tokens, &mut sink).preprocess(true)?;
         return Ok(());
     }
 
     let mut sink = PreprocessedTokens::default();
-    Preprocessor::new(&source, tokens, &mut sink).preprocess(true)?;
+    Preprocessor::new(&mut source_map, tokens, &mut sink).preprocess(true)?;
     let tokens = sink.into_parser_tokens();
-    let program = Parser::new(&source, tokens, false).parse_program()?;
-    Codegen::new(&source, out)?.generate(program)?;
+    let program = Parser::new(&source_map, tokens, false).parse_program()?;
+    Codegen::new(&source_map, out)?.generate(program)?;
     Ok(())
 }
 

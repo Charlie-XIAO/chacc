@@ -13,7 +13,7 @@ use crate::ast::{
 };
 use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
-use crate::source::Source;
+use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{Keyword, Token};
 use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
@@ -22,15 +22,14 @@ use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 struct Parameter {
     name: Option<SmolStr>,
     ty: Type,
-    offset: usize,
+    span: SourceSpan,
 }
 
 /// An object declarator.
 struct Declarator {
     name: Option<SmolStr>,
     ty: Type,
-    /// The byte offset of the declarator in the source code.
-    offset: usize,
+    span: SourceSpan,
     /// The parameter declarations for a function declarator.
     ///
     /// This keeps parameter names alongside the semantic function type in `ty`.
@@ -143,7 +142,7 @@ struct ScopeFrame {
 
 /// Stateful parser over the token stream during parsing.
 pub struct Parser<'a> {
-    source: &'a Source,
+    source_map: &'a SourceMap,
     tokens: Vec<Token>,
     /// Whether to follow preprocessor rules for certain constructs.
     preprocess: bool,
@@ -166,14 +165,14 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a parser over a token stream.
-    pub fn new(source: &'a Source, tokens: Vec<Token>, preprocess: bool) -> Self {
+    pub fn new(source_map: &'a SourceMap, tokens: Vec<Token>, preprocess: bool) -> Self {
         debug_assert!(
             tokens.last().is_some_and(|t| t.is_eof()),
             "token stream must end with an EOF sentinel",
         );
 
         Self {
-            source,
+            source_map,
             tokens,
             preprocess,
             pos: 0,
@@ -198,7 +197,9 @@ impl<'a> Parser<'a> {
 
     /// Return the current token.
     fn current(&self) -> &Token {
-        &self.tokens[self.pos]
+        self.tokens
+            .get(self.pos)
+            .expect("parser is in broken state: moving out of bounds")
     }
 
     /// Return the token at the given lookahead distance.
@@ -206,21 +207,26 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos + offset)
     }
 
-    /// Return an error diagnostic at the current token.
-    fn error_current(&self, message: impl Into<SmolStr>) -> Error {
-        self.source.error_at(self.current().offset, message)
+    /// Dispatch of [`SourceMap::error`].
+    fn error(&self, span: SourceSpan, message: impl Into<String>) -> Error {
+        self.source_map.error(span, message)
     }
 
-    /// Emit a warning message at the given byte offset.
-    fn warn_at(&self, offset: usize, message: impl Into<SmolStr>) {
+    /// [`Self::error`] using the current token's span.
+    fn error_current(&self, message: impl Into<String>) -> Error {
+        self.error(self.current().span, message)
+    }
+
+    /// Dispatch of [`SourceMap::warn`].
+    fn warn(&self, span: SourceSpan, message: impl Into<String>) {
         if self.speculate_depth == 0 {
-            self.source.warn_at(offset, message);
+            self.source_map.warn(span, message);
         }
     }
 
-    /// Emit a warning message at the current token.
-    fn warn_current(&self, message: impl Into<SmolStr>) {
-        self.warn_at(self.current().offset, message);
+    /// [`Self::warn`] using the current token's span.
+    fn warn_current(&self, message: impl Into<String>) {
+        self.warn(self.current().span, message);
     }
 
     /// Generate a unique label.
@@ -233,7 +239,7 @@ impl<'a> Parser<'a> {
     /// Assume and skip a specific punctuator.
     fn skip_punct(&mut self, expected: &str) -> Result<()> {
         if !self.current().is_punct(expected) {
-            return Err(self.error_current(format_smolstr!("expected '{expected}'")));
+            return Err(self.error_current(format!("expected '{expected}'")));
         }
         self.advance();
         Ok(())
@@ -242,7 +248,7 @@ impl<'a> Parser<'a> {
     /// Assume and skip a specific keyword.
     fn skip_keyword(&mut self, expected: Keyword) -> Result<()> {
         if !self.current().is_keyword(expected) {
-            return Err(self.error_current(format_smolstr!("expected '{expected}'")));
+            return Err(self.error_current("expected '{expected}'"));
         }
         self.advance();
         Ok(())
@@ -461,7 +467,7 @@ impl<'a> Parser<'a> {
         let mut defaults_to_int = false;
 
         while self.at_typename() {
-            let offset = self.current().offset;
+            let span = self.current().span;
             let keyword = self.current().as_keyword();
             let ident = self.current().as_ident();
             let typedef_ty = ident
@@ -480,9 +486,7 @@ impl<'a> Parser<'a> {
 
             macro_rules! bail_multiple_types {
                 () => {
-                    return Err(self
-                        .source
-                        .error_at(offset, "multiple types in declaration specifiers"))
+                    return Err(self.error(span, "multiple types in declaration specifiers"))
                 };
             }
 
@@ -591,16 +595,15 @@ impl<'a> Parser<'a> {
                         )
                     );
                     if !allowed {
-                        return Err(self.source.error_at(
-                            offset,
-                            format_smolstr!("storage class specifier is not allowed in {context}"),
+                        return Err(self.error(
+                            span,
+                            format!("storage class specifier is not allowed in {context}"),
                         ));
                     }
                     if storage_class.is_some() {
-                        return Err(self.source.error_at(
-                            offset,
-                            "multiple storage classes in declaration specifiers",
-                        ));
+                        return Err(
+                            self.error(span, "multiple storage classes in declaration specifiers")
+                        );
                     }
                     storage_class = Some(match keyword {
                         Keyword::Typedef => StorageClass::Typedef,
@@ -620,10 +623,9 @@ impl<'a> Parser<'a> {
                             | DeclspecContext::ParameterDecl
                             | DeclspecContext::ForLoopInitializer
                     ) {
-                        return Err(self.source.error_at(
-                            offset,
-                            format_smolstr!("'_Noreturn' is not allowed in {context}"),
-                        ));
+                        return Err(
+                            self.error(span, format!("'_Noreturn' is not allowed in {context}"))
+                        );
                     }
                     noreturn = true;
                     defaults_to_int = true;
@@ -635,10 +637,9 @@ impl<'a> Parser<'a> {
                             | DeclspecContext::BlockScopeDecl
                             | DeclspecContext::MemberDecl(_)
                     ) {
-                        return Err(self.source.error_at(
-                            offset,
-                            format_smolstr!("'_Alignas' is not allowed in {context}"),
-                        ));
+                        return Err(
+                            self.error(span, format!("'_Alignas' is not allowed in {context}"))
+                        );
                     }
                     self.skip_punct("(")?;
                     align = align.max(Some(if self.at_typename() {
@@ -729,7 +730,7 @@ impl<'a> Parser<'a> {
             return Ok(declarator);
         }
 
-        let offset = self.current().offset;
+        let span = self.current().span;
         let name = self.current().as_ident();
         if name.is_some() {
             self.advance();
@@ -739,7 +740,7 @@ impl<'a> Parser<'a> {
         Ok(Declarator {
             name,
             ty,
-            offset,
+            span,
             params,
         })
     }
@@ -834,7 +835,7 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            let offset = self.current().offset;
+            let span = self.current().span;
             let declspec = self.parse_declspec(DeclspecContext::ParameterDecl)?;
 
             if params.is_empty() && declspec.ty == Type::Void {
@@ -843,16 +844,14 @@ impl<'a> Parser<'a> {
                     return Ok((self.types.func(return_ty, Vec::new(), false), Vec::new()));
                 }
                 if self.current().is_punct(",") {
-                    return Err(self
-                        .source
-                        .error_at(offset, "'void' must be the only parameter"));
+                    return Err(self.error(span, "'void' must be the only parameter"));
                 }
             }
 
-            let offset = self.current().offset;
+            let span = self.current().span;
             let declarator = self.parse_declarator(declspec.ty, true)?;
             if declspec.noreturn {
-                self.warn_at(declarator.offset, "parameter declared '_Noreturn'");
+                self.warn(declarator.span, "parameter declared '_Noreturn'");
             }
 
             let ty = if let Some(array) = self.types.as_array(declarator.ty) {
@@ -869,27 +868,23 @@ impl<'a> Parser<'a> {
             };
 
             if self.types.is_incomplete(ty) {
-                return Err(self
-                    .source
-                    .error_at(offset, "parameter has incomplete type"));
+                return Err(self.error(span, "parameter has incomplete type"));
             }
 
             if let Some(name) = &declarator.name
                 && !param_names.insert(name.clone())
             {
-                return Err(self.source.error_at(offset, "redefinition of parameter"));
+                return Err(self.error(span, "redefinition of parameter"));
             }
 
             params.push(Parameter {
                 name: declarator.name,
                 ty,
-                offset: declarator.offset,
+                span: declarator.span,
             });
 
             if params.len() > MAX_FUNC_PARAMS {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "too many parameters"));
+                return Err(self.error(declarator.span, "too many parameters"));
             }
         }
 
@@ -907,10 +902,10 @@ impl<'a> Parser<'a> {
             return Ok(ty);
         }
 
-        let offset = self.current().offset;
+        let span = self.current().span;
         self.advance();
 
-        let mut static_offset = None;
+        let mut static_span = None;
         while let Some(keyword) = self.current().as_keyword() {
             if !matches!(
                 keyword,
@@ -926,20 +921,20 @@ impl<'a> Parser<'a> {
             }
 
             if keyword == Keyword::Static {
-                if static_offset.is_some() {
+                if static_span.is_some() {
                     return Err(
                         self.error_current("duplicate 'static' in array parameter declarator")
                     );
                 }
-                static_offset = Some(self.current().offset);
+                static_span = Some(self.current().span);
             }
             self.advance();
         }
 
         let len = if self.current().is_punct("]") {
-            if let Some(offset) = static_offset {
-                return Err(self.source.error_at(
-                    offset,
+            if let Some(span) = static_span {
+                return Err(self.error(
+                    span,
                     "array parameter declared 'static' but bound is missing",
                 ));
             }
@@ -956,14 +951,10 @@ impl<'a> Parser<'a> {
 
         let ty = self.parse_array_dimensions(ty, in_param)?;
         if self.types.is_incomplete(ty) {
-            return Err(self
-                .source
-                .error_at(offset, "array element type is incomplete"));
+            return Err(self.error(span, "array element type is incomplete"));
         }
         if self.types.is_func(ty) {
-            return Err(self
-                .source
-                .error_at(offset, "array element type cannot be function"));
+            return Err(self.error(span, "array element type cannot be function"));
         }
 
         Ok(self.types.array(ty, len))
@@ -977,7 +968,7 @@ impl<'a> Parser<'a> {
         is_struct: bool,
         context: DeclspecContext,
     ) -> Result<Type> {
-        let offset = self.current().offset;
+        let span = self.current().span;
         let tag = self.current().as_ident();
 
         let repr = || if is_struct { "struct" } else { "union" };
@@ -1007,9 +998,7 @@ impl<'a> Parser<'a> {
                         return Ok(ty);
                     }
 
-                    return Err(self
-                        .source
-                        .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
+                    return Err(self.error(span, "defined as wrong kind of tag"));
                 }
 
                 // "struct T" not followed by "{" or ";"; which is a tag use
@@ -1028,9 +1017,7 @@ impl<'a> Parser<'a> {
                     return Ok(ty);
                 }
 
-                return Err(self
-                    .source
-                    .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
+                return Err(self.error(span, "defined as wrong kind of tag"));
             }
 
             // "struct T {...}", which is a concrete definition
@@ -1051,9 +1038,7 @@ impl<'a> Parser<'a> {
                 && sou.is_struct == is_struct
             {
                 if !self.types.is_incomplete(ty) {
-                    return Err(self
-                        .source
-                        .error_at(offset, format_smolstr!("redefinition of {} tag", repr())));
+                    return Err(self.error(span, format!("redefinition of {} tag", repr())));
                 }
 
                 self.advance();
@@ -1062,9 +1047,7 @@ impl<'a> Parser<'a> {
                 return Ok(ty);
             }
 
-            return Err(self
-                .source
-                .error_at(offset, format_smolstr!("defined as wrong kind of tag")));
+            return Err(self.error(span, "defined as wrong kind of tag"));
         }
 
         // "struct {...}", which is an anonymous definition
@@ -1085,23 +1068,19 @@ impl<'a> Parser<'a> {
     ) -> Result<Vec<Member>> {
         let mut members = Vec::new();
 
-        // (is_flexible_array, offset)
-        let mut pending_incomplete = None::<(bool, usize)>;
+        // (is_flexible_array, span)
+        let mut pending_incomplete = None::<(bool, SourceSpan)>;
 
         while !self.current().is_punct("}") {
             let declspec = self.parse_declspec(context)?;
-            if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
+            if let Some((is_flexible_array, span)) = pending_incomplete.take() {
                 if !is_flexible_array {
-                    return Err(self.source.error_at(offset, "field has incomplete type"));
+                    return Err(self.error(span, "field has incomplete type"));
                 }
                 if !is_struct {
-                    return Err(self
-                        .source
-                        .error_at(offset, "flexible array member in union"));
+                    return Err(self.error(span, "flexible array member in union"));
                 }
-                return Err(self
-                    .source
-                    .error_at(offset, "flexible array member not at end of struct"));
+                return Err(self.error(span, "flexible array member not at end of struct"));
             }
 
             if self.current().is_punct(";") {
@@ -1118,14 +1097,12 @@ impl<'a> Parser<'a> {
                 if self.types.is_incomplete(declarator.ty) {
                     pending_incomplete = Some((
                         self.types.as_array(declarator.ty).is_some(),
-                        declarator.offset,
+                        declarator.span,
                     ));
                 }
 
                 let Some(name) = declarator.name else {
-                    return Err(self
-                        .source
-                        .error_at(declarator.offset, "missing member name"));
+                    return Err(self.error(declarator.span, "missing member name"));
                 };
 
                 members.push(Member {
@@ -1152,18 +1129,16 @@ impl<'a> Parser<'a> {
 
         self.advance();
 
-        if let Some((is_flexible_array, offset)) = pending_incomplete.take() {
+        if let Some((is_flexible_array, span)) = pending_incomplete.take() {
             if !is_flexible_array {
-                return Err(self.source.error_at(offset, "field has incomplete type"));
+                return Err(self.error(span, "field has incomplete type"));
             }
             if !is_struct {
-                return Err(self
-                    .source
-                    .error_at(offset, "flexible array member in union"));
+                return Err(self.error(span, "flexible array member in union"));
             }
             if members.len() <= 1 {
-                return Err(self.source.error_at(
-                    offset,
+                return Err(self.error(
+                    span,
                     "flexible array member in a struct with no named members",
                 ));
             }
@@ -1178,26 +1153,26 @@ impl<'a> Parser<'a> {
     ///   <ident> ("=" <constexpr>)? ("," <ident> ("=" <constexpr>)?)* ","?
     /// ```
     fn parse_enum_specifier(&mut self) -> Result<Type> {
-        let offset = self.current().offset;
+        let span = self.current().span;
         let tag = self.current().as_ident();
 
         if let Some(ref tag) = tag {
             self.advance();
             if !self.current().is_punct("{") {
                 let Some(ty) = self.find_tag(tag) else {
-                    return Err(self.source.error_at(offset, "unknown enum type"))?;
+                    return Err(self.error(span, "unknown enum type"))?;
                 };
                 if ty != Type::Enum {
-                    return Err(self.source.error_at(offset, "not an enum tag"));
+                    return Err(self.error(span, "not an enum tag"));
                 }
                 return Ok(ty);
             }
 
             if let Some(ty) = self.find_tag_current(tag) {
                 if ty == Type::Enum {
-                    return Err(self.source.error_at(offset, "redeclaration of enum tag"));
+                    return Err(self.error(span, "redeclaration of enum tag"));
                 }
-                return Err(self.source.error_at(offset, "defined as wrong kind of tag"));
+                return Err(self.error(span, "defined as wrong kind of tag"));
             }
         }
 
@@ -1211,7 +1186,7 @@ impl<'a> Parser<'a> {
             }
             first = false;
 
-            let offset = self.current().offset;
+            let span = self.current().span;
             let name = self.consume_ident()?;
             if self.current().is_punct("=") {
                 self.advance();
@@ -1221,11 +1196,9 @@ impl<'a> Parser<'a> {
             if let Some(ident) = self.find_ident_current(&name) {
                 return match ident {
                     OrdinaryIdent::Enumerator(_) => {
-                        Err(self.source.error_at(offset, "redeclaration of enumerator"))
+                        Err(self.error(span, "redeclaration of enumerator"))
                     },
-                    _ => Err(self
-                        .source
-                        .error_at(offset, "redeclared as a different kind of symbol")),
+                    _ => Err(self.error(span, "redeclared as a different kind of symbol")),
                 };
             }
 
@@ -1247,9 +1220,9 @@ impl<'a> Parser<'a> {
         let node = self.parse_assign()?;
 
         if self.current().is_punct(",") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            return Ok(Node::comma(node, self.parse_expr()?, offset));
+            return Ok(Node::comma(node, self.parse_expr()?, span));
         }
 
         Ok(node)
@@ -1310,29 +1283,25 @@ impl<'a> Parser<'a> {
 
         let declarator = self.parse_declarator(return_ty, false)?;
         let Some(name) = declarator.name.clone() else {
-            return Err(self
-                .source
-                .error_at(declarator.offset, "missing function name"));
+            return Err(self.error(declarator.span, "missing function name"));
         };
         let Some(func_ty) = self.types.as_func(declarator.ty, false) else {
             return Err(self.error_current("expected a function"));
         };
         let is_variadic = func_ty.is_variadic;
 
-        let func_id = self.declare_function(name, declarator.ty, noreturn, declarator.offset)?;
+        let func_id = self.declare_function(name, declarator.ty, noreturn, declarator.span)?;
         if self.current().is_punct(";") {
             self.advance();
             return Ok(());
         }
         if self.functions[func_id].body.is_some() {
-            return Err(self
-                .source
-                .error_at(declarator.offset, "redefinition of function"));
+            return Err(self.error(declarator.span, "redefinition of function"));
         }
 
         self.active_function = Some(func_id);
 
-        let body_offset = self.current().offset;
+        let body_span = self.current().span;
         self.locals.clear();
         self.enter_scope();
 
@@ -1346,7 +1315,7 @@ impl<'a> Parser<'a> {
         };
 
         self.skip_punct("{")?;
-        let mut body = Stmt::block(self.parse_compound_stmt()?, body_offset);
+        let mut body = Stmt::block(self.parse_compound_stmt()?, body_span);
 
         self.leave_scope();
 
@@ -1382,17 +1351,13 @@ impl<'a> Parser<'a> {
         loop {
             let declarator = self.parse_declarator(declspec.ty, false)?;
             let Some(name) = declarator.name else {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "missing variable name"));
+                return Err(self.error(declarator.span, "missing variable name"));
             };
             if declspec.noreturn {
-                self.warn_at(declarator.offset, "variable declared '_Noreturn'");
+                self.warn(declarator.span, "variable declared '_Noreturn'");
             }
             if self.types.is_func(declarator.ty) {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "expected a global variable"));
+                return Err(self.error(declarator.span, "expected a global variable"));
             }
 
             let mut ty = declarator.ty;
@@ -1413,15 +1378,13 @@ impl<'a> Parser<'a> {
                 declspec.align,
                 storage,
                 declspec.storage_class == Some(StorageClass::Static),
-                declarator.offset,
+                declarator.span,
             )?;
             let global = &self.globals[global_id];
 
             if !matches!(global.storage, GlobalStorage::Decl) && self.types.is_incomplete(global.ty)
             {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "variable has incomplete type"));
+                return Err(self.error(declarator.span, "variable has incomplete type"));
             }
 
             if self.current().is_punct(",") {
@@ -1455,7 +1418,7 @@ impl<'a> Parser<'a> {
     ///   | <expr-stmt>
     /// ```
     fn parse_stmt(&mut self) -> Result<Stmt> {
-        let offset = self.current().offset;
+        let span = self.current().span;
 
         if self.current().is_keyword(Keyword::Return) {
             self.advance();
@@ -1464,21 +1427,21 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct(";") {
                 if return_ty != Type::Void {
-                    self.warn_at(offset, "return with no value in a non-void function");
+                    self.warn(span, "return with no value in a non-void function");
                 }
                 self.advance();
-                return Ok(Stmt::return_(None, offset));
+                return Ok(Stmt::return_(None, span));
             }
 
             let mut expr = self.parse_expr()?;
             self.skip_punct(";")?;
             if return_ty == Type::Void {
-                self.warn_at(expr.offset, "return with a value in a void function");
+                self.warn(expr.span, "return with a value in a void function");
                 self.apply_cast(&mut expr, Type::Void)?;
             } else {
                 self.apply_cast(&mut expr, return_ty)?;
             }
-            return Ok(Stmt::return_(Some(expr), offset));
+            return Ok(Stmt::return_(Some(expr), span));
         }
 
         if self.current().is_keyword(Keyword::If) {
@@ -1493,7 +1456,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            return Ok(Stmt::if_(cond, then_branch, else_branch, offset));
+            return Ok(Stmt::if_(cond, then_branch, else_branch, span));
         }
 
         if self.current().is_keyword(Keyword::Switch) {
@@ -1508,9 +1471,7 @@ impl<'a> Parser<'a> {
                 .promote_int()
                 .and_then(|ty| self.types.to_const(ty))
             else {
-                return Err(self
-                    .source
-                    .error_at(offset, "switch condition is not an integer"));
+                return Err(self.error(span, "switch condition is not an integer"));
             };
 
             let brk_label = self.unique_label();
@@ -1532,16 +1493,14 @@ impl<'a> Parser<'a> {
                 switch.cases,
                 switch.default,
                 brk_label,
-                offset,
+                span,
             ));
         }
 
         if self.current().is_keyword(Keyword::Case) {
             self.advance();
             let Some(ty) = self.active_switch.as_ref().map(|switch| switch.ty) else {
-                return Err(self
-                    .source
-                    .error_at(offset, "case label not within a switch"));
+                return Err(self.error(span, "case label not within a switch"));
             };
             let val = self.parse_constexpr()?.cast(ty);
             self.skip_punct(":")?;
@@ -1551,17 +1510,15 @@ impl<'a> Parser<'a> {
             match self.active_switch {
                 Some(ref mut switch) => {
                     if switch.cases.iter().any(|(v, _)| *v == val) {
-                        return Err(self.source.error_at(offset, "duplicate case value"));
+                        return Err(self.error(span, "duplicate case value"));
                     }
                     switch.cases.push((val, label.clone()));
                 },
                 None => {
-                    return Err(self
-                        .source
-                        .error_at(offset, "case label not within a switch"));
+                    return Err(self.error(span, "case label not within a switch"));
                 },
             };
-            return Ok(Stmt::case(label, Box::new(body), offset));
+            return Ok(Stmt::case(label, Box::new(body), span));
         }
 
         if self.current().is_keyword(Keyword::Default) {
@@ -1573,18 +1530,14 @@ impl<'a> Parser<'a> {
             match self.active_switch {
                 Some(ref mut switch) => {
                     if switch.default.replace(label.clone()).is_some() {
-                        return Err(self
-                            .source
-                            .error_at(offset, "multiple default labels in one switch"));
+                        return Err(self.error(span, "multiple default labels in one switch"));
                     }
                 },
                 None => {
-                    return Err(self
-                        .source
-                        .error_at(offset, "default label not within a switch"));
+                    return Err(self.error(span, "default label not within a switch"));
                 },
             };
-            return Ok(Stmt::case(label, Box::new(body), offset));
+            return Ok(Stmt::case(label, Box::new(body), span));
         }
 
         if self.current().is_keyword(Keyword::For) {
@@ -1625,7 +1578,7 @@ impl<'a> Parser<'a> {
             self.leave_scope();
 
             return Ok(Stmt::for_(
-                init, cond, inc, body, brk_label, cont_label, offset,
+                init, cond, inc, body, brk_label, cont_label, span,
             ));
         }
 
@@ -1645,9 +1598,7 @@ impl<'a> Parser<'a> {
             self.active_brk_label = prev_brk_label;
             self.active_cont_label = prev_cont_label;
 
-            return Ok(Stmt::while_(
-                cond, body, false, brk_label, cont_label, offset,
-            ));
+            return Ok(Stmt::while_(cond, body, false, brk_label, cont_label, span));
         }
 
         if self.current().is_keyword(Keyword::Do) {
@@ -1669,16 +1620,14 @@ impl<'a> Parser<'a> {
             self.skip_punct(")")?;
             self.skip_punct(";")?;
 
-            return Ok(Stmt::while_(
-                cond, body, true, brk_label, cont_label, offset,
-            ));
+            return Ok(Stmt::while_(cond, body, true, brk_label, cont_label, span));
         }
 
         if self.current().is_keyword(Keyword::Goto) {
             self.advance();
             let ident = self.consume_ident()?;
             self.skip_punct(";")?;
-            return Ok(Stmt::goto(ident, offset));
+            return Ok(Stmt::goto(ident, span));
         }
 
         if self.current().is_keyword(Keyword::Break) {
@@ -1687,7 +1636,7 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             self.skip_punct(";")?;
-            return Ok(Stmt::jump(brk_label, offset));
+            return Ok(Stmt::jump(brk_label, span));
         }
 
         if self.current().is_keyword(Keyword::Continue) {
@@ -1696,7 +1645,7 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             self.skip_punct(";")?;
-            return Ok(Stmt::jump(cont_label, offset));
+            return Ok(Stmt::jump(cont_label, span));
         }
 
         if let Some(ident) = self.current().as_ident()
@@ -1706,12 +1655,12 @@ impl<'a> Parser<'a> {
             self.advance();
             let label = self.unique_label();
             let body = self.parse_stmt()?;
-            return Ok(Stmt::label(label, Box::new(body), ident, offset));
+            return Ok(Stmt::label(label, Box::new(body), ident, span));
         }
 
         if self.current().is_punct("{") {
             self.advance();
-            return Ok(Stmt::block(self.parse_compound_stmt()?, offset));
+            return Ok(Stmt::block(self.parse_compound_stmt()?, span));
         }
 
         self.parse_expr_stmt()
@@ -1750,15 +1699,15 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_expr_stmt(&mut self) -> Result<Stmt> {
         if self.current().is_punct(";") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            return Ok(Stmt::block(Vec::new(), offset));
+            return Ok(Stmt::block(Vec::new(), span));
         }
 
-        let offset = self.current().offset;
+        let span = self.current().span;
         let expr = self.parse_expr()?;
         self.skip_punct(";")?;
-        Ok(Stmt::expr(expr, offset))
+        Ok(Stmt::expr(expr, span))
     }
 
     /// ```bnf
@@ -1767,20 +1716,18 @@ impl<'a> Parser<'a> {
     /// <declarator-init> ::= <declarator> ("=" <initializer>)?
     /// ```
     fn parse_declaration(&mut self, declspec: Declspec) -> Result<Stmt> {
-        let offset = self.current().offset;
+        let span = self.current().span;
         let mut stmts = Vec::new();
         if self.current().is_punct(";") {
             self.warn_current("useless type name in empty declaration");
             self.advance();
-            return Ok(Stmt::block(Vec::new(), offset));
+            return Ok(Stmt::block(Vec::new(), span));
         }
 
         loop {
             let declarator = self.parse_declarator(declspec.ty, false)?;
             let Some(name) = declarator.name else {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "missing declarator name"));
+                return Err(self.error(declarator.span, "missing declarator name"));
             };
 
             // Check whether this declaration would conflict with an existing
@@ -1792,48 +1739,46 @@ impl<'a> Parser<'a> {
                 };
 
                 match ident {
-                    OrdinaryIdent::Global(_, true) => Err(self.source.error_at(
-                        declarator.offset,
+                    OrdinaryIdent::Global(_, true) => Err(self.error(
+                        declarator.span,
                         "declaration with no linkage follows extern declaration",
                     )),
-                    OrdinaryIdent::Local(_) | OrdinaryIdent::Global(..) => Err(self
-                        .source
-                        .error_at(declarator.offset, "redefinition of local variable")),
-                    _ => Err(self.source.error_at(
-                        declarator.offset,
-                        "redeclared as a different kind of symbol",
-                    )),
+                    OrdinaryIdent::Local(_) | OrdinaryIdent::Global(..) => {
+                        Err(self.error(declarator.span, "redefinition of local variable"))
+                    },
+                    _ => {
+                        Err(self.error(declarator.span, "redeclared as a different kind of symbol"))
+                    },
                 }
             };
 
             // Block-scope function declaration, e.g., "int f(int);"
             if self.types.is_func(declarator.ty) {
                 if self.current().is_punct("=") {
-                    return Err(self.source.error_at(
-                        declarator.offset,
+                    return Err(self.error(
+                        declarator.span,
                         "function declaration cannot be initialized",
                     ));
                 }
                 if !matches!(declspec.storage_class, None | Some(StorageClass::Extern)) {
-                    return Err(self.source.error_at(
-                        declarator.offset,
+                    return Err(self.error(
+                        declarator.span,
                         "invalid storage class specifier in function declaration",
                     ));
                 }
 
-                self.declare_function(name, declarator.ty, declspec.noreturn, declarator.offset)?;
+                self.declare_function(name, declarator.ty, declspec.noreturn, declarator.span)?;
             } else {
                 if declspec.noreturn {
-                    self.warn_at(declarator.offset, "variable declared '_Noreturn'");
+                    self.warn(declarator.span, "variable declared '_Noreturn'");
                 }
 
                 // Block-scope extern object declaration
                 if declspec.storage_class == Some(StorageClass::Extern) {
                     if self.current().is_punct("=") {
-                        return Err(self.source.error_at(
-                            declarator.offset,
-                            "extern declaration cannot be initialized",
-                        ));
+                        return Err(
+                            self.error(declarator.span, "extern declaration cannot be initialized")
+                        );
                     }
 
                     self.declare_global(
@@ -1842,7 +1787,7 @@ impl<'a> Parser<'a> {
                         declspec.align,
                         GlobalStorage::Decl,
                         false,
-                        declarator.offset,
+                        declarator.span,
                     )?;
                 } else if declspec.storage_class == Some(StorageClass::Static) {
                     // Block-scope static object
@@ -1859,9 +1804,7 @@ impl<'a> Parser<'a> {
                     };
 
                     if self.types.is_incomplete(ty) {
-                        return Err(self
-                            .source
-                            .error_at(declarator.offset, "variable has incomplete type"));
+                        return Err(self.error(declarator.span, "variable has incomplete type"));
                     }
 
                     // A block-scope static object is backed by a hidden global
@@ -1878,17 +1821,15 @@ impl<'a> Parser<'a> {
 
                     let mut ty = self.locals[local_id].ty;
                     if self.current().is_punct("=") {
-                        let offset = self.current().offset;
+                        let span = self.current().span;
                         self.advance();
                         let init = self.parse_initializer(ty)?;
                         ty = init.ty;
-                        self.new_local_init(local_id, init, offset, &mut stmts)?;
+                        self.new_local_init(local_id, init, span, &mut stmts)?;
                     }
 
                     if self.types.is_incomplete(ty) {
-                        return Err(self
-                            .source
-                            .error_at(declarator.offset, "variable has incomplete type"));
+                        return Err(self.error(declarator.span, "variable has incomplete type"));
                     }
                     self.locals[local_id].ty = ty;
                 }
@@ -1904,7 +1845,7 @@ impl<'a> Parser<'a> {
             }
             return Err(self.error_current("expected ',' or ';'"));
         }
-        Ok(Stmt::block(stmts, offset))
+        Ok(Stmt::block(stmts, span))
     }
 
     /// ```bnf
@@ -2018,7 +1959,7 @@ impl<'a> Parser<'a> {
         content: Rc<[u8]>,
         array: &ArrayTypeData,
     ) -> Vec<Initializer> {
-        let offset = self.current().offset;
+        let span = self.current().span;
         let len = array.len.unwrap_or(content.len());
 
         if content.len() > len + 1 {
@@ -2033,7 +1974,7 @@ impl<'a> Parser<'a> {
             .take(len)
             .map(|&byte| Initializer {
                 ty: Type::CHAR,
-                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::INT, offset)),
+                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::INT, span)),
             })
             .collect();
 
@@ -2171,82 +2112,82 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_assign(&mut self) -> Result<Node> {
         let node = self.parse_conditional()?;
-        let offset = self.current().offset;
+        let span = self.current().span;
 
         if self.current().is_punct("=") {
             self.advance();
             let assign = self.parse_assign()?;
-            return Ok(Node::assign(node, assign, offset));
+            return Ok(Node::assign(node, assign, span));
         }
 
         if self.current().is_punct("+=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = self.new_add(node, assign, offset)?;
-            return self.new_compound_assign(binary, offset);
+            let binary = self.new_add(node, assign, span)?;
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("-=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = self.new_sub(node, assign, offset)?;
-            return self.new_compound_assign(binary, offset);
+            let binary = self.new_sub(node, assign, span)?;
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("*=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::Mul, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::Mul, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("/=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::Div, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::Div, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("%=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::Mod, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::Mod, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("&=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitAnd, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::BitAnd, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("|=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitOr, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::BitOr, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("^=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitXor, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::BitXor, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct("<<=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitShl, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::BitShl, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         if self.current().is_punct(">>=") {
             self.advance();
             let assign = self.parse_assign()?;
-            let binary = Node::binary(BinaryOp::BitShr, node, assign, offset);
-            return self.new_compound_assign(binary, offset);
+            let binary = Node::binary(BinaryOp::BitShr, node, assign, span);
+            return self.new_compound_assign(binary, span);
         }
 
         Ok(node)
@@ -2262,13 +2203,13 @@ impl<'a> Parser<'a> {
             return Ok(node);
         }
 
-        let offset = self.current().offset;
+        let span = self.current().span;
         self.advance();
         let then_expr = self.parse_expr()?;
         self.skip_punct(":")?;
         let else_expr = self.parse_conditional()?;
 
-        Ok(Node::conditional(node, then_expr, else_expr, offset))
+        Ok(Node::conditional(node, then_expr, else_expr, span))
     }
 
     /// ```bnf
@@ -2278,9 +2219,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_and()?;
 
         while self.current().is_punct("||") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            node = Node::or(node, self.parse_and()?, offset);
+            node = Node::or(node, self.parse_and()?, span);
         }
 
         Ok(node)
@@ -2293,9 +2234,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_bit_or()?;
 
         while self.current().is_punct("&&") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            node = Node::and(node, self.parse_bit_or()?, offset);
+            node = Node::and(node, self.parse_bit_or()?, span);
         }
 
         Ok(node)
@@ -2308,9 +2249,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_bit_xor()?;
 
         while self.current().is_punct("|") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            node = Node::binary(BinaryOp::BitOr, node, self.parse_bit_xor()?, offset);
+            node = Node::binary(BinaryOp::BitOr, node, self.parse_bit_xor()?, span);
         }
 
         Ok(node)
@@ -2323,9 +2264,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_bit_and()?;
 
         while self.current().is_punct("^") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            node = Node::binary(BinaryOp::BitXor, node, self.parse_bit_and()?, offset);
+            node = Node::binary(BinaryOp::BitXor, node, self.parse_bit_and()?, span);
         }
 
         Ok(node)
@@ -2338,9 +2279,9 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_equality()?;
 
         while self.current().is_punct("&") {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.advance();
-            node = Node::binary(BinaryOp::BitAnd, node, self.parse_equality()?, offset);
+            node = Node::binary(BinaryOp::BitAnd, node, self.parse_equality()?, span);
         }
 
         Ok(node)
@@ -2353,17 +2294,17 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_relational()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("==") {
                 self.advance();
-                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?, offset);
+                node = Node::binary(BinaryOp::Eq, node, self.parse_relational()?, span);
                 continue;
             }
 
             if self.current().is_punct("!=") {
                 self.advance();
-                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?, offset);
+                node = Node::binary(BinaryOp::Ne, node, self.parse_relational()?, span);
                 continue;
             }
 
@@ -2379,29 +2320,29 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_shift()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("<") {
                 self.advance();
-                node = Node::binary(BinaryOp::Lt, node, self.parse_shift()?, offset);
+                node = Node::binary(BinaryOp::Lt, node, self.parse_shift()?, span);
                 continue;
             }
 
             if self.current().is_punct("<=") {
                 self.advance();
-                node = Node::binary(BinaryOp::Le, node, self.parse_shift()?, offset);
+                node = Node::binary(BinaryOp::Le, node, self.parse_shift()?, span);
                 continue;
             }
 
             if self.current().is_punct(">") {
                 self.advance();
-                node = Node::binary(BinaryOp::Lt, self.parse_shift()?, node, offset);
+                node = Node::binary(BinaryOp::Lt, self.parse_shift()?, node, span);
                 continue;
             }
 
             if self.current().is_punct(">=") {
                 self.advance();
-                node = Node::binary(BinaryOp::Le, self.parse_shift()?, node, offset);
+                node = Node::binary(BinaryOp::Le, self.parse_shift()?, node, span);
                 continue;
             }
 
@@ -2416,17 +2357,17 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_add()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("<<") {
                 self.advance();
-                node = Node::binary(BinaryOp::BitShl, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::BitShl, node, self.parse_add()?, span);
                 continue;
             }
 
             if self.current().is_punct(">>") {
                 self.advance();
-                node = Node::binary(BinaryOp::BitShr, node, self.parse_add()?, offset);
+                node = Node::binary(BinaryOp::BitShr, node, self.parse_add()?, span);
                 continue;
             }
 
@@ -2441,19 +2382,19 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_mul()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("+") {
                 self.advance();
                 let rhs = self.parse_mul()?;
-                node = self.new_add(node, rhs, offset)?;
+                node = self.new_add(node, rhs, span)?;
                 continue;
             }
 
             if self.current().is_punct("-") {
                 self.advance();
                 let rhs = self.parse_mul()?;
-                node = self.new_sub(node, rhs, offset)?;
+                node = self.new_sub(node, rhs, span)?;
                 continue;
             }
 
@@ -2468,23 +2409,23 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_cast()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("*") {
                 self.advance();
-                node = Node::binary(BinaryOp::Mul, node, self.parse_cast()?, offset);
+                node = Node::binary(BinaryOp::Mul, node, self.parse_cast()?, span);
                 continue;
             }
 
             if self.current().is_punct("/") {
                 self.advance();
-                node = Node::binary(BinaryOp::Div, node, self.parse_cast()?, offset);
+                node = Node::binary(BinaryOp::Div, node, self.parse_cast()?, span);
                 continue;
             }
 
             if self.current().is_punct("%") {
                 self.advance();
-                node = Node::binary(BinaryOp::Mod, node, self.parse_cast()?, offset);
+                node = Node::binary(BinaryOp::Mod, node, self.parse_cast()?, span);
                 continue;
             }
 
@@ -2496,7 +2437,7 @@ impl<'a> Parser<'a> {
     /// <cast> ::= "(" <typename> ")" <cast> | <unary>
     /// ```
     fn parse_cast(&mut self) -> Result<Node> {
-        let offset = self.current().offset;
+        let span = self.current().span;
 
         if !self.preprocess && self.current().is_punct("(") {
             let pos = self.pos;
@@ -2512,7 +2453,7 @@ impl<'a> Parser<'a> {
                 if !self.current().is_punct("{") {
                     let mut expr = self.parse_cast()?;
                     self.infer_type(&mut expr)?;
-                    return Ok(Node::cast(expr, ty, offset));
+                    return Ok(Node::cast(expr, ty, span));
                 }
             }
 
@@ -2529,7 +2470,7 @@ impl<'a> Parser<'a> {
     ///   | <postfix>
     /// ```
     fn parse_unary(&mut self) -> Result<Node> {
-        let offset = self.current().offset;
+        let span = self.current().span;
 
         if self.current().is_punct("+") {
             self.advance();
@@ -2538,41 +2479,41 @@ impl<'a> Parser<'a> {
 
         if self.current().is_punct("-") {
             self.advance();
-            return Ok(Node::neg(self.parse_cast()?, offset));
+            return Ok(Node::neg(self.parse_cast()?, span));
         }
 
         if !self.preprocess && self.current().is_punct("&") {
             self.advance();
-            return Ok(Node::addr(self.parse_cast()?, offset));
+            return Ok(Node::addr(self.parse_cast()?, span));
         }
 
         if !self.preprocess && self.current().is_punct("*") {
             self.advance();
-            return Ok(Node::deref(self.parse_cast()?, offset));
+            return Ok(Node::deref(self.parse_cast()?, span));
         }
 
         if self.current().is_punct("!") {
             self.advance();
-            return Ok(Node::not(self.parse_cast()?, offset));
+            return Ok(Node::not(self.parse_cast()?, span));
         }
 
         if self.current().is_punct("~") {
             self.advance();
-            return Ok(Node::bit_not(self.parse_cast()?, offset));
+            return Ok(Node::bit_not(self.parse_cast()?, span));
         }
 
         if !self.preprocess && self.current().is_punct("++") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_add(unary, Node::num(1, Type::INT, offset), offset)?;
-            return self.new_compound_assign(binary, offset);
+            let binary = self.new_add(unary, Node::num(1, Type::INT, span), span)?;
+            return self.new_compound_assign(binary, span);
         }
 
         if !self.preprocess && self.current().is_punct("--") {
             self.advance();
             let unary = self.parse_unary()?;
-            let binary = self.new_sub(unary, Node::num(1, Type::INT, offset), offset)?;
-            return self.new_compound_assign(binary, offset);
+            let binary = self.new_sub(unary, Node::num(1, Type::INT, span), span)?;
+            return self.new_compound_assign(binary, span);
         }
 
         if self.preprocess {
@@ -2607,18 +2548,18 @@ impl<'a> Parser<'a> {
         })?;
 
         if is_compound_literal {
-            let offset = self.current().offset;
+            let span = self.current().span;
             self.skip_punct("(")?;
             let ty = self.parse_typename()?;
             self.skip_punct(")")?;
             let init = self.parse_initializer(ty)?;
-            return self.new_compound_literal(init, offset);
+            return self.new_compound_literal(init, span);
         }
 
         let mut node = self.parse_primary()?;
 
         loop {
-            let offset = self.current().offset;
+            let span = self.current().span;
 
             if self.current().is_punct("(") {
                 node = self.parse_func_call(node)?;
@@ -2630,7 +2571,7 @@ impl<'a> Parser<'a> {
                 let index = self.parse_expr()?;
                 self.skip_punct("]")?;
                 // Canonicalize a[b] to *(a + b)
-                node = Node::deref(self.new_add(node, index, offset)?, offset);
+                node = Node::deref(self.new_add(node, index, span)?, span);
                 continue;
             }
 
@@ -2644,7 +2585,7 @@ impl<'a> Parser<'a> {
             if self.current().is_punct("->") {
                 self.advance();
                 // Canonicalize a->b to (*a).b
-                node = Node::deref(node, offset);
+                node = Node::deref(node, span);
                 node = self.new_member_access(node)?;
                 self.advance();
                 continue;
@@ -2652,13 +2593,13 @@ impl<'a> Parser<'a> {
 
             if self.current().is_punct("++") {
                 self.advance();
-                node = self.new_post_inc_dec(node, true, offset)?;
+                node = self.new_post_inc_dec(node, true, span)?;
                 continue;
             }
 
             if self.current().is_punct("--") {
                 self.advance();
-                node = self.new_post_inc_dec(node, false, offset)?;
+                node = self.new_post_inc_dec(node, false, span)?;
                 continue;
             }
 
@@ -2678,7 +2619,7 @@ impl<'a> Parser<'a> {
     ///   | <flonum>
     /// ```
     fn parse_primary(&mut self) -> Result<Node> {
-        let offset = self.current().offset;
+        let span = self.current().span;
 
         if self.current().is_punct("(") {
             self.advance();
@@ -2693,7 +2634,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let body = self.parse_compound_stmt()?;
                 self.skip_punct(")")?;
-                return Ok(Node::stmt_expr(body, offset));
+                return Ok(Node::stmt_expr(body, span));
             }
 
             let node = if self.preprocess {
@@ -2713,16 +2654,14 @@ impl<'a> Parser<'a> {
                 self.advance();
 
                 if self.at_typename() {
-                    let offset = self.current().offset;
+                    let span = self.current().span;
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
 
                     if self.types.is_incomplete(ty) {
-                        return Err(self
-                            .source
-                            .error_at(offset, "cannot apply 'sizeof' to incomplete type"));
+                        return Err(self.error(span, "cannot apply 'sizeof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.size(ty), Type::ULONG, offset));
+                    return Ok(Node::num(self.types.size(ty), Type::ULONG, span));
                 }
 
                 self.pos = pos;
@@ -2731,7 +2670,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.size(operand.expect_ty());
-            return Ok(Node::num(size, Type::ULONG, offset));
+            return Ok(Node::num(size, Type::ULONG, span));
         }
 
         if !self.preprocess && self.current().is_keyword(Keyword::Alignof) {
@@ -2742,16 +2681,14 @@ impl<'a> Parser<'a> {
                 self.advance();
 
                 if self.at_typename() {
-                    let offset = self.current().offset;
+                    let span = self.current().span;
                     let ty = self.parse_typename()?;
                     self.skip_punct(")")?;
 
                     if self.types.is_incomplete(ty) {
-                        return Err(self
-                            .source
-                            .error_at(offset, "cannot apply '_Alignof' to incomplete type"));
+                        return Err(self.error(span, "cannot apply '_Alignof' to incomplete type"));
                     }
-                    return Ok(Node::num(self.types.align(ty), Type::ULONG, offset));
+                    return Ok(Node::num(self.types.align(ty), Type::ULONG, span));
                 }
 
                 self.pos = pos;
@@ -2760,7 +2697,7 @@ impl<'a> Parser<'a> {
             let mut operand = self.parse_unary()?;
             self.infer_type(&mut operand)?;
             let size = self.types.align(operand.expect_ty());
-            return Ok(Node::num(size, Type::ULONG, offset));
+            return Ok(Node::num(size, Type::ULONG, span));
         }
 
         if let Some(name) = self.current().as_ident() {
@@ -2772,21 +2709,17 @@ impl<'a> Parser<'a> {
 
             let node = match self.find_ident(&name) {
                 Some(OrdinaryIdent::Local(local_id)) => {
-                    Node::entity(EntityRef::Local(local_id), offset)
+                    Node::entity(EntityRef::Local(local_id), span)
                 },
                 Some(OrdinaryIdent::Global(global_id, _)) => {
-                    Node::entity(EntityRef::Global(global_id), offset)
+                    Node::entity(EntityRef::Global(global_id), span)
                 },
-                Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), offset),
-                Some(OrdinaryIdent::Enumerator(val)) => {
-                    Node::num(val.bits(), val.ty.into(), offset)
-                },
+                Some(OrdinaryIdent::Function(id)) => Node::entity(EntityRef::Function(id), span),
+                Some(OrdinaryIdent::Enumerator(val)) => Node::num(val.bits(), val.ty.into(), span),
                 _ if self.current().is_punct("(") => {
-                    return Err(self
-                        .source
-                        .error_at(offset, "implicit declaration of a function"));
+                    return Err(self.error(span, "implicit declaration of a function"));
                 },
-                _ => return Err(self.source.error_at(offset, "undefined identifier")),
+                _ => return Err(self.error(span, "undefined identifier")),
             };
 
             return Ok(node);
@@ -2812,12 +2745,12 @@ impl<'a> Parser<'a> {
                 true,
             );
             self.advance();
-            return Ok(Node::entity(EntityRef::Global(global_id), offset));
+            return Ok(Node::entity(EntityRef::Global(global_id), span));
         }
 
         if let Some((num, ty)) = self.current().as_num() {
             self.advance();
-            return Ok(Node::num(num, ty, offset));
+            return Ok(Node::num(num, ty, span));
         }
 
         if let Some((num, ty)) = self.current().as_flonum() {
@@ -2828,7 +2761,7 @@ impl<'a> Parser<'a> {
             }
 
             self.advance();
-            return Ok(Node::flonum(num, ty, offset));
+            return Ok(Node::flonum(num, ty, span));
         }
 
         Err(self.error_current("expected an expression"))
@@ -2838,12 +2771,12 @@ impl<'a> Parser<'a> {
     /// <func-call> ::= "(" (<assign> ("," <assign>)*)? ")"
     /// ```
     fn parse_func_call(&mut self, mut callee: Node) -> Result<Node> {
-        let offset = self.current().offset;
+        let span = self.current().span;
         self.skip_punct("(")?;
 
         self.infer_type(&mut callee)?;
         let Some(func) = self.types.as_func(callee.expect_ty(), true).cloned() else {
-            return Err(self.source.error_at(offset, "not a function"));
+            return Err(self.error(span, "not a function"));
         };
         let mut param_tys = func.params.iter().copied();
 
@@ -2858,15 +2791,15 @@ impl<'a> Parser<'a> {
 
             if let Some(param_ty) = param_tys.next() {
                 if self.types.as_struct_or_union(param_ty).is_some() {
-                    return Err(self.source.error_at(
-                        arg.offset,
+                    return Err(self.error(
+                        arg.span,
                         "passing struct or union by value is not supported yet",
                     ));
                 }
                 self.apply_cast(&mut arg, param_ty)?;
             } else {
                 if !func.is_variadic {
-                    return Err(self.source.error_at(arg.offset, "too many arguments"));
+                    return Err(self.error(arg.span, "too many arguments"));
                 }
                 // Variadic function call applies default argument promotions
                 let ty = arg.expect_ty();
@@ -2886,7 +2819,7 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(callee, args, func.return_ty, offset))
+        Ok(Node::func_call(callee, args, func.return_ty, span))
     }
 
     /// ```bnf
@@ -2902,12 +2835,10 @@ impl<'a> Parser<'a> {
         loop {
             let declarator = self.parse_declarator(base_ty, false)?;
             if noreturn {
-                self.warn_at(declarator.offset, "typedef declared '_Noreturn'");
+                self.warn(declarator.span, "typedef declared '_Noreturn'");
             }
             let Some(name) = declarator.name else {
-                return Err(self
-                    .source
-                    .error_at(declarator.offset, "missing typedef name"));
+                return Err(self.error(declarator.span, "missing typedef name"));
             };
 
             if let Some(ident) = self.find_ident_current(&name) {
@@ -2915,16 +2846,13 @@ impl<'a> Parser<'a> {
                     OrdinaryIdent::Typedef(ty) => {
                         // Duplicate typedef with same type is allowed
                         if !self.types.same_type(ty, declarator.ty) {
-                            return Err(self
-                                .source
-                                .error_at(declarator.offset, "conflicting types"));
+                            return Err(self.error(declarator.span, "conflicting types"));
                         }
                     },
                     _ => {
-                        return Err(self.source.error_at(
-                            declarator.offset,
-                            "redeclared as a different kind of symbol",
-                        ));
+                        return Err(
+                            self.error(declarator.span, "redeclared as a different kind of symbol")
+                        );
                     },
                 }
             }
@@ -3047,7 +2975,7 @@ impl<'a> Parser<'a> {
 
         for param in params.into_iter().rev() {
             let Some(name) = param.name else {
-                return Err(self.source.error_at(param.offset, "missing parameter name"));
+                return Err(self.error(param.span, "missing parameter name"));
             };
             param_ids.push(self.create_local(name, param.ty, None));
         }
@@ -3097,7 +3025,7 @@ impl<'a> Parser<'a> {
         align: Option<u64>,
         storage: GlobalStorage,
         is_static: bool,
-        offset: usize,
+        span: SourceSpan,
     ) -> Result<usize> {
         self.disallow_speculation();
 
@@ -3106,15 +3034,13 @@ impl<'a> Parser<'a> {
             Some(OrdinaryIdent::Global(global_id, true)) => Some(global_id),
             // Conflict with same-scope object that has no linkage
             Some(OrdinaryIdent::Global(_, false) | OrdinaryIdent::Local(_)) => {
-                return Err(self.source.error_at(
-                    offset,
+                return Err(self.error(
+                    span,
                     "extern declaration follows declaration with no linkage",
                 ));
             },
             Some(_) => {
-                return Err(self
-                    .source
-                    .error_at(offset, "redeclared as a different kind of symbol"));
+                return Err(self.error(span, "redeclared as a different kind of symbol"));
             },
             // Reuse linkage-bearing globals from outer scopes if any
             None => self.scopes.iter().rev().skip(1).find_map(|frame| {
@@ -3130,30 +3056,25 @@ impl<'a> Parser<'a> {
             return Ok(self.create_global(name, ty, align, storage, is_static));
         };
 
+        let merged_ty = self
+            .types
+            .merge(self.globals[global_id].ty, ty)
+            .ok_or_else(|| self.error(span, "conflicting types"))?;
+
         let global = &mut self.globals[global_id];
         global.align = global.align.max(align);
-
-        global.ty = self
-            .types
-            .merge(global.ty, ty)
-            .ok_or_else(|| self.source.error_at(offset, "conflicting types"))?;
+        global.ty = merged_ty;
 
         if global.is_static && !is_static && !matches!(storage, GlobalStorage::Decl) {
             // A non-static extern can follow a static declaration
-            return Err(self
-                .source
-                .error_at(offset, "non-static declaration follows static declaration"));
+            return Err(self.error(span, "non-static declaration follows static declaration"));
         }
         if !global.is_static && is_static {
-            return Err(self
-                .source
-                .error_at(offset, "static declaration follows non-static declaration"));
+            return Err(self.error(span, "static declaration follows non-static declaration"));
         }
 
         if global.storage.merge(storage) {
-            return Err(self
-                .source
-                .error_at(offset, "redefinition of global variable"));
+            return Err(self.error(span, "redefinition of global variable"));
         }
 
         // Rebind the reused global in current scope
@@ -3198,7 +3119,7 @@ impl<'a> Parser<'a> {
         name: SmolStr,
         ty: Type,
         noreturn: bool,
-        offset: usize,
+        span: SourceSpan,
     ) -> Result<usize> {
         self.disallow_speculation();
 
@@ -3206,9 +3127,7 @@ impl<'a> Parser<'a> {
             // Reuse same-scope function declaration
             Some(OrdinaryIdent::Function(func_id)) => Some(func_id),
             Some(_) => {
-                return Err(self
-                    .source
-                    .error_at(offset, "redeclared as a different kind of symbol"));
+                return Err(self.error(span, "redeclared as a different kind of symbol"));
             },
             // Reuse function declarations from outer scopes if any
             None => self.scopes.iter().rev().skip(1).find_map(|frame| {
@@ -3225,7 +3144,7 @@ impl<'a> Parser<'a> {
         };
 
         if !self.types.same_type(self.functions[func_id].ty, ty) {
-            return Err(self.source.error_at(offset, "conflicting types"));
+            return Err(self.error(span, "conflicting types"));
         }
         self.functions[func_id].noreturn |= noreturn;
 
@@ -3234,7 +3153,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Build an addition node with pointer scaling.
-    fn new_add(&mut self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
+    fn new_add(&mut self, mut lhs: Node, mut rhs: Node, span: SourceSpan) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
@@ -3243,11 +3162,11 @@ impl<'a> Parser<'a> {
 
         // num + num
         if lhs_ty.is_arith() && rhs_ty.is_arith() {
-            return Ok(Node::binary(BinaryOp::Add, lhs, rhs, offset));
+            return Ok(Node::binary(BinaryOp::Add, lhs, rhs, span));
         }
 
         if self.types.base(lhs_ty).is_some() && self.types.base(rhs_ty).is_some() {
-            return Err(self.source.error_at(offset, "invalid operands"));
+            return Err(self.error(span, "invalid operands"));
         }
 
         // Canonicalize num + ptr to ptr + num
@@ -3261,15 +3180,15 @@ impl<'a> Parser<'a> {
         let scaled_rhs = Node::binary(
             BinaryOp::Mul,
             rhs,
-            Node::num(base_size, Type::LONG, offset),
-            offset,
+            Node::num(base_size, Type::LONG, span),
+            span,
         );
-        let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, offset);
+        let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, span);
         Ok(node)
     }
 
     /// Build a subtraction node with pointer scaling.
-    fn new_sub(&mut self, mut lhs: Node, mut rhs: Node, offset: usize) -> Result<Node> {
+    fn new_sub(&mut self, mut lhs: Node, mut rhs: Node, span: SourceSpan) -> Result<Node> {
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
 
@@ -3278,7 +3197,7 @@ impl<'a> Parser<'a> {
 
         // num - num
         if lhs_ty.is_arith() && rhs_ty.is_arith() {
-            return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, offset));
+            return Ok(Node::binary(BinaryOp::Sub, lhs, rhs, span));
         }
 
         // ptr - num
@@ -3289,10 +3208,10 @@ impl<'a> Parser<'a> {
             let scaled_rhs = Node::binary(
                 BinaryOp::Mul,
                 rhs,
-                Node::num(base_size, Type::LONG, offset),
-                offset,
+                Node::num(base_size, Type::LONG, span),
+                span,
             );
-            let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, offset);
+            let node = Node::binary(BinaryOp::Sub, lhs, scaled_rhs, span);
             return Ok(node);
         }
 
@@ -3301,25 +3220,25 @@ impl<'a> Parser<'a> {
             && self.types.base(rhs_ty).is_some()
         {
             let base_size = self.types.size(base_ty);
-            let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, offset);
+            let mut diff = Node::binary(BinaryOp::Sub, lhs, rhs, span);
             diff.ty = Some(Type::LONG);
             let node = Node::binary(
                 BinaryOp::Div,
                 diff,
-                Node::num(base_size, Type::LONG, offset),
-                offset,
+                Node::num(base_size, Type::LONG, span),
+                span,
             );
             return Ok(node);
         }
 
-        Err(self.source.error_at(offset, "invalid operands"))
+        Err(self.error(span, "invalid operands"))
     }
 
     /// Build a compound assignment operation node.
     ///
     /// This is desugared into making a temporary pointer to `lhs`, performing
     /// the binary operation, and assigning the result back to `lhs`.
-    fn new_compound_assign(&mut self, binary: Node, offset: usize) -> Result<Node> {
+    fn new_compound_assign(&mut self, binary: Node, span: SourceSpan) -> Result<Node> {
         let NodeKind::Binary {
             op,
             mut lhs,
@@ -3337,48 +3256,43 @@ impl<'a> Parser<'a> {
         let tmp = EntityRef::Local(self.create_local("", lhs_ty, None));
 
         // tmp = &lhs;
-        let assign1 = Node::assign(Node::entity(tmp, offset), Node::addr(lhs, offset), offset);
+        let assign1 = Node::assign(Node::entity(tmp, span), Node::addr(lhs, span), span);
 
         // *tmp = *tmp op rhs;
         let assign2 = Node::assign(
-            Node::deref(Node::entity(tmp, offset), offset),
-            Node::binary(
-                op,
-                Node::deref(Node::entity(tmp, offset), offset),
-                rhs,
-                offset,
-            ),
-            offset,
+            Node::deref(Node::entity(tmp, span), span),
+            Node::binary(op, Node::deref(Node::entity(tmp, span), span), rhs, span),
+            span,
         );
 
         // (tmp = &lhs, *tmp = *tmp op rhs)
-        Ok(Node::comma(assign1, assign2, offset))
+        Ok(Node::comma(assign1, assign2, span))
     }
 
     /// Build a post increment/decrement node.
     ///
     /// Post increment is desugared into `(typeof node)((node += 1) - 1)`, and
     /// post decrement is desugared into `(typeof node)((node -= 1) + 1)`.
-    fn new_post_inc_dec(&mut self, mut node: Node, is_inc: bool, offset: usize) -> Result<Node> {
+    fn new_post_inc_dec(&mut self, mut node: Node, is_inc: bool, span: SourceSpan) -> Result<Node> {
         self.infer_type(&mut node)?;
         let ty = node.expect_ty();
 
-        let mut addend = Node::num(1, Type::LONG, offset);
-        let mut neg_addend = Node::neg(Node::num(1, Type::LONG, offset), offset);
+        let mut addend = Node::num(1, Type::LONG, span);
+        let mut neg_addend = Node::neg(Node::num(1, Type::LONG, span), span);
         if !is_inc {
             std::mem::swap(&mut addend, &mut neg_addend);
         }
 
         // node += addend
-        let binary = self.new_add(node, addend, offset)?;
-        let assign = self.new_compound_assign(binary, offset)?;
+        let binary = self.new_add(node, addend, span)?;
+        let assign = self.new_compound_assign(binary, span)?;
 
         // (node += addend) - addend
-        let mut post = self.new_add(assign, neg_addend, offset)?;
+        let mut post = self.new_add(assign, neg_addend, span)?;
         self.infer_type(&mut post)?;
 
         // (typeof node)((node += addend) - addend) (or reverse)
-        Ok(Node::cast(post, ty, offset))
+        Ok(Node::cast(post, ty, span))
     }
 
     /// Build a member access node for the given node.
@@ -3414,7 +3328,7 @@ impl<'a> Parser<'a> {
             None => return Err(self.error_current("no such member")),
         };
 
-        Ok(Node::member(node, member, self.current().offset))
+        Ok(Node::member(node, member, self.current().span))
     }
 
     /// Lower a local variable initializer.
@@ -3425,11 +3339,11 @@ impl<'a> Parser<'a> {
         &mut self,
         local_id: usize,
         init: Initializer,
-        offset: usize,
+        span: SourceSpan,
         stmts: &mut Vec<Stmt>,
     ) -> Result<()> {
         if matches!(init.kind, InitializerKind::Aggregate(_)) {
-            stmts.push(Stmt::memzero_local(local_id, offset));
+            stmts.push(Stmt::memzero_local(local_id, span));
         }
         self.new_local_init2(local_id, init, &mut Vec::new(), stmts)
     }
@@ -3443,23 +3357,21 @@ impl<'a> Parser<'a> {
     ) -> Result<()> {
         match init.kind {
             InitializerKind::Expr(rhs) => {
-                let offset = rhs.offset;
+                let span = rhs.span;
 
-                let mut lhs = Node::entity(EntityRef::Local(local_id), offset);
+                let mut lhs = Node::entity(EntityRef::Local(local_id), span);
                 for step in path.iter() {
                     lhs = match step {
                         InitializerStep::Index(index) => {
-                            let index = Node::num(*index as _, Type::ULONG, offset);
-                            Node::deref(self.new_add(lhs, index, offset)?, offset)
+                            let index = Node::num(*index as _, Type::ULONG, span);
+                            Node::deref(self.new_add(lhs, index, span)?, span)
                         },
-                        InitializerStep::Member(member) => {
-                            Node::member(lhs, member.clone(), offset)
-                        },
+                        InitializerStep::Member(member) => Node::member(lhs, member.clone(), span),
                     };
                 }
 
-                let expr = Node::assign(lhs, rhs, offset);
-                stmts.push(Stmt::expr(expr, offset));
+                let expr = Node::assign(lhs, rhs, span);
+                stmts.push(Stmt::expr(expr, span));
             },
             InitializerKind::Aggregate(children) => {
                 if self.types.as_array(init.ty).is_some() {
@@ -3513,9 +3425,7 @@ impl<'a> Parser<'a> {
             InitializerKind::Expr(mut rhs) => match self.eval_global_init(&mut rhs)? {
                 GlobalInitValue::Num(val) => {
                     let Some(const_ty) = self.types.to_const(init.ty) else {
-                        return Err(self
-                            .source
-                            .error_at(rhs.offset, "not a compile-time constant"));
+                        return Err(self.error(rhs.span, "not a compile-time constant"));
                     };
                     write(val.cast(const_ty), self.types.size(init.ty))
                 },
@@ -3523,7 +3433,7 @@ impl<'a> Parser<'a> {
                     if self.types.size(init.ty) != 8 {
                         // Global relocations are emitted as ".quad" so they must
                         // occpy one pointer-sized slot
-                        return Err(self.source.error_at(rhs.offset, "invalid initializer"));
+                        return Err(self.error(rhs.span, "invalid initializer"));
                     }
                     relocations.push(Relocation {
                         offset,
@@ -3556,11 +3466,9 @@ impl<'a> Parser<'a> {
     /// makes a temporary variable, initializes it, and use it as the result.
     /// Otherwise (at file scope), this is desugared into an initialized hidden
     /// global object.
-    fn new_compound_literal(&mut self, init: Initializer, offset: usize) -> Result<Node> {
+    fn new_compound_literal(&mut self, init: Initializer, span: SourceSpan) -> Result<Node> {
         if self.types.is_incomplete(init.ty) {
-            return Err(self
-                .source
-                .error_at(offset, "compound literal has incomplete type"));
+            return Err(self.error(span, "compound literal has incomplete type"));
         }
 
         if self.active_function.is_none() {
@@ -3568,23 +3476,23 @@ impl<'a> Parser<'a> {
             let ty = init.ty;
             let storage = GlobalStorage::Data(self.new_global_init(init)?);
             let global_id = self.create_global(label, ty, None, storage, true);
-            return Ok(Node::entity(EntityRef::Global(global_id), offset));
+            return Ok(Node::entity(EntityRef::Global(global_id), span));
         }
 
         let tmp_id = self.create_local("", init.ty, None);
         let tmp = EntityRef::Local(tmp_id);
         let mut stmts = Vec::new();
-        self.new_local_init(tmp_id, init, offset, &mut stmts)?;
-        stmts.push(Stmt::expr(Node::entity(tmp, offset), offset));
-        Ok(Node::stmt_expr(stmts, offset))
+        self.new_local_init(tmp_id, init, span, &mut stmts)?;
+        stmts.push(Stmt::expr(Node::entity(tmp, span), span));
+        Ok(Node::stmt_expr(stmts, span))
     }
 
     /// Apply a cast on the given node to the given type.
     fn apply_cast(&mut self, node: &mut Node, ty: Type) -> Result<()> {
-        let offset = node.offset;
-        let mut old = std::mem::take(node);
+        let span = node.span;
+        let mut old = std::mem::replace(node, Node::dummy());
         self.infer_type(&mut old)?;
-        *node = Node::cast(old, ty, offset);
+        *node = Node::cast(old, ty, span);
         Ok(())
     }
 
@@ -3669,7 +3577,7 @@ impl<'a> Parser<'a> {
                 }
                 let ty = callee.expect_ty();
                 let Some(func) = self.types.as_func(ty, true) else {
-                    return Err(self.source.error_at(node.offset, "not a function"));
+                    return Err(self.error(node.span, "not a function"));
                 };
                 func.return_ty
             },
@@ -3680,14 +3588,10 @@ impl<'a> Parser<'a> {
             NodeKind::Deref(expr) => {
                 self.infer_type(expr)?;
                 let Some(base) = self.types.base(expr.expect_ty()) else {
-                    return Err(self
-                        .source
-                        .error_at(node.offset, "invalid pointer dereference"));
+                    return Err(self.error(node.span, "invalid pointer dereference"));
                 };
                 if base == Type::Void {
-                    return Err(self
-                        .source
-                        .error_at(node.offset, "dereferencing a void pointer"));
+                    return Err(self.error(node.span, "dereferencing a void pointer"));
                 }
                 base
             },
@@ -3697,7 +3601,7 @@ impl<'a> Parser<'a> {
                 if !ty.is_flonum() {
                     ty = ty
                         .promote_int()
-                        .ok_or_else(|| self.source.error_at(node.offset, "invalid operand type"))?
+                        .ok_or_else(|| self.error(node.span, "invalid operand type"))?
                 };
                 self.apply_cast(expr, ty)?;
                 ty
@@ -3709,7 +3613,7 @@ impl<'a> Parser<'a> {
             NodeKind::BitNot(expr) => {
                 self.infer_type(expr)?;
                 let Some(ty) = expr.expect_ty().promote_int() else {
-                    return Err(self.source.error_at(node.offset, "invalid operand type"));
+                    return Err(self.error(node.span, "invalid operand type"));
                 };
                 self.apply_cast(expr, ty)?;
                 ty
@@ -3725,7 +3629,7 @@ impl<'a> Parser<'a> {
 
                 let lhs_ty = lhs.expect_ty();
                 if self.types.as_array(lhs_ty).is_some() {
-                    return Err(self.source.error_at(lhs.offset, "not an lvalue"));
+                    return Err(self.error(lhs.span, "not an lvalue"));
                 }
                 if self.types.as_struct_or_union(lhs_ty).is_none() {
                     self.apply_cast(rhs, lhs_ty)?;
@@ -3752,22 +3656,22 @@ impl<'a> Parser<'a> {
                     BinaryOp::Add | BinaryOp::Sub => self.apply_usual_arith_conv(lhs, rhs)?,
                     BinaryOp::Mul | BinaryOp::Div => {
                         if !lhs_ty.is_arith() || !rhs_ty.is_arith() {
-                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                            return Err(self.error(node.span, "invalid operands"));
                         }
                         self.apply_usual_arith_conv(lhs, rhs)?
                     },
                     BinaryOp::Mod | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
                         if !lhs_ty.is_integer() || !rhs_ty.is_integer() {
-                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                            return Err(self.error(node.span, "invalid operands"));
                         }
                         self.apply_usual_arith_conv(lhs, rhs)?
                     },
                     BinaryOp::BitShl | BinaryOp::BitShr => {
                         let Some(lhs_ty) = lhs_ty.promote_int() else {
-                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                            return Err(self.error(node.span, "invalid operands"));
                         };
                         let Some(rhs_ty) = rhs_ty.promote_int() else {
-                            return Err(self.source.error_at(node.offset, "invalid operands"));
+                            return Err(self.error(node.span, "invalid operands"));
                         };
                         self.apply_cast(lhs, lhs_ty)?;
                         self.apply_cast(rhs, rhs_ty)?;
@@ -3808,8 +3712,8 @@ impl<'a> Parser<'a> {
                     self.infer_type(expr)?;
                     expr.expect_ty()
                 } else {
-                    return Err(self.source.error_at(
-                        node.offset,
+                    return Err(self.error(
+                        node.span,
                         "statement expression returning void is not supported",
                     ));
                 }
@@ -3831,7 +3735,7 @@ impl<'a> Parser<'a> {
         stmt: &Stmt,
         labels: &mut FxHashMap<SmolStr, SmolStr>,
     ) -> Result<()> {
-        let offset = stmt.offset;
+        let span = stmt.span;
         match &stmt.kind {
             StmtKind::Expr(node) => self.collect_labels(node, labels)?,
             StmtKind::Return(node) => {
@@ -3881,7 +3785,7 @@ impl<'a> Parser<'a> {
                 if let Some(name) = name
                     && labels.insert(name.clone(), label.clone()).is_some()
                 {
-                    return Err(self.source.error_at(offset, "duplicate label"));
+                    return Err(self.error(span, "duplicate label"));
                 }
                 self.collect_labels_stmt(body, labels)?;
             },
@@ -3994,7 +3898,7 @@ impl<'a> Parser<'a> {
             StmtKind::Jump { label, label_name } => {
                 if let Some(name) = label_name {
                     let Some(name) = labels.get(name) else {
-                        return Err(self.source.error_at(stmt.offset, "use of undeclared label"));
+                        return Err(self.error(stmt.span, "use of undeclared label"));
                     };
                     let _ = label.insert(name.clone());
                 }
@@ -4060,9 +3964,7 @@ impl<'a> Parser<'a> {
     fn eval(&mut self, node: &mut Node) -> Result<ConstValue> {
         self.infer_type(node)?;
         let Some(ty) = self.types.to_const(node.expect_ty()) else {
-            return Err(self
-                .source
-                .error_at(node.offset, "not a compile-time constant"));
+            return Err(self.error(node.span, "not a compile-time constant"));
         };
 
         Ok(match &mut node.kind {
@@ -4081,11 +3983,11 @@ impl<'a> Parser<'a> {
                 BinaryOp::Div => self
                     .eval(lhs)?
                     .div(self.eval(rhs)?, ty)
-                    .ok_or_else(|| self.source.error_at(node.offset, "division by zero"))?,
+                    .ok_or_else(|| self.error(node.span, "division by zero"))?,
                 BinaryOp::Mod => self
                     .eval(lhs)?
                     .rem(self.eval(rhs)?, ty)
-                    .ok_or_else(|| self.source.error_at(node.offset, "division by zero"))?,
+                    .ok_or_else(|| self.error(node.span, "division by zero"))?,
                 BinaryOp::BitAnd => self.eval(lhs)?.bit_and(self.eval(rhs)?, ty),
                 BinaryOp::BitOr => self.eval(lhs)?.bit_or(self.eval(rhs)?, ty),
                 BinaryOp::BitXor => self.eval(lhs)?.bit_xor(self.eval(rhs)?, ty),
@@ -4116,9 +4018,7 @@ impl<'a> Parser<'a> {
             },
             NodeKind::Dummy => unreachable!(),
             _ => {
-                return Err(self
-                    .source
-                    .error_at(node.offset, "not a compile-time constant"));
+                return Err(self.error(node.span, "not a compile-time constant"));
             },
         })
     }
@@ -4141,9 +4041,7 @@ impl<'a> Parser<'a> {
         }
 
         let Some(const_ty) = self.types.to_const(ty) else {
-            return Err(self
-                .source
-                .error_at(node.offset, "not a compile-time constant"));
+            return Err(self.error(node.span, "not a compile-time constant"));
         };
 
         Ok(match &mut node.kind {
@@ -4158,13 +4056,11 @@ impl<'a> Parser<'a> {
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs))
                         | (GlobalInitValue::Num(rhs), GlobalInitValue::Reloc(label, addend)) => {
                             if rhs.ty.is_flonum() {
-                                return Err(self
-                                    .source
-                                    .error_at(node.offset, "invalid initializer"));
+                                return Err(self.error(node.span, "invalid initializer"));
                             }
                             GlobalInitValue::Reloc(label, addend.wrapping_add(rhs.bits() as i64))
                         },
-                        _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                        _ => return Err(self.error(node.span, "invalid initializer")),
                     },
                     BinaryOp::Sub => match (lhs, rhs) {
                         (GlobalInitValue::Num(lhs), GlobalInitValue::Num(rhs)) => {
@@ -4172,13 +4068,11 @@ impl<'a> Parser<'a> {
                         },
                         (GlobalInitValue::Reloc(label, addend), GlobalInitValue::Num(rhs)) => {
                             if rhs.ty.is_flonum() {
-                                return Err(self
-                                    .source
-                                    .error_at(node.offset, "invalid initializer"));
+                                return Err(self.error(node.span, "invalid initializer"));
                             }
                             GlobalInitValue::Reloc(label, addend.wrapping_sub(rhs.bits() as i64))
                         },
-                        _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                        _ => return Err(self.error(node.span, "invalid initializer")),
                     },
                     _ => GlobalInitValue::Num(self.eval(node)?),
                 }
@@ -4201,7 +4095,7 @@ impl<'a> Parser<'a> {
                     if matches!(ty, Type::LONG | Type::ULONG) || self.types.is_ptr(ty) {
                         GlobalInitValue::Reloc(label, addend)
                     } else {
-                        return Err(self.source.error_at(node.offset, "invalid initializer"));
+                        return Err(self.error(node.span, "invalid initializer"));
                     }
                 },
             },
@@ -4219,7 +4113,7 @@ impl<'a> Parser<'a> {
                 let label = match entity {
                     EntityRef::Global(global_id) => self.globals[*global_id].name.clone(),
                     EntityRef::Function(function_id) => self.functions[*function_id].name.clone(),
-                    _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                    _ => return Err(self.error(node.span, "invalid initializer")),
                 };
                 GlobalInitValue::Reloc(label, 0)
             },
@@ -4228,9 +4122,9 @@ impl<'a> Parser<'a> {
                 GlobalInitValue::Reloc(label, addend) => {
                     GlobalInitValue::Reloc(label, addend + member.offset as i64)
                 },
-                _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+                _ => return Err(self.error(node.span, "invalid initializer")),
             },
-            _ => return Err(self.source.error_at(node.offset, "invalid initializer")),
+            _ => return Err(self.error(node.span, "invalid initializer")),
         })
     }
 }

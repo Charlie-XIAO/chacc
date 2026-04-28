@@ -2,14 +2,14 @@
 
 use std::io::Write;
 
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::SmolStr;
 
 use crate::ast::{
     BinaryOp, EntityRef, Function, GlobalInitData, GlobalStorage, GlobalVar, LocalVar, Node,
     NodeKind, Program, Stmt, StmtKind,
 };
 use crate::error::Result;
-use crate::source::Source;
+use crate::source::{SourceMap, SourceSpan};
 use crate::types::{Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE, align_to};
 
@@ -164,21 +164,21 @@ struct FunctionState {
 
 /// A x86-64 assembly code generator.
 pub struct Codegen<'a, W: Write> {
-    source: &'a Source,
+    source_map: &'a SourceMap,
     out: &'a mut W,
     types: TypeStore,
     functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
     next_label: usize,
-    last_loc: Option<(u32, u32)>,
+    last_loc: Option<(usize, u32, u32)>,
     function: Option<FunctionState>,
 }
 
 impl<'a, W: Write> Codegen<'a, W> {
     /// Create a code generator from source.
-    pub fn new(source: &'a Source, out: &'a mut W) -> Result<Self> {
+    pub fn new(source_map: &'a SourceMap, out: &'a mut W) -> Result<Self> {
         Ok(Self {
-            source,
+            source_map,
             out,
             types: TypeStore::default(),
             functions: Vec::new(),
@@ -211,7 +211,9 @@ impl<'a, W: Write> Codegen<'a, W> {
             globals,
         } = program;
 
-        writeln!(self.out, "  .file 1 \"{}\"", self.source.name())?;
+        for source in self.source_map.iter() {
+            writeln!(self.out, "  .file {} \"{}\"", source.id + 1, source.name)?;
+        }
 
         self.types = types;
         self.types.frozen = true;
@@ -379,7 +381,7 @@ impl<'a, W: Write> Codegen<'a, W> {
 
     /// Generate assembly for a statement.
     fn gen_stmt(&mut self, stmt: &Stmt) -> Result<()> {
-        self.gen_loc(stmt.offset)?;
+        self.gen_loc(stmt.span)?;
 
         match &stmt.kind {
             StmtKind::Expr(expr) => self.gen_expr(expr)?,
@@ -538,16 +540,16 @@ impl<'a, W: Write> Codegen<'a, W> {
             NodeKind::StmtExpr(body) => {
                 let Some((last, prefix)) = body.split_last() else {
                     return Err(self
-                        .source
-                        .error_at(node.offset, "invalid use of void expression as lvalue"));
+                        .source_map
+                        .error(node.span, "invalid use of void expression as lvalue"));
                 };
                 for stmt in prefix {
                     self.gen_stmt(stmt)?;
                 }
                 let StmtKind::Expr(expr) = &last.kind else {
                     return Err(self
-                        .source
-                        .error_at(node.offset, "invalid use of void expression as lvalue"));
+                        .source_map
+                        .error(node.span, "invalid use of void expression as lvalue"));
                 };
                 self.gen_addr(expr)
             },
@@ -556,7 +558,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                 writeln!(self.out, "  add ${}, %rax", member.offset)?;
                 Ok(())
             },
-            _ => Err(self.source.error_at(node.offset, "not an lvalue")),
+            _ => Err(self.source_map.error(node.span, "not an lvalue")),
         }
     }
 
@@ -680,7 +682,7 @@ impl<'a, W: Write> Codegen<'a, W> {
 
     /// Generate assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
-        self.gen_loc(node.offset)?;
+        self.gen_loc(node.span)?;
 
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
@@ -697,9 +699,9 @@ impl<'a, W: Write> Codegen<'a, W> {
             },
             NodeKind::FuncCall { callee, args } => {
                 if args.len() > MAX_FUNC_PARAMS {
-                    return Err(self.source.error_at(
-                        node.offset,
-                        format_smolstr!("too many arguments; expected at most {MAX_FUNC_PARAMS}"),
+                    return Err(self.source_map.error(
+                        node.span,
+                        format!("too many arguments; expected at most {MAX_FUNC_PARAMS}"),
                     ));
                 }
 
@@ -865,10 +867,9 @@ impl<'a, W: Write> Codegen<'a, W> {
                             writeln!(self.out, "  setae %al")?;
                         },
                         _ => {
-                            return Err(self.source.error_at(
-                                node.offset,
-                                "invalid operator for floating-point operands",
-                            ));
+                            return Err(self
+                                .source_map
+                                .error(node.span, "invalid operator for floating-point operands"));
                         },
                     }
 
@@ -981,13 +982,13 @@ impl<'a, W: Write> Codegen<'a, W> {
     }
 
     /// Generate a `.loc` directive if the source location changed.
-    fn gen_loc(&mut self, offset: usize) -> Result<()> {
-        let loc = self.source.line_col(offset);
+    fn gen_loc(&mut self, span: SourceSpan) -> Result<()> {
+        let loc = self.source_map.file_line_col(span);
         if self.last_loc == Some(loc) {
             return Ok(());
         }
         self.last_loc = Some(loc);
-        writeln!(self.out, "  .loc 1 {} {}", loc.0, loc.1)?;
+        writeln!(self.out, "  .loc {} {} {}", loc.0, loc.1, loc.2)?;
         Ok(())
     }
 

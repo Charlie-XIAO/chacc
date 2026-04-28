@@ -5,12 +5,12 @@ use std::io::Write;
 use std::path::Path;
 
 use rustc_hash::FxHashMap;
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::SmolStr;
 
 use crate::constexpr::ConstValue;
 use crate::error::Result;
 use crate::parse::Parser;
-use crate::source::Source;
+use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer};
 use crate::types::Type;
 
@@ -25,7 +25,7 @@ enum CondFrameContext {
 /// A frame for conditional compilation.
 #[derive(Debug)]
 struct CondFrame {
-    offset: usize,
+    span: SourceSpan,
     included: bool,
     ctx: CondFrameContext,
 }
@@ -33,7 +33,7 @@ struct CondFrame {
 /// Preprocessor for a C token stream.
 #[derive(Debug)]
 pub struct Preprocessor<'a, S: PreprocessorSink> {
-    source: &'a Source,
+    source_map: &'a mut SourceMap,
     input: VecDeque<Token>,
     sink: &'a mut S,
     conds: Vec<CondFrame>,
@@ -45,9 +45,9 @@ where
     S: PreprocessorSink,
 {
     /// Create a new preprocessor for the given token stream.
-    pub fn new(source: &'a Source, tokens: Vec<Token>, sink: &'a mut S) -> Self {
+    pub fn new(source_map: &'a mut SourceMap, tokens: Vec<Token>, sink: &'a mut S) -> Self {
         Self {
-            source,
+            source_map,
             input: tokens.into(),
             sink,
             conds: Vec::new(),
@@ -71,7 +71,7 @@ where
     }
 
     /// Define a macro.
-    fn define_macro(&mut self, name: SmolStr, body: Vec<Token>, offset: usize) -> Result<()> {
+    fn define_macro(&mut self, name: SmolStr, body: Vec<Token>, span: SourceSpan) -> Result<()> {
         use std::collections::hash_map::Entry;
 
         match self.macros.entry(name) {
@@ -84,8 +84,7 @@ where
                 let old_body = entry.get();
                 if old_body.len() == body.len() {
                     for (old, new) in old_body.iter().zip(&body) {
-                        if self.source.slice(old.offset, old.len)?
-                            != self.source.slice(new.offset, new.len)?
+                        if self.source_map.text(old.span) != self.source_map.text(new.span)
                             || old.follows_space != new.follows_space
                         {
                             same = false;
@@ -97,7 +96,7 @@ where
                 }
 
                 if !same {
-                    self.source.warn_at(offset, "redefinition of macro");
+                    self.source_map.warn(span, "redefinition of macro");
                     entry.insert(body);
                 }
             },
@@ -128,12 +127,12 @@ where
 
     /// Skip extra tokens in the current logical line, if any.
     ///
-    /// Returns the offset of the first skipped token, if any. Returns `None` if
+    /// Returns the span of the first skipped token, if any. Returns `None` if
     /// no tokens were skipped.
-    fn skip_line(&mut self) -> Option<usize> {
+    fn skip_line(&mut self) -> Option<SourceSpan> {
         let token = self.next_if_mol()?;
         while self.next_if_mol().is_some() {}
-        Some(token.offset)
+        Some(token.span)
     }
 
     /// Skip tokens until the next matching "#else", "#elif", or "#endif".
@@ -160,7 +159,7 @@ where
 
             if directive.is_ident("elif") {
                 if depth == 0 {
-                    self.process_elif(token.offset)?;
+                    self.process_elif(token.span)?;
                     return Ok(());
                 }
                 self.skip_line();
@@ -169,7 +168,7 @@ where
 
             if directive.is_ident("else") {
                 if depth == 0 {
-                    self.process_else(token.offset)?;
+                    self.process_else(token.span)?;
                     return Ok(());
                 }
                 self.skip_line();
@@ -178,7 +177,7 @@ where
 
             if directive.is_ident("endif") {
                 if depth == 0 {
-                    self.process_endif(token.offset)?;
+                    self.process_endif(token.span)?;
                     return Ok(());
                 }
                 depth -= 1;
@@ -197,7 +196,7 @@ where
         while let Some(token) = self.input.pop_front() {
             if token.is_eof() {
                 if emit_eof {
-                    self.sink.emit(self.source, token)?;
+                    self.sink.emit(self.source_map, token)?;
                 }
                 break;
             }
@@ -207,7 +206,7 @@ where
             }
 
             if !(token.at_bol && token.is_punct("#")) {
-                self.sink.emit(self.source, token)?;
+                self.sink.emit(self.source_map, token)?;
                 continue;
             }
 
@@ -216,126 +215,125 @@ where
             };
 
             if directive.is_ident("include") {
-                self.process_include(token.offset)?;
+                self.process_include(token.span)?;
                 continue;
             }
 
             if directive.is_ident("define") {
-                self.process_define(token.offset)?;
+                self.process_define(token.span)?;
                 continue;
             }
 
             if directive.is_ident("undef") {
-                self.process_undef(token.offset)?;
+                self.process_undef(token.span)?;
                 continue;
             }
 
             if directive.is_ident("if") {
-                self.process_if(token.offset)?;
+                self.process_if(token.span)?;
                 continue;
             }
 
             if directive.is_ident("elif") {
-                self.process_elif(token.offset)?;
+                self.process_elif(token.span)?;
                 continue;
             }
 
             if directive.is_ident("else") {
-                self.process_else(token.offset)?;
+                self.process_else(token.span)?;
                 continue;
             }
 
             if directive.is_ident("endif") {
-                self.process_endif(token.offset)?;
+                self.process_endif(token.span)?;
                 continue;
             }
 
             return Err(self
-                .source
-                .error_at(directive.offset, "invalid preprocessor directive"));
+                .source_map
+                .error(directive.span, "invalid preprocessor directive"));
         }
 
         if let Some(frame) = self.conds.last() {
-            return Err(self.source.error_at(frame.offset, "unterminated #if"));
+            return Err(self.source_map.error(frame.span, "unterminated #if"));
         }
         Ok(())
     }
 
     /// Process an "#include" directive.
-    fn process_include(&mut self, offset: usize) -> Result<()> {
+    fn process_include(&mut self, span: SourceSpan) -> Result<()> {
         let Some(token) = self.next_if_mol() else {
             return Err(self
-                .source
-                .error_at(offset, "bare #include without a filename"));
+                .source_map
+                .error(span, "bare #include without a filename"));
         };
 
         let Some(content) = token.as_str() else {
-            return Err(self.source.error_at(token.offset, "expected a filename"));
+            return Err(self.source_map.error(token.span, "expected a filename"));
         };
         let Some(content) = content.as_ref().strip_suffix(b"\0") else {
-            return Err(self.source.error_at(token.offset, "expected a filename"));
+            return Err(self.source_map.error(token.span, "expected a filename"));
         };
 
         let path = std::str::from_utf8(content).map_err(|e| {
-            self.source
-                .error_at(token.offset, format_smolstr!("invalid filename: {e}"))
+            self.source_map
+                .error(token.span, format!("invalid filename: {e}"))
         })?;
 
         let path = self
-            .source
-            .path()
+            .source_map
+            .get(span.id)
+            .path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(path);
 
-        if let Some(offset) = self.skip_line() {
-            self.source.warn_at(offset, "extra tokens after #include");
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #include");
         }
 
         // TODO: Make parent macros visible inside includes
-        let source = Source::new(&path)?;
-        let tokens = Tokenizer::new(&source).tokenize()?;
-        Preprocessor::new(&source, tokens, self.sink).preprocess(false)?;
+        let source = self.source_map.push(&path)?;
+        let tokens = Tokenizer::new(source).tokenize()?;
+        Preprocessor::new(self.source_map, tokens, self.sink).preprocess(false)?;
 
         Ok(())
     }
 
     /// Process a "#define" directive.
-    fn process_define(&mut self, offset: usize) -> Result<()> {
+    fn process_define(&mut self, span: SourceSpan) -> Result<()> {
         let Some(token) = self.next_if_mol() else {
             return Err(self
-                .source
-                .error_at(offset, "no macro name given in #define"));
+                .source_map
+                .error(span, "no macro name given in #define"));
         };
 
         let Some(name) = token.as_ident() else {
             return Err(self
-                .source
-                .error_at(token.offset, "macro names must be identifiers"));
+                .source_map
+                .error(token.span, "macro names must be identifiers"));
         };
 
         let tokens = self.line();
-        self.define_macro(name, tokens, token.offset)?;
+        self.define_macro(name, tokens, token.span)?;
         Ok(())
     }
 
     /// Process an "#undef" directive.
-    fn process_undef(&mut self, offset: usize) -> Result<()> {
+    fn process_undef(&mut self, span: SourceSpan) -> Result<()> {
         let Some(token) = self.next_if_mol() else {
-            return Err(self
-                .source
-                .error_at(offset, "no macro name given in #undef"));
+            return Err(self.source_map.error(span, "no macro name given in #undef"));
         };
 
         let Some(name) = token.as_ident() else {
             return Err(self
-                .source
-                .error_at(token.offset, "macro names must be identifiers"));
+                .source_map
+                .error(token.span, "macro names must be identifiers"));
         };
 
         self.macros.remove(&name);
-        if let Some(offset) = self.skip_line() {
-            self.source.warn_at(offset, "extra tokens after #undef");
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #undef");
         }
         Ok(())
     }
@@ -358,30 +356,33 @@ where
             }
         }
 
-        let last = tokens.last().unwrap();
+        let last = tokens.last().unwrap().span;
         tokens.push(Token {
             kind: TokenKind::Eof,
-            len: 0,
-            offset: last.offset + last.len,
+            span: SourceSpan {
+                id: last.id,
+                offset: last.offset + last.len,
+                len: 0,
+            },
             at_bol: false,
             follows_space: false,
         });
 
-        let val = Parser::new(self.source, tokens, true).parse_constexpr()?;
+        let val = Parser::new(self.source_map, tokens, true).parse_constexpr()?;
         Ok(Some(val))
     }
 
     /// Process an "#if" directive.
-    fn process_if(&mut self, offset: usize) -> Result<()> {
+    fn process_if(&mut self, span: SourceSpan) -> Result<()> {
         let Some(val) = self.process_constexpr()? else {
             return Err(self
-                .source
-                .error_at(offset, "bare #if without an expression"));
+                .source_map
+                .error(span, "bare #if without an expression"));
         };
 
         let included = val.into();
         self.conds.push(CondFrame {
-            offset,
+            span,
             included,
             ctx: CondFrameContext::Then,
         });
@@ -393,12 +394,12 @@ where
     }
 
     /// Process an "#elif" directive.
-    fn process_elif(&mut self, offset: usize) -> Result<()> {
+    fn process_elif(&mut self, span: SourceSpan) -> Result<()> {
         let Some(mut frame) = self.conds.pop() else {
-            return Err(self.source.error_at(offset, "#elif without #if"));
+            return Err(self.source_map.error(span, "#elif without #if"));
         };
         if frame.ctx == CondFrameContext::Else {
-            return Err(self.source.error_at(offset, "#elif after #else"));
+            return Err(self.source_map.error(span, "#elif after #else"));
         }
 
         frame.ctx = CondFrameContext::Elif;
@@ -410,8 +411,8 @@ where
 
         let Some(val) = self.process_constexpr()? else {
             return Err(self
-                .source
-                .error_at(offset, "bare #elif without an expression"));
+                .source_map
+                .error(span, "bare #elif without an expression"));
         };
 
         let included = val.into();
@@ -425,20 +426,20 @@ where
     }
 
     /// Process an "#else" directive.
-    fn process_else(&mut self, offset: usize) -> Result<()> {
+    fn process_else(&mut self, span: SourceSpan) -> Result<()> {
         let Some(frame) = self.conds.last_mut() else {
-            return Err(self.source.error_at(offset, "#else without #if"));
+            return Err(self.source_map.error(span, "#else without #if"));
         };
         if frame.ctx == CondFrameContext::Else {
-            return Err(self.source.error_at(offset, "#else after #else"));
+            return Err(self.source_map.error(span, "#else after #else"));
         }
 
         let included = frame.included;
         frame.included = true;
         frame.ctx = CondFrameContext::Else;
 
-        if let Some(offset) = self.skip_line() {
-            self.source.warn_at(offset, "extra tokens after #else");
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #else");
         }
 
         if included {
@@ -448,12 +449,12 @@ where
     }
 
     /// Process an "#endif" directive.
-    fn process_endif(&mut self, offset: usize) -> Result<()> {
+    fn process_endif(&mut self, span: SourceSpan) -> Result<()> {
         if self.conds.pop().is_none() {
-            return Err(self.source.error_at(offset, "#endif without #if"));
+            return Err(self.source_map.error(span, "#endif without #if"));
         }
-        if let Some(offset) = self.skip_line() {
-            self.source.warn_at(offset, "extra tokens after #endif");
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #endif");
         }
         Ok(())
     }
@@ -462,7 +463,7 @@ where
 /// A sink for preprocessor output tokens.
 pub trait PreprocessorSink {
     /// Emit a preprocessed token.
-    fn emit(&mut self, source: &Source, token: Token) -> Result<()>;
+    fn emit(&mut self, source_map: &SourceMap, token: Token) -> Result<()>;
 }
 
 /// A preprocessor sink that stores the preprocessed tokens in memory.
@@ -470,7 +471,7 @@ pub trait PreprocessorSink {
 pub struct PreprocessedTokens(Vec<Token>);
 
 impl PreprocessorSink for PreprocessedTokens {
-    fn emit(&mut self, _source: &Source, token: Token) -> Result<()> {
+    fn emit(&mut self, _source_map: &SourceMap, token: Token) -> Result<()> {
         self.0.push(token);
         Ok(())
     }
@@ -498,14 +499,14 @@ impl<'a, W: Write> PreprocessedWriter<'a, W> {
 }
 
 impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
-    fn emit(&mut self, source: &Source, token: Token) -> Result<()> {
+    fn emit(&mut self, source_map: &SourceMap, token: Token) -> Result<()> {
         if !self.first && token.at_bol || token.is_eof() {
             writeln!(self.out)?;
         }
         if !token.at_bol && token.follows_space {
             write!(self.out, " ")?;
         }
-        write!(self.out, "{}", source.slice(token.offset, token.len)?)?;
+        write!(self.out, "{}", source_map.text(token.span))?;
         self.first = false;
         Ok(())
     }

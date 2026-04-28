@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
-use crate::error::{Error, Result};
-use crate::source::Source;
+use crate::error::Result;
+use crate::source::{Source, SourceSpan};
 use crate::types::Type;
 
 /// Reserved keywords recognized by the tokenizer.
@@ -77,8 +77,7 @@ pub enum TokenKind {
 #[derive(Clone, Debug)]
 pub struct Token {
     pub kind: TokenKind,
-    pub offset: usize,
-    pub len: usize,
+    pub span: SourceSpan,
     /// Whether this token begins a logical source line.
     pub at_bol: bool,
     /// Whether this token follows a space.
@@ -200,17 +199,15 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    /// Return an error diagnostic at the current token.
-    fn error_current(&self, message: impl Into<SmolStr>) -> Error {
-        self.source.error_at(self.pos, message)
-    }
-
     /// Push a token with the given kind.
     fn push(&mut self, kind: TokenKind, offset: usize, len: usize) {
         self.tokens.push(Token {
             kind,
-            offset,
-            len,
+            span: SourceSpan {
+                id: self.source.id,
+                offset,
+                len,
+            },
             at_bol: self.at_bol,
             follows_space: self.follows_space,
         });
@@ -220,7 +217,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Tokenize the entire source into a flat token list.
     pub fn tokenize(mut self) -> Result<Vec<Token>> {
-        let content = self.source.content();
+        let content = &self.source.content;
 
         while self.pos < content.len() {
             let ch = content.as_bytes()[self.pos];
@@ -273,7 +270,7 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            return Err(self.error_current("invalid token"));
+            return Err(self.source.error(self.pos, 1, "invalid token"));
         }
 
         self.push(TokenKind::Eof, self.pos, 0);
@@ -283,7 +280,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an inline or block comment, returning whether there is one.
     fn read_comment(&mut self) -> Result<bool> {
         let offset = self.pos;
-        let content = self.source.content();
+        let content = &self.source.content;
         let bytes = content.as_bytes();
         let rest = &content[offset..];
 
@@ -304,7 +301,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 self.pos += 1;
             }
-            return Err(self.source.error_at(offset, "unclosed block comment"));
+            return Err(self.source.error(offset, 2, "unclosed block comment"));
         }
 
         Ok(false)
@@ -312,7 +309,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a numeric literal token.
     fn read_numeric_literal(&mut self) -> Result<()> {
-        let content = self.source.content();
+        let content = &self.source.content;
         let bytes = content.as_bytes();
         let offset = self.pos;
 
@@ -348,12 +345,16 @@ impl<'a> Tokenizer<'a> {
                 || bytes.iter().any(|b| matches!(b, b'.' | b'e' | b'E')));
 
         if is_hex_flonum || is_dec_flonum {
-            let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum)
-                .ok_or_else(|| self.error_current("invalid floating-point literal"))?;
+            let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum).ok_or_else(|| {
+                self.source
+                    .error(self.pos, lexeme.len(), "invalid floating-point literal")
+            })?;
             self.push(TokenKind::Flonum(num, ty), offset, lexeme.len());
         } else {
-            let (num, ty) = parse_integer_literal(lexeme)
-                .ok_or_else(|| self.error_current("invalid integer literal"))?;
+            let (num, ty) = parse_integer_literal(lexeme).ok_or_else(|| {
+                self.source
+                    .error(self.pos, lexeme.len(), "invalid integer literal")
+            })?;
             self.push(TokenKind::Num(num, ty), offset, lexeme.len());
         }
 
@@ -363,7 +364,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a string literal token.
     fn read_string_literal(&mut self) -> Result<()> {
-        let bytes = self.source.content().as_bytes();
+        let bytes = self.source.content.as_bytes();
         let mut i = self.pos + 1; // Skip opening quote
         let mut content = Vec::new();
 
@@ -392,20 +393,22 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Err(self.error_current("unclosed string literal"))
+        Err(self
+            .source
+            .error(self.pos, i - self.pos, "unclosed string literal"))
     }
 
     /// Read a character literal token.
     fn read_char_literal(&mut self) -> Result<()> {
-        let bytes = self.source.content().as_bytes();
+        let bytes = self.source.content.as_bytes();
         let mut i = self.pos + 1; // Skip opening quote
 
         let byte = *bytes
             .get(i)
-            .ok_or_else(|| self.error_current("unclosed char literal"))?;
+            .ok_or_else(|| self.source.error(self.pos, 1, "unclosed char literal"))?;
 
         if matches!(byte, b'\n' | b'\0') {
-            return Err(self.error_current("unclosed char literal"));
+            return Err(self.source.error(self.pos, 1, "unclosed char literal"));
         }
 
         let ch = if byte == b'\\' {
@@ -421,22 +424,21 @@ impl<'a> Tokenizer<'a> {
         // e.g., '\x80' becomes -128 (wrapped around)
         let ch = ch as i8;
 
+        let len = i - self.pos + 1;
         match bytes[i..]
             .iter()
             .position(|&b| matches!(b, b'\'' | b'\n' | b'\0'))
             .filter(|&pos| bytes[i + pos] == b'\'')
         {
             Some(0) => {
-                self.push(
-                    TokenKind::Num(ch as _, Type::INT),
-                    self.pos,
-                    i - self.pos + 1,
-                );
+                self.push(TokenKind::Num(ch as _, Type::INT), self.pos, len);
                 self.pos = i + 1; // Skip past closing quote
                 Ok(())
             },
-            Some(_) => Err(self.error_current("multi-charcter char constant")),
-            None => Err(self.error_current("unclosed char literal")),
+            Some(j) => Err(self
+                .source
+                .error(self.pos, len + j, "multi-charcter char constant")),
+            None => Err(self.source.error(self.pos, 1, "unclosed char literal")),
         }
     }
 
@@ -444,7 +446,7 @@ impl<'a> Tokenizer<'a> {
     ///
     /// Returns the decoded byte and the number of bytes consumed.
     fn read_escape_char(&self, start: usize) -> Result<(u8, usize)> {
-        let bytes = self.source.content().as_bytes();
+        let bytes = self.source.content.as_bytes();
         let first = bytes[start];
 
         // Octal escape sequence (up to three octal digits)
@@ -466,7 +468,7 @@ impl<'a> Tokenizer<'a> {
         if first == b'x' {
             let mut pos = start + 1;
             if pos >= bytes.len() || !bytes[pos].is_ascii_hexdigit() {
-                return Err(self.source.error_at(pos, "invalid hex escape sequence"));
+                return Err(self.source.error(pos, 1, "invalid hex escape sequence"));
             }
 
             let mut hex_value = 0u8;
@@ -480,7 +482,7 @@ impl<'a> Tokenizer<'a> {
                         hex_value = next;
                     } else {
                         has_warned_overflow = true;
-                        self.source.warn_at(pos, "hex escape sequence out of range");
+                        self.source.warn(pos, 1, "hex escape sequence out of range");
                         hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
                     }
                 } else {
@@ -504,7 +506,7 @@ impl<'a> Tokenizer<'a> {
             b'e' => 27, // GNU C extension for the ASCII escape character
             b'"' | b'\'' | b'\\' | b'?' => first,
             _ => {
-                self.source.warn_at(start, "unknown escape sequence");
+                self.source.warn(start, 1, "unknown escape sequence");
                 first
             },
         };
@@ -514,7 +516,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an identifier token.
     fn read_ident(&mut self) {
         let offset = self.pos;
-        let content = self.source.content();
+        let content = &self.source.content;
 
         let len = content[self.pos..].bytes().take_while(is_ident2).count();
         let lexeme = &content[offset..offset + len];
@@ -525,7 +527,7 @@ impl<'a> Tokenizer<'a> {
     /// Read a punctuator token, returning whether there is one.
     fn read_punct(&mut self) -> bool {
         let offset = self.pos;
-        let rest = &self.source.content()[offset..];
+        let rest = &self.source.content[offset..];
 
         const PUNCTUATORS: &[&str] = &[
             "<<=", ">>=", "...", "==", "!=", "<=", ">=", "<<", ">>", "->", "+=", "-=", "*=", "/=",

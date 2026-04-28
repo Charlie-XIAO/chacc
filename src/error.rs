@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use smol_str::SmolStr;
-
 /// The severity level of a diagnostic message.
 #[derive(Clone, Copy, Debug, strum::Display)]
 #[strum(serialize_all = "lowercase")]
@@ -13,30 +11,30 @@ pub enum DiagnosticLevel {
 }
 
 /// A compiler diagnostic message.
-#[derive(Debug, thiserror::Error)]
-pub struct Diagnostic {
+#[derive(Debug)]
+pub struct Diagnostic<'a> {
     pub level: DiagnosticLevel,
-    pub source_name: SmolStr,
-    pub source_content: SmolStr,
-    pub message: SmolStr,
-    pub line: usize,
-    pub column: usize,
-    pub line_start: usize,
-    pub line_end: usize,
+    pub message: String,
+    pub file: &'a str,
+    pub line: &'a str,
+    pub line_no: usize,
+    pub col_no: usize,
+    pub span_len: usize,
 }
 
-impl std::fmt::Display for Diagnostic {
+impl<'a> std::fmt::Display for Diagnostic<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}:{}:{}: {}: {}\n{}\n{}^",
-            self.source_name,
-            self.line,
-            self.column,
+            "{}:{}:{}: {}: {}\n{}\n{}^{}",
+            self.file,
+            self.line_no,
+            self.col_no,
             self.level,
             self.message,
-            self.source_content[self.line_start..self.line_end].trim_end_matches(['\r', '\n']),
-            " ".repeat(self.column.saturating_sub(1)),
+            self.line,
+            " ".repeat(self.col_no.saturating_sub(1)),
+            "~".repeat(self.span_len.saturating_sub(1)),
         )
     }
 }
