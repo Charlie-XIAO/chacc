@@ -14,7 +14,6 @@ use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer};
 use crate::types::Type;
-use crate::utils::VecDequeExt;
 
 /// The context of a conditional compilation block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +31,13 @@ struct CondFrame {
     ctx: CondFrameContext,
 }
 
+/// A macro definition.
+#[derive(Debug, Clone)]
+struct Macro {
+    body: Vec<Token>,
+    params: Option<()>,
+}
+
 /// Preprocessor for a C token stream.
 #[derive(Debug)]
 pub struct Preprocessor<'a, S: PreprocessorSink> {
@@ -39,7 +45,7 @@ pub struct Preprocessor<'a, S: PreprocessorSink> {
     input: VecDeque<Token>,
     sink: &'a mut S,
     conds: Vec<CondFrame>,
-    macros: FxHashMap<SmolStr, Vec<Token>>,
+    macros: FxHashMap<SmolStr, Macro>,
 }
 
 impl<'a, S> Preprocessor<'a, S>
@@ -79,19 +85,25 @@ where
     }
 
     /// Define a macro.
-    fn define_macro(&mut self, name: SmolStr, body: Vec<Token>, span: SourceSpan) -> Result<()> {
+    fn define_macro(
+        &mut self,
+        name: SmolStr,
+        body: Vec<Token>,
+        params: Option<()>,
+        span: SourceSpan,
+    ) -> Result<()> {
         use std::collections::hash_map::Entry;
 
         match self.macros.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(body);
+                entry.insert(Macro { body, params });
             },
             Entry::Occupied(mut entry) => {
                 let mut same = true;
 
-                let old_body = entry.get();
-                if old_body.len() == body.len() {
-                    for (old, new) in old_body.iter().zip(&body) {
+                let old_macro = entry.get();
+                if old_macro.body.len() == body.len() {
+                    for (old, new) in old_macro.body.iter().zip(&body) {
                         if self.source_map.text(old.span) != self.source_map.text(new.span)
                             || old.follows_space != new.follows_space
                         {
@@ -105,7 +117,7 @@ where
 
                 if !same {
                     self.source_map.warn(span, "redefinition of macro");
-                    entry.insert(body);
+                    entry.insert(Macro { body, params });
                 }
             },
         }
@@ -115,10 +127,17 @@ where
 
     /// Try to expand the given token as a macro.
     ///
-    /// If the given token is not a macro that should be expanded, this returns
-    /// `None`.
-    fn try_expand_macro(&self, token: &Token) -> Option<Vec<Token>> {
-        let name = token.as_ident()?;
+    /// Returns whether the given token was expanded as a macro. If `input` is
+    /// not provided, this will use the main input stream directly, otherwise
+    /// it will use the given input stream.
+    fn try_expand_macro(
+        &mut self,
+        token: &Token,
+        input: Option<&mut VecDeque<Token>>,
+    ) -> Result<bool> {
+        let Some(name) = token.as_ident() else {
+            return Ok(false);
+        };
 
         // If this token's hideset already contains this macro name, do not
         // expand it again; this is how C preprocessor prevents repeated
@@ -128,14 +147,28 @@ where
             .as_ref()
             .is_some_and(|hideset| hideset.contains(&name))
         {
-            return None;
+            return Ok(false);
         }
 
-        let mut body = self.macros.get(&name)?.clone();
+        let Some(Macro { mut body, params }) = self.macros.get(&name).cloned() else {
+            return Ok(false);
+        };
 
-        // Shared hideset base for all tokens in the macro body; this includes
-        // not only this macro, but also inherits the triggering token's hideset
-        // so the output tokens retain the prior macro-expansion history
+        let input = input.unwrap_or(&mut self.input);
+
+        if params.is_some() {
+            if input.pop_front_if(|tok| tok.is_punct("(")).is_none() {
+                return Ok(false);
+            }
+            let token = input.front().expect("moved beyond eof");
+            if token.is_punct(")") {
+                input.pop_front();
+            } else {
+                return Err(self.source_map.error(token.span, "expected ')'"));
+            }
+        }
+
+        // Inherit the triggering token's hideset plus this macro
         let mut base = token.hideset.clone().unwrap_or_default();
         Rc::make_mut(&mut base).insert(name.clone());
 
@@ -148,7 +181,11 @@ where
             }
         }
 
-        Some(body)
+        input.reserve(body.len());
+        for item in body.into_iter().rev() {
+            input.push_front(item);
+        }
+        Ok(true)
     }
 
     /// Skip extra tokens in the current logical line, if any.
@@ -244,8 +281,7 @@ where
                 break;
             }
 
-            if let Some(body) = self.try_expand_macro(&token) {
-                self.input.prepend_compat(body);
+            if self.try_expand_macro(&token, None)? {
                 continue;
             }
 
@@ -345,8 +381,25 @@ where
     /// Process a "#define" directive.
     fn process_define(&mut self, span: SourceSpan) -> Result<()> {
         let (name, token) = self.process_macro(span, "define")?;
+
+        let params = if self
+            .input
+            .pop_front_if(|tok| !tok.follows_space && !tok.at_bol && tok.is_punct("("))
+            .is_some()
+        {
+            let token = self.input.front().expect("moved beyond eof");
+            if token.is_punct(")") {
+                self.input.pop_front();
+            } else {
+                return Err(self.source_map.error(token.span, "expected ')'"));
+            }
+            Some(())
+        } else {
+            None
+        };
+
         let tokens = self.line();
-        self.define_macro(name, tokens, token.span)?;
+        self.define_macro(name, tokens, params, token.span)?;
         Ok(())
     }
 
@@ -369,8 +422,7 @@ where
 
         let mut line = VecDeque::from(self.line());
         while let Some(mut token) = line.pop_front() {
-            if let Some(body) = self.try_expand_macro(&token) {
-                line.prepend_compat(body);
+            if self.try_expand_macro(&token, Some(&mut line))? {
                 continue;
             }
 

@@ -1183,6 +1183,7 @@ fn test_macro() {
     f.line("#include \"include1.h\"");
     f.line("#");
     f.line("/* */ #");
+    f.line("int ret3(void) { return 3; }");
     f.main();
 
     f.assert(5, "include1");
@@ -1364,6 +1365,14 @@ fn test_macro() {
     f.line("#endif");
     f.line("#else");
     f.line("#endif");
+
+    f.line("#define M11() 1");
+    f.line("int M11 = 5;");
+    f.assert(1, "M11()");
+    f.assert(5, "M11");
+
+    f.line("#define M11 ()");
+    f.assert(3, "ret3 M11");
 
     f.finish();
     f.run("macro");
