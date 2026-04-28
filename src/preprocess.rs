@@ -178,7 +178,10 @@ where
                 continue;
             };
 
-            if directive.is_ident("if") {
+            if directive.is_ident("if")
+                || directive.is_ident("ifdef")
+                || directive.is_ident("ifndef")
+            {
                 depth += 1;
                 continue;
             }
@@ -217,6 +220,20 @@ where
         Ok(())
     }
 
+    /// Enter a new conditional compilation block.
+    fn enter_cond(&mut self, span: SourceSpan, included: bool) -> Result<()> {
+        self.conds.push(CondFrame {
+            span,
+            included,
+            ctx: CondFrameContext::Then,
+        });
+
+        if !included {
+            self.skip_cond()?;
+        }
+        Ok(())
+    }
+
     /// Preprocess the token stream.
     pub fn preprocess(&mut self, emit_eof: bool) -> Result<()> {
         while let Some(token) = self.input.pop_front() {
@@ -241,44 +258,22 @@ where
                 continue;
             };
 
-            if directive.is_ident("include") {
-                self.process_include(token.span)?;
-                continue;
+            match directive.as_ident().as_deref() {
+                Some("include") => self.process_include(token.span)?,
+                Some("define") => self.process_define(token.span)?,
+                Some("undef") => self.process_undef(token.span)?,
+                Some("if") => self.process_if(token.span)?,
+                Some("ifdef") => self.process_ifdef(token.span)?,
+                Some("ifndef") => self.process_ifndef(token.span)?,
+                Some("elif") => self.process_elif(token.span)?,
+                Some("else") => self.process_else(token.span)?,
+                Some("endif") => self.process_endif(token.span)?,
+                _ => {
+                    return Err(self
+                        .source_map
+                        .error(directive.span, "invalid preprocessor directive"));
+                },
             }
-
-            if directive.is_ident("define") {
-                self.process_define(token.span)?;
-                continue;
-            }
-
-            if directive.is_ident("undef") {
-                self.process_undef(token.span)?;
-                continue;
-            }
-
-            if directive.is_ident("if") {
-                self.process_if(token.span)?;
-                continue;
-            }
-
-            if directive.is_ident("elif") {
-                self.process_elif(token.span)?;
-                continue;
-            }
-
-            if directive.is_ident("else") {
-                self.process_else(token.span)?;
-                continue;
-            }
-
-            if directive.is_ident("endif") {
-                self.process_endif(token.span)?;
-                continue;
-            }
-
-            return Err(self
-                .source_map
-                .error(directive.span, "invalid preprocessor directive"));
         }
 
         if let Some(frame) = self.conds.last() {
@@ -330,12 +325,12 @@ where
         result
     }
 
-    /// Process a "#define" directive.
-    fn process_define(&mut self, span: SourceSpan) -> Result<()> {
+    /// Process a macro token.
+    fn process_macro(&mut self, span: SourceSpan, directive: &str) -> Result<(SmolStr, Token)> {
         let Some(token) = self.next_if_mol() else {
             return Err(self
                 .source_map
-                .error(span, "no macro name given in #define"));
+                .error(span, format!("no macro name given in #{directive}")));
         };
 
         let Some(name) = token.as_ident() else {
@@ -344,6 +339,12 @@ where
                 .error(token.span, "macro names must be identifiers"));
         };
 
+        Ok((name, token))
+    }
+
+    /// Process a "#define" directive.
+    fn process_define(&mut self, span: SourceSpan) -> Result<()> {
+        let (name, token) = self.process_macro(span, "define")?;
         let tokens = self.line();
         self.define_macro(name, tokens, token.span)?;
         Ok(())
@@ -351,20 +352,11 @@ where
 
     /// Process an "#undef" directive.
     fn process_undef(&mut self, span: SourceSpan) -> Result<()> {
-        let Some(token) = self.next_if_mol() else {
-            return Err(self.source_map.error(span, "no macro name given in #undef"));
-        };
-
-        let Some(name) = token.as_ident() else {
-            return Err(self
-                .source_map
-                .error(token.span, "macro names must be identifiers"));
-        };
-
-        self.macros.remove(&name);
+        let (name, _) = self.process_macro(span, "undef")?;
         if let Some(span) = self.skip_line() {
             self.source_map.warn(span, "extra tokens after #undef");
         }
+        self.macros.remove(&name);
         Ok(())
     }
 
@@ -418,17 +410,27 @@ where
                 .source_map
                 .error(span, "bare #if without an expression"));
         };
+        self.enter_cond(span, val.into())?;
+        Ok(())
+    }
 
-        let included = val.into();
-        self.conds.push(CondFrame {
-            span,
-            included,
-            ctx: CondFrameContext::Then,
-        });
-
-        if !included {
-            self.skip_cond()?;
+    /// Process an "#ifdef" directive.
+    fn process_ifdef(&mut self, span: SourceSpan) -> Result<()> {
+        let (name, _) = self.process_macro(span, "ifdef")?;
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #ifdef");
         }
+        self.enter_cond(span, self.macros.contains_key(&name))?;
+        Ok(())
+    }
+
+    /// Process an "#ifndef" directive.
+    fn process_ifndef(&mut self, span: SourceSpan) -> Result<()> {
+        let (name, _) = self.process_macro(span, "ifndef")?;
+        if let Some(span) = self.skip_line() {
+            self.source_map.warn(span, "extra tokens after #ifndef");
+        }
+        self.enter_cond(span, !self.macros.contains_key(&name))?;
         Ok(())
     }
 
