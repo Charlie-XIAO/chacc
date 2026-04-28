@@ -192,7 +192,7 @@ where
     }
 
     /// Preprocess the token stream.
-    pub fn preprocess(mut self, emit_eof: bool) -> Result<()> {
+    pub fn preprocess(&mut self, emit_eof: bool) -> Result<()> {
         while let Some(token) = self.input.pop_front() {
             if token.is_eof() {
                 if emit_eof {
@@ -292,12 +292,15 @@ where
             self.source_map.warn(span, "extra tokens after #include");
         }
 
-        // TODO: Make parent macros visible inside includes
         let source = self.source_map.push(&path)?;
         let tokens = Tokenizer::new(source).tokenize()?;
-        Preprocessor::new(self.source_map, tokens, self.sink).preprocess(false)?;
 
-        Ok(())
+        let old_input = std::mem::replace(&mut self.input, tokens.into());
+        let old_conds = std::mem::take(&mut self.conds);
+        let result = self.preprocess(false);
+        self.input = old_input;
+        self.conds = old_conds;
+        result
     }
 
     /// Process a "#define" directive.
