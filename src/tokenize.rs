@@ -102,11 +102,6 @@ impl Token {
         matches!(self.kind, TokenKind::Keyword(p) if p == expected)
     }
 
-    /// Return whether this token is a certain identifier.
-    pub fn is_ident(&self, expected: &str) -> bool {
-        matches!(self.kind, TokenKind::Ident(ref name) if name == expected)
-    }
-
     /// Return whether this token is the EOF sentinel.
     pub fn is_eof(&self) -> bool {
         matches!(self.kind, TokenKind::Eof)
