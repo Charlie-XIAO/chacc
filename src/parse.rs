@@ -14,7 +14,7 @@ use crate::ast::{
 use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{Keyword, Token};
+use crate::tokenize::{Keyword, Token, ensure_eof};
 use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 
@@ -166,14 +166,9 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Create a parser over a token stream.
     pub fn new(source_map: &'a SourceMap, tokens: Vec<Token>, preprocess: bool) -> Self {
-        debug_assert!(
-            tokens.last().is_some_and(|t| t.is_eof()),
-            "token stream must end with an EOF sentinel",
-        );
-
         Self {
             source_map,
-            tokens,
+            tokens: ensure_eof(tokens),
             preprocess,
             pos: 0,
             types: TypeStore::default(),

@@ -12,36 +12,8 @@ use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer};
+use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer, ensure_eof};
 use crate::types::Type;
-
-/// The context of a conditional compilation block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CondFrameContext {
-    Then,
-    Elif,
-    Else,
-}
-
-/// A frame for conditional compilation.
-#[derive(Debug)]
-struct CondFrame {
-    /// The name of the directive that opened this frame.
-    name: &'static str,
-    span: SourceSpan,
-    included: bool,
-    ctx: CondFrameContext,
-}
-
-/// A macro definition.
-#[derive(Debug, Clone)]
-struct Macro {
-    body: Vec<Token>,
-    /// The parameters of a function-like macro.
-    ///
-    /// The macro is object-like if this is `None`.
-    params: Option<()>,
-}
 
 /// A consumable and prependable stream of tokens.
 #[derive(Debug)]
@@ -49,13 +21,8 @@ struct TokenStream(VecDeque<Token>);
 
 impl TokenStream {
     /// Create a new token stream from the given tokens.
-    fn new(tokens: impl Into<VecDeque<Token>>) -> Self {
-        let tokens = tokens.into();
-        debug_assert!(
-            tokens.back().is_some_and(|t| t.is_eof()),
-            "token stream must end with an EOF sentinel",
-        );
-        Self(tokens)
+    fn new(tokens: Vec<Token>) -> Self {
+        Self(ensure_eof(tokens).into())
     }
 
     /// Return the current token.
@@ -92,8 +59,177 @@ impl TokenStream {
     }
 }
 
-/// Preprocessor for a C token stream.
+/// The context of a conditional compilation block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondFrameContext {
+    Then,
+    Elif,
+    Else,
+}
+
+/// A frame for conditional compilation.
 #[derive(Debug)]
+struct CondFrame {
+    /// The name of the directive that opened this frame.
+    name: &'static str,
+    span: SourceSpan,
+    included: bool,
+    ctx: CondFrameContext,
+}
+
+/// A macro definition.
+#[derive(Debug, Clone)]
+struct Macro {
+    body: Vec<Token>,
+    /// The parameters of a function-like macro.
+    ///
+    /// The macro is object-like if this is `None`.
+    params: Option<Rc<[SmolStr]>>,
+}
+
+/// Helper struct for macro expansion utilities.
+struct MacroExpander<'a> {
+    source_map: &'a SourceMap,
+    macros: &'a FxHashMap<SmolStr, Macro>,
+}
+
+impl<'a> MacroExpander<'a> {
+    /// Read an argument of a function-like macro call.
+    ///
+    /// This always stops at a "," or ")" token. The provided `span` should be
+    /// the span of the triggering token of the macro call.
+    fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<Token>> {
+        let mut arg = Vec::new();
+
+        while !input.current().is_punct(",") && !input.current().is_punct(")") {
+            let token = input.next().unwrap();
+            if token.is_eof() {
+                return Err(self.source_map.error(span, "unterminated macro call"));
+            }
+            arg.push(token);
+        }
+
+        Ok(if arg.is_empty() {
+            arg
+        } else {
+            self.expand_all(arg)?
+        })
+    }
+
+    /// Try to expand the given token as a macro.
+    ///
+    /// The token should be the one that precedes the given input stream, as
+    /// function-like macro expansion needs to look ahead into the input stream
+    /// to parse the arguments.
+    ///
+    /// This returns whether the token was successfully expanded. If so, the
+    /// expanded tokens are automatically prepended to the given input stream.
+    fn try_expand_in(&self, token: &Token, input: &mut TokenStream) -> Result<bool> {
+        let Some(name) = token.as_ident() else {
+            return Ok(false);
+        };
+
+        // If this token's hideset already contains this macro name, do not
+        // expand it again; this is how C preprocessor prevents repeated
+        // recursive re-expansion of the same macro on the same token lineage
+        if token
+            .hideset
+            .as_ref()
+            .is_some_and(|hideset| hideset.contains(&name))
+        {
+            return Ok(false);
+        }
+
+        let Some(Macro { mut body, params }) = self.macros.get(&name).cloned() else {
+            return Ok(false);
+        };
+
+        if let Some(params) = params {
+            if !input.current().is_punct("(") {
+                return Ok(false);
+            }
+            input.next();
+
+            let n_params = params.len();
+            let mut params = params.iter();
+            let mut args = FxHashMap::default();
+            let mut last_span = input.current().span;
+
+            while input.next_if(|tok| tok.is_punct(")")).is_none() {
+                if !args.is_empty() {
+                    debug_assert!(input.current().is_punct(","));
+                    input.next();
+                }
+
+                let span = input.current().span;
+                let arg = self.read_arg(input, token.span)?;
+
+                let Some(param) = params.next() else {
+                    return Err(self.source_map.error(
+                        span,
+                        format!("too many arguments provided to macro call (expected {n_params})"),
+                    ));
+                };
+
+                args.insert(param, arg);
+                last_span = input.current().span;
+            }
+
+            if params.next().is_some() {
+                return Err(self.source_map.error(
+                    last_span,
+                    format!("too few arguments provided to macro call (expected {n_params})"),
+                ));
+            }
+
+            for token in std::mem::take(&mut body) {
+                if let TokenKind::Ident(name) = &token.kind
+                    && let Some(arg) = args.get(name)
+                {
+                    body.extend(arg.clone());
+                    continue;
+                }
+                body.push(token);
+            }
+        }
+
+        // Inherit the triggering token's hideset plus this macro
+        let mut base = token.hideset.clone().unwrap_or_default();
+        Rc::make_mut(&mut base).insert(name.clone());
+
+        for token in &mut body {
+            if let Some(mut hideset) = token.hideset.take() {
+                Rc::make_mut(&mut hideset).extend(base.iter().cloned());
+                token.hideset = Some(hideset);
+            } else {
+                token.hideset = Some(base.clone());
+            }
+        }
+
+        input.prepend(body);
+        Ok(true)
+    }
+
+    /// Expand all macros in the given token stream.
+    fn expand_all(&self, tokens: Vec<Token>) -> Result<Vec<Token>> {
+        let mut input = TokenStream::new(tokens);
+        let mut out = Vec::new();
+
+        while let Some(token) = input.next() {
+            if token.is_eof() {
+                break;
+            }
+            if self.try_expand_in(&token, &mut input)? {
+                continue;
+            }
+            out.push(token);
+        }
+
+        Ok(out)
+    }
+}
+
+/// Preprocessor for a C token stream.
 pub struct Preprocessor<'a, S: PreprocessorSink> {
     source_map: &'a mut SourceMap,
     input: TokenStream,
@@ -132,12 +268,6 @@ where
         self.source_map.warn(span, message);
     }
 
-    /// Emit a token to the sink, with preprocessor-only metadata cleared.
-    fn emit(&mut self, mut token: Token) -> Result<()> {
-        token.hideset = None;
-        self.sink.emit(self.source_map, token)
-    }
-
     /// Consume the rest of the current logical line.
     fn line(&mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
@@ -152,7 +282,7 @@ where
         &mut self,
         name: SmolStr,
         body: Vec<Token>,
-        params: Option<()>,
+        params: Option<Rc<[SmolStr]>>,
         span: SourceSpan,
     ) -> Result<()> {
         use std::collections::hash_map::Entry;
@@ -190,61 +320,6 @@ where
             self.warn(span, "redefinition of macro");
         }
         Ok(())
-    }
-
-    /// Try to expand the given token as a macro.
-    ///
-    /// Returns whether the given token was expanded as a macro. If `input` is
-    /// not provided, this will use the main input stream directly, otherwise
-    /// it will use the given input stream.
-    fn try_expand_macro(&mut self, token: &Token, input: Option<&mut TokenStream>) -> Result<bool> {
-        let Some(name) = token.as_ident() else {
-            return Ok(false);
-        };
-
-        // If this token's hideset already contains this macro name, do not
-        // expand it again; this is how C preprocessor prevents repeated
-        // recursive re-expansion of the same macro on the same token lineage
-        if token
-            .hideset
-            .as_ref()
-            .is_some_and(|hideset| hideset.contains(&name))
-        {
-            return Ok(false);
-        }
-
-        let Some(Macro { mut body, params }) = self.macros.get(&name).cloned() else {
-            return Ok(false);
-        };
-
-        let input = input.unwrap_or(&mut self.input);
-
-        if params.is_some() {
-            if input.next_if(|tok| tok.is_punct("(")).is_none() {
-                return Ok(false);
-            }
-            if input.current().is_punct(")") {
-                input.next();
-            } else {
-                return Err(self.error_current("expected ')'"));
-            }
-        }
-
-        // Inherit the triggering token's hideset plus this macro
-        let mut base = token.hideset.clone().unwrap_or_default();
-        Rc::make_mut(&mut base).insert(name.clone());
-
-        for token in &mut body {
-            if let Some(mut hideset) = token.hideset.take() {
-                Rc::make_mut(&mut hideset).extend(base.iter().cloned());
-                token.hideset = Some(hideset);
-            } else {
-                token.hideset = Some(base.clone());
-            }
-        }
-
-        input.prepend(body);
-        Ok(true)
     }
 
     /// Skip extra tokens in the current logical line, if any.
@@ -318,17 +393,21 @@ where
         while let Some(token) = self.input.next() {
             if token.is_eof() {
                 if emit_eof {
-                    self.emit(token)?;
+                    self.sink.emit(self.source_map, token)?;
                 }
                 break;
             }
 
-            if self.try_expand_macro(&token, None)? {
+            let expander = MacroExpander {
+                source_map: self.source_map,
+                macros: &self.macros,
+            };
+            if expander.try_expand_in(&token, &mut self.input)? {
                 continue;
             }
 
             if !(token.at_bol && token.is_punct("#")) {
-                self.emit(token)?;
+                self.sink.emit(self.source_map, token)?;
                 continue;
             }
 
@@ -417,18 +496,27 @@ where
             .next_if(|tok| !tok.follows_space && !tok.at_bol && tok.is_punct("("))
             .is_some()
         {
-            if self.input.current().is_punct(")") {
+            let mut params = Vec::new();
+
+            while !self.input.current().is_punct(")") {
+                if !params.is_empty() && self.input.next_if(|tok| tok.is_punct(",")).is_none() {
+                    return Err(self.error_current("expected ','"));
+                }
+                let Some(ident) = self.input.current().as_ident() else {
+                    return Err(self.error_current("expected an identifier"));
+                };
+                params.push(ident);
                 self.input.next();
-            } else {
-                return Err(self.error_current("expected ')'"));
             }
-            Some(())
+
+            self.input.next();
+            Some(params)
         } else {
             None
         };
 
         let tokens = self.line();
-        self.define_macro(name, tokens, params, token.span)?;
+        self.define_macro(name, tokens, params.map(Into::into), token.span)?;
         Ok(())
     }
 
@@ -447,37 +535,26 @@ where
     /// If there is no tokens remaining in the current logical line, this
     /// returns `Ok(None)`.
     fn process_constexpr(&mut self) -> Result<Option<ConstValue>> {
-        let mut tokens = Vec::new();
-
-        let mut line = self.line();
+        let line = self.line();
         if line.is_empty() {
             return Ok(None);
         }
 
-        let last = line.last().unwrap().span;
-        line.push(Token {
-            kind: TokenKind::Eof,
-            span: SourceSpan {
-                id: last.id,
-                offset: last.offset + last.len,
-                len: 0,
-            },
-            at_bol: false,
-            follows_space: false,
-            hideset: None,
-        });
+        let expander = MacroExpander {
+            source_map: self.source_map,
+            macros: &self.macros,
+        };
+        let mut tokens = expander.expand_all(line)?;
+        if tokens.is_empty() {
+            return Ok(None);
+        }
 
-        let mut line = TokenStream::new(line);
-        while let Some(mut token) = line.next() {
-            if self.try_expand_macro(&token, Some(&mut line))? {
-                continue;
-            }
+        for token in &mut tokens {
             if token.as_ident().is_some() {
                 // All identifiers are undefined in preprocessor expressions,
                 // and they are simply evaluated as 0
                 token.kind = TokenKind::Num(0, Type::INT);
             }
-            tokens.push(token);
         }
 
         let val = Parser::new(self.source_map, tokens, true).parse_constexpr()?;
@@ -598,7 +675,15 @@ impl PreprocessorSink for PreprocessedTokens {
 impl PreprocessedTokens {
     /// Finalize the preprocessor output into a token stream ready for parsing.
     pub fn into_parser_tokens(mut self) -> Vec<Token> {
-        convert_keywords(&mut self.0);
+        for token in &mut self.0 {
+            token.hideset = None;
+
+            if let Some(ident) = token.as_ident()
+                && let Ok(keyword) = Keyword::try_from(ident.as_str())
+            {
+                token.kind = TokenKind::Keyword(keyword);
+            }
+        }
         self.0
     }
 }
@@ -627,17 +712,5 @@ impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
         write!(self.out, "{}", source_map.text(token.span))?;
         self.first = false;
         Ok(())
-    }
-}
-
-fn convert_keywords(tokens: &mut [Token]) {
-    for token in tokens {
-        let Some(ident) = token.as_ident() else {
-            continue;
-        };
-        let Ok(keyword) = Keyword::try_from(ident.as_str()) else {
-            continue;
-        };
-        token.kind = TokenKind::Keyword(keyword);
     }
 }

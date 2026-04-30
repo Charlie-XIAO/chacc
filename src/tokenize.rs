@@ -564,6 +564,30 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
+/// Make the token stream EOF-terminated.
+///
+/// This requires the given token stream to be non-empty. It is no-op if the
+/// given token stream is already EOF-terminated.
+pub fn ensure_eof(mut tokens: Vec<Token>) -> Vec<Token> {
+    let last = tokens.last().expect("token stream must not be empty");
+    if last.is_eof() {
+        return tokens;
+    }
+
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        span: SourceSpan {
+            id: last.span.id,
+            offset: last.span.offset + last.span.len,
+            len: 0,
+        },
+        at_bol: false,
+        follows_space: false,
+        hideset: None,
+    });
+    tokens
+}
+
 /// Return whether the byte is valid at the start of an identifier.
 fn is_ident1(byte: &u8) -> bool {
     byte.is_ascii_alphabetic() || *byte == b'_'

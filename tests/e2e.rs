@@ -1374,6 +1374,18 @@ fn test_macro() {
     f.line("#define M11 ()");
     f.assert(3, "ret3 M11");
 
+    f.line("#define M12(x,y) x+y");
+    f.assert(7, "M12(3, 4)");
+
+    f.line("#define M12(x,y) x*y");
+    f.assert(24, "M12(3+4, 4+5)");
+
+    f.line("#define M12(x,y) (x)*(y)");
+    f.assert(63, "M12(3+4, 4+5)");
+
+    f.line("#define M12(x,y) x y");
+    f.assert(9, "M12(, 4+5)");
+
     f.finish();
     f.run("macro");
 }
