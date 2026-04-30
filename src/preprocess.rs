@@ -96,16 +96,25 @@ struct MacroExpander<'a> {
 impl<'a> MacroExpander<'a> {
     /// Read an argument of a function-like macro call.
     ///
-    /// This always stops at a "," or ")" token. The provided `span` should be
-    /// the span of the triggering token of the macro call.
+    /// This always stops at a "," or ")" token. The returned argument tokens
+    /// will be fully macro-expanded. The provided `span` should be the span of
+    /// the triggering token of the macro call.
     fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<Token>> {
         let mut arg = Vec::new();
+        let mut depth = 0;
 
-        while !input.current().is_punct(",") && !input.current().is_punct(")") {
+        while depth > 0 || (!input.current().is_punct(",") && !input.current().is_punct(")")) {
             let token = input.next().unwrap();
             if token.is_eof() {
                 return Err(self.source_map.error(span, "unterminated macro call"));
             }
+
+            if token.is_punct("(") {
+                depth += 1;
+            } else if token.is_punct(")") {
+                depth -= 1;
+            }
+
             arg.push(token);
         }
 
