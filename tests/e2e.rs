@@ -1184,6 +1184,7 @@ fn test_macro() {
     f.line("#");
     f.line("/* */ #");
     f.line("int ret3(void) { return 3; }");
+    f.line("int dbl(int x) { return x*x; }");
     f.main();
 
     f.assert(5, "include1");
@@ -1391,6 +1392,10 @@ fn test_macro() {
 
     f.line("#define M12(x,y) x*y");
     f.assert(12, "M12((2,3), 4)");
+
+    f.line("#define dbl(x) M13(x) * x");
+    f.line("#define M13(x) dbl(x) + 3");
+    f.assert(10, "dbl(2)");
 
     f.finish();
     f.run("macro");

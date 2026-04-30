@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 
 use crate::constexpr::ConstValue;
@@ -133,6 +133,9 @@ impl<'a> MacroExpander<'a> {
     ///
     /// This returns whether the token was successfully expanded. If so, the
     /// expanded tokens are automatically prepended to the given input stream.
+    ///
+    /// The implementation is based on [X3J11/86-196 Complete macro expansion
+    /// algorithm](https://www.spinellis.gr/blog/20060626/x3J11-86-196.pdf).
     fn try_expand_in(&self, token: &Token, input: &mut TokenStream) -> Result<bool> {
         let Some(name) = token.as_ident() else {
             return Ok(false);
@@ -153,6 +156,8 @@ impl<'a> MacroExpander<'a> {
             return Ok(false);
         };
 
+        let mut base_hideset = FxHashSet::default();
+
         if let Some(params) = params {
             if !input.current().is_punct("(") {
                 return Ok(false);
@@ -164,7 +169,7 @@ impl<'a> MacroExpander<'a> {
             let mut args = FxHashMap::default();
             let mut last_span = input.current().span;
 
-            while input.next_if(|tok| tok.is_punct(")")).is_none() {
+            while !input.current().is_punct(")") {
                 if !args.is_empty() {
                     debug_assert!(input.current().is_punct(","));
                     input.next();
@@ -184,6 +189,22 @@ impl<'a> MacroExpander<'a> {
                 last_span = input.current().span;
             }
 
+            // For function-like macros, the invocation may have been assembled
+            // from tokens with different expansion lineages, so we inherit the
+            // intersection of the hidesets on the macro name token and the
+            // matching ")" token; that keeps only macro names that were already
+            // blocked on the invocation as a whole
+            if let Some(token_hideset) = &token.hideset
+                && let Some(rparen_hideset) = &input.current().hideset
+            {
+                base_hideset = token_hideset
+                    .intersection(rparen_hideset)
+                    .cloned()
+                    .collect();
+            }
+
+            input.next();
+
             if params.next().is_some() {
                 return Err(self.source_map.error(
                     last_span,
@@ -200,18 +221,22 @@ impl<'a> MacroExpander<'a> {
                 }
                 body.push(token);
             }
+        } else {
+            // Object-like macro, inherit only the triggering token's hideset
+            base_hideset = token.hideset.as_deref().cloned().unwrap_or_default();
         }
 
-        // Inherit the triggering token's hideset plus this macro
-        let mut base = token.hideset.clone().unwrap_or_default();
-        Rc::make_mut(&mut base).insert(name.clone());
+        // Add this macro's own name to prevent the replacement from immediately
+        // expanding the same macro again
+        base_hideset.insert(name.clone());
+        let base_hideset = Rc::new(base_hideset);
 
         for token in &mut body {
             if let Some(mut hideset) = token.hideset.take() {
-                Rc::make_mut(&mut hideset).extend(base.iter().cloned());
+                Rc::make_mut(&mut hideset).extend(base_hideset.iter().cloned());
                 token.hideset = Some(hideset);
             } else {
-                token.hideset = Some(base.clone());
+                token.hideset = Some(base_hideset.clone());
             }
         }
 
