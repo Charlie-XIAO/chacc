@@ -328,9 +328,11 @@ where
             },
             Entry::Occupied(mut entry) => {
                 let mut same = true;
-
                 let old_macro = entry.get();
-                if old_macro.body.len() == body.len() {
+
+                if old_macro.body.len() != body.len() || old_macro.params != params {
+                    same = false;
+                } else {
                     for (old, new) in old_macro.body.iter().zip(&body) {
                         if self.source_map.text(old.span) != self.source_map.text(new.span)
                             || old.follows_space != new.follows_space
@@ -339,8 +341,6 @@ where
                             break;
                         }
                     }
-                } else {
-                    same = false;
                 }
 
                 if !same {
