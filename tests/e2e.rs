@@ -1397,6 +1397,17 @@ fn test_macro() {
     f.line("#define M13(x) dbl(x) + 3");
     f.assert(10, "dbl(2)");
 
+    f.line("#define M14(x) #x");
+    f.assert("'a'", "M14( a!b  `\"\"c)[0]");
+    f.assert("'!'", "M14( a!b  `\"\"c)[1]");
+    f.assert("'b'", "M14( a!b  `\"\"c)[2]");
+    f.assert("' '", "M14( a!b  `\"\"c)[3]");
+    f.assert("'`'", "M14( a!b  `\"\"c)[4]");
+    f.assert("'\"'", "M14( a!b  `\"\"c)[5]");
+    f.assert("'\"'", "M14( a!b  `\"\"c)[6]");
+    f.assert("'c'", "M14( a!b  `\"\"c)[7]");
+    f.assert(0, "M14( a!b  `\"\"c)[8]");
+
     f.finish();
     f.run("macro");
 }

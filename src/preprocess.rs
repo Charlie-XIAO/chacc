@@ -1,5 +1,6 @@
 //! A preprocessor for the C programming language.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
@@ -96,9 +97,8 @@ struct MacroExpander<'a> {
 impl<'a> MacroExpander<'a> {
     /// Read an argument of a function-like macro call.
     ///
-    /// This always stops at a "," or ")" token. The returned argument tokens
-    /// will be fully macro-expanded. The provided `span` should be the span of
-    /// the triggering token of the macro call.
+    /// This always stops at a "," or ")" token. The provided `span` should be
+    /// the span of the triggering token of the macro call.
     fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<Token>> {
         let mut arg = Vec::new();
         let mut depth = 0;
@@ -118,11 +118,32 @@ impl<'a> MacroExpander<'a> {
             arg.push(token);
         }
 
-        Ok(if arg.is_empty() {
-            arg
-        } else {
-            self.expand_all(arg)?
-        })
+        Ok(arg)
+    }
+
+    /// Stringize a macro argument for the "#" operator.
+    ///
+    /// Returns a string literal token joined form the given argument tokens.
+    /// The provided `hash` should be the triggering "#" token.
+    fn stringize(&self, hash: &Token, arg: &[Token]) -> Token {
+        let mut content = Vec::new();
+        for (i, token) in arg.iter().enumerate() {
+            if i > 0 && token.follows_space {
+                content.push(b' ');
+            }
+            let spelling = token_spelling(self.source_map, token);
+            content.extend_from_slice(spelling.as_bytes());
+        }
+        content.push(b'\0');
+
+        Token {
+            kind: TokenKind::Str(content.into()),
+            span: hash.span,
+            at_bol: hash.at_bol,
+            follows_space: hash.follows_space,
+            hideset: None,
+            synthetic: true,
+        }
     }
 
     /// Try to expand the given token as a macro.
@@ -212,11 +233,31 @@ impl<'a> MacroExpander<'a> {
                 ));
             }
 
-            for token in std::mem::take(&mut body) {
+            let mut iter = std::mem::take(&mut body).into_iter();
+            while let Some(token) = iter.next() {
+                if token.is_punct("#") {
+                    let Some(next) = iter.next() else {
+                        return Err(self
+                            .source_map
+                            .error(token.span, "'#' is not followed by a macro parameter"));
+                    };
+                    let Some(arg) = next.as_ident().and_then(|name| args.get(&name)) else {
+                        return Err(self
+                            .source_map
+                            .error(next.span, "'#' is not followed by a macro parameter"));
+                    };
+                    body.push(self.stringize(&token, arg));
+                    continue;
+                }
+
                 if let TokenKind::Ident(name) = &token.kind
                     && let Some(arg) = args.get(name)
                 {
-                    body.extend(arg.clone());
+                    let mut arg = arg.clone();
+                    if !arg.is_empty() {
+                        arg = self.expand_all(arg)?;
+                    }
+                    body.extend(arg);
                     continue;
                 }
                 body.push(token);
@@ -743,8 +784,17 @@ impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
         if !token.at_bol && token.follows_space {
             write!(self.out, " ")?;
         }
-        write!(self.out, "{}", source_map.text(token.span))?;
+        write!(self.out, "{}", token_spelling(source_map, &token))?;
         self.first = false;
         Ok(())
+    }
+}
+
+/// Return the spelling of the given token.
+pub fn token_spelling<'a>(source_map: &'a SourceMap, token: &'a Token) -> Cow<'a, str> {
+    if token.synthetic {
+        token.kind.to_string().into()
+    } else {
+        source_map.text(token.span).into()
     }
 }

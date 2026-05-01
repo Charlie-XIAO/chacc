@@ -74,6 +74,46 @@ pub enum TokenKind {
     Eof,
 }
 
+impl std::fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ident(name) => write!(f, "{name}"),
+            Self::Keyword(keyword) => write!(f, "{keyword}"),
+            Self::Punct(punct) => write!(f, "{punct}"),
+            Self::Num(val, _) => write!(f, "{val}"),
+            Self::Flonum(val, _) => write!(f, "{val:?}"),
+            Self::Str(content) => {
+                write!(f, "\"")?;
+                for byte in content
+                    .strip_suffix(b"\0")
+                    .unwrap_or(content.as_ref())
+                    .iter()
+                    .copied()
+                {
+                    match byte {
+                        b'\x07' => write!(f, "\\a")?,
+                        b'\x08' => write!(f, "\\b")?,
+                        b'\t' => write!(f, "\\t")?,
+                        b'\n' => write!(f, "\\n")?,
+                        b'\x0b' => write!(f, "\\v")?,
+                        b'\x0c' => write!(f, "\\f")?,
+                        b'\r' => write!(f, "\\r")?,
+                        b'\x1b' => write!(f, "\\e")?, // GNU C extension
+                        b'"' => write!(f, "\\\"")?,
+                        b'\\' => write!(f, "\\\\")?,
+                        // ASCII printable characters can be written as is
+                        b' '..=b'~' => write!(f, "{}", byte as char)?,
+                        // Non-printable characters are written as octal escape
+                        _ => write!(f, "\\{:03o}", byte)?,
+                    }
+                }
+                write!(f, "\"")
+            },
+            Self::Eof => Ok(()),
+        }
+    }
+}
+
 /// A token.
 #[derive(Clone, Debug)]
 pub struct Token {
@@ -89,6 +129,8 @@ pub struct Token {
     /// macros. It should be cleared to free up memory when the preprocessing
     /// stage completes.
     pub hideset: Option<Rc<FxHashSet<SmolStr>>>,
+    /// Whether this is a synthetic token has no spelling in the source.
+    pub synthetic: bool,
 }
 
 impl Token {
@@ -213,6 +255,7 @@ impl<'a> Tokenizer<'a> {
             at_bol: self.at_bol,
             follows_space: self.follows_space,
             hideset: None,
+            synthetic: false,
         });
         self.at_bol = false;
         self.follows_space = false;
@@ -497,7 +540,7 @@ impl<'a> Tokenizer<'a> {
             return Ok((hex_value, pos - start));
         }
 
-        // Standard single-character escapes.
+        // Standard single-character escapes
         let decoded = match first {
             b'a' => b'\x07',
             b'b' => b'\x08',
@@ -506,7 +549,7 @@ impl<'a> Tokenizer<'a> {
             b'v' => b'\x0b',
             b'f' => b'\x0c',
             b'r' => b'\r',
-            b'e' => 27, // GNU C extension for the ASCII escape character
+            b'e' => b'\x1b', // GNU C extension
             b'"' | b'\'' | b'\\' | b'?' => first,
             _ => {
                 self.source.warn(start, 1, "unknown escape sequence");
@@ -584,6 +627,7 @@ pub fn ensure_eof(mut tokens: Vec<Token>) -> Vec<Token> {
         at_bol: false,
         follows_space: false,
         hideset: None,
+        synthetic: false,
     });
     tokens
 }
