@@ -1,6 +1,5 @@
 //! A preprocessor for the C programming language.
 
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
@@ -13,38 +12,53 @@ use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{Keyword, Token, TokenKind, Tokenizer, ensure_eof};
-use crate::types::Type;
+use crate::tokenize::{PreToken, PreTokenKind, PreTokenResolver, Token, Tokenizer};
 
 /// A consumable and prependable stream of tokens.
 #[derive(Debug)]
-struct TokenStream(VecDeque<Token>);
+struct TokenStream(VecDeque<PreToken>);
 
 impl TokenStream {
     /// Create a new token stream from the given tokens.
-    fn new(tokens: Vec<Token>) -> Self {
-        Self(ensure_eof(tokens).into())
+    fn new(mut tokens: Vec<PreToken>) -> Self {
+        let last = tokens.last().expect("token stream must not be empty");
+        if !last.is_eof() {
+            tokens.push(PreToken {
+                kind: PreTokenKind::Eof,
+                span: SourceSpan {
+                    id: last.span.id,
+                    offset: last.span.offset + last.span.len,
+                    len: 0,
+                },
+                at_bol: false,
+                follows_space: false,
+                hideset: None,
+                synthetic: None,
+            });
+        }
+
+        Self(tokens.into())
     }
 
     /// Return the current token.
-    fn current(&self) -> &Token {
+    fn current(&self) -> &PreToken {
         self.0
             .front()
             .expect("token stream is in broken state: moving out of bounds")
     }
 
     /// Consume the next token.
-    fn next(&mut self) -> Option<Token> {
+    fn next(&mut self) -> Option<PreToken> {
         self.0.pop_front()
     }
 
     /// Consume the next token if it satisfies the given predicate.
-    fn next_if(&mut self, f: impl FnOnce(&mut Token) -> bool) -> Option<Token> {
+    fn next_if(&mut self, f: impl FnOnce(&mut PreToken) -> bool) -> Option<PreToken> {
         self.0.pop_front_if(f)
     }
 
     /// Consume the next token if it is in the middle of a logical line.
-    fn next_if_mol(&mut self) -> Option<Token> {
+    fn next_if_mol(&mut self) -> Option<PreToken> {
         self.0
             .pop_front_if(|token| !token.at_bol && !token.is_eof())
     }
@@ -52,7 +66,7 @@ impl TokenStream {
     /// Prepend tokens to the front of the stream.
     ///
     /// TODO: Remove once [`VecDeque::prepend`] is stabilized.
-    fn prepend(&mut self, tokens: Vec<Token>) {
+    fn prepend(&mut self, tokens: Vec<PreToken>) {
         self.0.reserve(tokens.len());
         for token in tokens.into_iter().rev() {
             self.0.push_front(token);
@@ -81,7 +95,7 @@ struct CondFrame {
 /// A macro definition.
 #[derive(Debug, Clone)]
 struct Macro {
-    body: Vec<Token>,
+    body: Vec<PreToken>,
     /// The parameters of a function-like macro.
     ///
     /// The macro is object-like if this is `None`.
@@ -99,7 +113,7 @@ impl<'a> MacroExpander<'a> {
     ///
     /// This always stops at a "," or ")" token. The provided `span` should be
     /// the span of the triggering token of the macro call.
-    fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<Token>> {
+    fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<PreToken>> {
         let mut arg = Vec::new();
         let mut depth = 0;
 
@@ -125,24 +139,35 @@ impl<'a> MacroExpander<'a> {
     ///
     /// Returns a string literal token joined form the given argument tokens.
     /// The provided `hash` should be the triggering "#" token.
-    fn stringize(&self, hash: &Token, arg: &[Token]) -> Token {
-        let mut content = Vec::new();
+    fn stringize(&self, hash: &PreToken, arg: &[PreToken]) -> PreToken {
+        let resolver = PreTokenResolver::new(self.source_map);
+        let mut content = String::new();
+        content.push('"');
+
         for (i, token) in arg.iter().enumerate() {
             if i > 0 && token.follows_space {
-                content.push(b' ');
+                content.push(' ');
             }
-            let spelling = token_spelling(self.source_map, token);
-            content.extend_from_slice(spelling.as_bytes());
-        }
-        content.push(b'\0');
 
-        Token {
-            kind: TokenKind::Str(content.into()),
+            let spelling = resolver.spelling(token);
+            for ch in spelling.chars() {
+                match ch {
+                    '\\' => content.push_str("\\\\"),
+                    '"' => content.push_str("\\\""),
+                    ch => content.push(ch),
+                }
+            }
+        }
+
+        content.push('"');
+
+        PreToken {
+            kind: PreTokenKind::StrLit,
             span: hash.span,
             at_bol: hash.at_bol,
             follows_space: hash.follows_space,
             hideset: None,
-            synthetic: true,
+            synthetic: Some(content.into()),
         }
     }
 
@@ -157,7 +182,7 @@ impl<'a> MacroExpander<'a> {
     ///
     /// The implementation is based on [X3J11/86-196 Complete macro expansion
     /// algorithm](https://www.spinellis.gr/blog/20060626/x3J11-86-196.pdf).
-    fn try_expand_in(&self, token: &Token, input: &mut TokenStream) -> Result<bool> {
+    fn try_expand_in(&self, token: &PreToken, input: &mut TokenStream) -> Result<bool> {
         let Some(name) = token.as_ident() else {
             return Ok(false);
         };
@@ -250,7 +275,7 @@ impl<'a> MacroExpander<'a> {
                     continue;
                 }
 
-                if let TokenKind::Ident(name) = &token.kind
+                if let PreTokenKind::Ident(name) = &token.kind
                     && let Some(arg) = args.get(name)
                 {
                     let mut arg = arg.clone();
@@ -286,7 +311,7 @@ impl<'a> MacroExpander<'a> {
     }
 
     /// Expand all macros in the given token stream.
-    fn expand_all(&self, tokens: Vec<Token>) -> Result<Vec<Token>> {
+    fn expand_all(&self, tokens: Vec<PreToken>) -> Result<Vec<PreToken>> {
         let mut input = TokenStream::new(tokens);
         let mut out = Vec::new();
 
@@ -318,7 +343,7 @@ where
     S: PreprocessorSink,
 {
     /// Create a new preprocessor for the given token stream.
-    pub fn new(source_map: &'a mut SourceMap, tokens: Vec<Token>, sink: &'a mut S) -> Self {
+    pub fn new(source_map: &'a mut SourceMap, tokens: Vec<PreToken>, sink: &'a mut S) -> Self {
         Self {
             source_map,
             input: TokenStream::new(tokens),
@@ -344,7 +369,7 @@ where
     }
 
     /// Consume the rest of the current logical line.
-    fn line(&mut self) -> Vec<Token> {
+    fn line(&mut self) -> Vec<PreToken> {
         let mut tokens = Vec::new();
         while let Some(token) = self.input.next_if_mol() {
             tokens.push(token);
@@ -356,7 +381,7 @@ where
     fn define_macro(
         &mut self,
         name: SmolStr,
-        body: Vec<Token>,
+        body: Vec<PreToken>,
         params: Option<Rc<[SmolStr]>>,
         span: SourceSpan,
     ) -> Result<()> {
@@ -518,15 +543,18 @@ where
             return Err(self.error(span, "bare #include without a filename"));
         };
 
-        let Some(content) = token.as_str() else {
+        if !token.is_str_lit() {
             return Err(self.error(token.span, "expected a filename"));
-        };
-        let Some(content) = content.as_ref().strip_suffix(b"\0") else {
-            return Err(self.error(token.span, "expected a filename"));
-        };
+        }
 
-        let path = std::str::from_utf8(content)
-            .map_err(|e| self.error(token.span, format!("invalid filename: {e}")))?;
+        let resolver = PreTokenResolver::new(self.source_map);
+        let spelling = resolver.spelling(&token);
+        let Some(path) = spelling
+            .strip_prefix('"')
+            .and_then(|spelling| spelling.strip_suffix('"'))
+        else {
+            return Err(self.error(token.span, "expected a filename"));
+        };
 
         let path = self
             .source_map
@@ -552,7 +580,7 @@ where
     }
 
     /// Process a macro token.
-    fn process_macro(&mut self, span: SourceSpan, directive: &str) -> Result<(SmolStr, Token)> {
+    fn process_macro(&mut self, span: SourceSpan, directive: &str) -> Result<(SmolStr, PreToken)> {
         let Some(token) = self.input.next_if_mol() else {
             return Err(self.error(span, format!("no macro name given in #{directive}")));
         };
@@ -619,18 +647,16 @@ where
             source_map: self.source_map,
             macros: &self.macros,
         };
-        let mut tokens = expander.expand_all(line)?;
+        let tokens = expander.expand_all(line)?;
         if tokens.is_empty() {
             return Ok(None);
         }
 
-        for token in &mut tokens {
-            if token.as_ident().is_some() {
-                // All identifiers are undefined in preprocessor expressions,
-                // and they are simply evaluated as 0
-                token.kind = TokenKind::Num(0, Type::INT);
-            }
-        }
+        let resolver = PreTokenResolver::new(self.source_map);
+        let tokens = tokens
+            .into_iter()
+            .map(|tok| resolver.lower(tok, true))
+            .collect::<Result<_>>()?;
 
         let val = Parser::new(self.source_map, tokens, true).parse_constexpr()?;
         Ok(Some(val))
@@ -733,33 +759,28 @@ where
 /// A sink for preprocessor output tokens.
 pub trait PreprocessorSink {
     /// Emit a preprocessed token.
-    fn emit(&mut self, source_map: &SourceMap, token: Token) -> Result<()>;
+    fn emit(&mut self, source_map: &SourceMap, token: PreToken) -> Result<()>;
 }
 
 /// A preprocessor sink that stores the preprocessed tokens in memory.
 #[derive(Default)]
-pub struct PreprocessedTokens(Vec<Token>);
+pub struct PreprocessedTokens(Vec<PreToken>);
 
 impl PreprocessorSink for PreprocessedTokens {
-    fn emit(&mut self, _source_map: &SourceMap, token: Token) -> Result<()> {
+    fn emit(&mut self, _source_map: &SourceMap, token: PreToken) -> Result<()> {
         self.0.push(token);
         Ok(())
     }
 }
 
 impl PreprocessedTokens {
-    /// Finalize the preprocessor output into a token stream ready for parsing.
-    pub fn into_parser_tokens(mut self) -> Vec<Token> {
-        for token in &mut self.0 {
-            token.hideset = None;
-
-            if let Some(ident) = token.as_ident()
-                && let Ok(keyword) = Keyword::try_from(ident.as_str())
-            {
-                token.kind = TokenKind::Keyword(keyword);
-            }
-        }
+    /// Lower the collected preprocessed tokens into regular tokens.
+    pub fn lower(self, source_map: &SourceMap) -> Result<Vec<Token>> {
+        let resolver = PreTokenResolver::new(source_map);
         self.0
+            .into_iter()
+            .map(|tok| resolver.lower(tok, false))
+            .collect()
     }
 }
 
@@ -777,24 +798,16 @@ impl<'a, W: Write> PreprocessedWriter<'a, W> {
 }
 
 impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
-    fn emit(&mut self, source_map: &SourceMap, token: Token) -> Result<()> {
+    fn emit(&mut self, source_map: &SourceMap, token: PreToken) -> Result<()> {
         if !self.first && token.at_bol || token.is_eof() {
             writeln!(self.out)?;
         }
         if !token.at_bol && token.follows_space {
             write!(self.out, " ")?;
         }
-        write!(self.out, "{}", token_spelling(source_map, &token))?;
+        let resolver = PreTokenResolver::new(source_map);
+        write!(self.out, "{}", resolver.spelling(&token))?;
         self.first = false;
         Ok(())
-    }
-}
-
-/// Return the spelling of the given token.
-pub fn token_spelling<'a>(source_map: &'a SourceMap, token: &'a Token) -> Cow<'a, str> {
-    if token.synthetic {
-        token.kind.to_string().into()
-    } else {
-        source_map.text(token.span).into()
     }
 }

@@ -14,7 +14,7 @@ use crate::ast::{
 use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{Keyword, Token, ensure_eof};
+use crate::tokenize::{Keyword, Token, TokenKind};
 use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
 use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
 
@@ -165,10 +165,22 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a parser over a token stream.
-    pub fn new(source_map: &'a SourceMap, tokens: Vec<Token>, preprocess: bool) -> Self {
+    pub fn new(source_map: &'a SourceMap, mut tokens: Vec<Token>, preprocess: bool) -> Self {
+        let last = tokens.last().expect("token stream must not be empty");
+        if !last.is_eof() {
+            tokens.push(Token {
+                kind: TokenKind::Eof,
+                span: SourceSpan {
+                    id: last.span.id,
+                    offset: last.span.offset + last.span.len,
+                    len: 0,
+                },
+            });
+        }
+
         Self {
             source_map,
-            tokens: ensure_eof(tokens),
+            tokens,
             preprocess,
             pos: 0,
             types: TypeStore::default(),
@@ -2721,11 +2733,10 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(content) = self.current().as_str() {
-            if self.preprocess {
-                return Err(
-                    self.error_current("string literal is not valid in preprocessor expressions")
-                );
-            }
+            debug_assert!(
+                !self.preprocess,
+                "string literals should not leak here in preprocessing mode",
+            );
 
             let ty = self.types.array(Type::CHAR, Some(content.len()));
             let label = self.unique_label();
@@ -2749,12 +2760,10 @@ impl<'a> Parser<'a> {
         }
 
         if let Some((num, ty)) = self.current().as_flonum() {
-            if self.preprocess {
-                return Err(self.error_current(
-                    "floating-point constant is not valid in preprocessor expressions",
-                ));
-            }
-
+            debug_assert!(
+                !self.preprocess,
+                "floating-point literals should not leak here in preprocessing mode",
+            );
             self.advance();
             return Ok(Node::flonum(num, ty, span));
         }

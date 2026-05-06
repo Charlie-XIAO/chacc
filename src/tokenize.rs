@@ -1,12 +1,13 @@
 //! Tokenize C source code into a flat token stream.
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use rustc_hash::FxHashSet;
 use smol_str::SmolStr;
 
 use crate::error::Result;
-use crate::source::{Source, SourceSpan};
+use crate::source::{Source, SourceMap, SourceSpan};
 use crate::types::Type;
 
 /// Reserved keywords recognized by the tokenizer.
@@ -61,7 +62,77 @@ pub enum Keyword {
     Alignas,
 }
 
-/// Token kinds recognized by the tokenizer.
+/// Preprocessor token kinds for [`PreToken`].
+#[derive(Clone, Debug)]
+pub enum PreTokenKind {
+    Ident(SmolStr),
+    Punct(SmolStr),
+    NumLit,
+    StrLit,
+    CharLit,
+    Eof,
+}
+
+/// A preprocessor token.
+///
+/// This is the direct output of tokenization consumed by the preprocessor,
+/// which needs to be lowered into [`Token`] before C level parsing.
+#[derive(Clone, Debug)]
+pub struct PreToken {
+    pub kind: PreTokenKind,
+    pub span: SourceSpan,
+    /// Whether this token begins a logical source line.
+    pub at_bol: bool,
+    /// Whether this token follows a space.
+    pub follows_space: bool,
+    /// Macro names suppressed for this token during preprocessing.
+    pub hideset: Option<Rc<FxHashSet<SmolStr>>>,
+    /// The spelling if this is a synthetic token.
+    ///
+    /// If this is `None`, this token must originate from the source content,
+    /// and its spelling can be obtained from the source using its `span`.
+    pub synthetic: Option<SmolStr>,
+}
+
+impl PreToken {
+    /// Return whether this token is a punctuator.
+    pub fn is_punct(&self, expected: &str) -> bool {
+        matches!(self.kind, PreTokenKind::Punct(ref p) if p == expected)
+    }
+
+    /// Return whether this token is a string literal.
+    pub fn is_str_lit(&self) -> bool {
+        matches!(self.kind, PreTokenKind::StrLit)
+    }
+
+    /// Return whether this token is the EOF sentinel.
+    pub fn is_eof(&self) -> bool {
+        matches!(self.kind, PreTokenKind::Eof)
+    }
+
+    /// Return the lexeme if this is an identifier token.
+    pub fn as_ident(&self) -> Option<SmolStr> {
+        match self.kind {
+            PreTokenKind::Ident(ref name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// Return a source span for a substring of this token.
+    fn span_at(&self, offset: usize, len: usize) -> SourceSpan {
+        if self.synthetic.is_some() {
+            self.span // Not meaningful, return as is
+        } else {
+            SourceSpan {
+                id: self.span.id,
+                offset: self.span.offset + offset,
+                len,
+            }
+        }
+    }
+}
+
+/// Token kinds for [`Token`].
 #[derive(Clone, Debug)]
 pub enum TokenKind {
     Ident(SmolStr),
@@ -69,49 +140,9 @@ pub enum TokenKind {
     Punct(SmolStr),
     Num(u64, Type),
     Flonum(f64, Type),
-    /// A string literal, with null terminator preserved.
+    /// The bytes of a string literal, with null terminator preserved.
     Str(Rc<[u8]>),
     Eof,
-}
-
-impl std::fmt::Display for TokenKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ident(name) => write!(f, "{name}"),
-            Self::Keyword(keyword) => write!(f, "{keyword}"),
-            Self::Punct(punct) => write!(f, "{punct}"),
-            Self::Num(val, _) => write!(f, "{val}"),
-            Self::Flonum(val, _) => write!(f, "{val:?}"),
-            Self::Str(content) => {
-                write!(f, "\"")?;
-                for byte in content
-                    .strip_suffix(b"\0")
-                    .unwrap_or(content.as_ref())
-                    .iter()
-                    .copied()
-                {
-                    match byte {
-                        b'\x07' => write!(f, "\\a")?,
-                        b'\x08' => write!(f, "\\b")?,
-                        b'\t' => write!(f, "\\t")?,
-                        b'\n' => write!(f, "\\n")?,
-                        b'\x0b' => write!(f, "\\v")?,
-                        b'\x0c' => write!(f, "\\f")?,
-                        b'\r' => write!(f, "\\r")?,
-                        b'\x1b' => write!(f, "\\e")?, // GNU C extension
-                        b'"' => write!(f, "\\\"")?,
-                        b'\\' => write!(f, "\\\\")?,
-                        // ASCII printable characters can be written as is
-                        b' '..=b'~' => write!(f, "{}", byte as char)?,
-                        // Non-printable characters are written as octal escape
-                        _ => write!(f, "\\{:03o}", byte)?,
-                    }
-                }
-                write!(f, "\"")
-            },
-            Self::Eof => Ok(()),
-        }
-    }
 }
 
 /// A token.
@@ -119,18 +150,6 @@ impl std::fmt::Display for TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: SourceSpan,
-    /// Whether this token begins a logical source line.
-    pub at_bol: bool,
-    /// Whether this token follows a space.
-    pub follows_space: bool,
-    /// Macro names suppressed for this token during preprocessing.
-    ///
-    /// This is used by the preprocessor to prevent recursive re-expansion of
-    /// macros. It should be cleared to free up memory when the preprocessing
-    /// stage completes.
-    pub hideset: Option<Rc<FxHashSet<SmolStr>>>,
-    /// Whether this is a synthetic token has no spelling in the source.
-    pub synthetic: bool,
 }
 
 impl Token {
@@ -228,7 +247,7 @@ pub struct Tokenizer<'a> {
     pos: usize,
     at_bol: bool,
     follows_space: bool,
-    tokens: Vec<Token>,
+    tokens: Vec<PreToken>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -244,8 +263,8 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Push a token with the given kind.
-    fn push(&mut self, kind: TokenKind, offset: usize, len: usize) {
-        self.tokens.push(Token {
+    fn push(&mut self, kind: PreTokenKind, offset: usize, len: usize) {
+        self.tokens.push(PreToken {
             kind,
             span: SourceSpan {
                 id: self.source.id,
@@ -255,14 +274,14 @@ impl<'a> Tokenizer<'a> {
             at_bol: self.at_bol,
             follows_space: self.follows_space,
             hideset: None,
-            synthetic: false,
+            synthetic: None,
         });
         self.at_bol = false;
         self.follows_space = false;
     }
 
     /// Tokenize the entire source into a flat token list.
-    pub fn tokenize(mut self) -> Result<Vec<Token>> {
+    pub fn tokenize(mut self) -> Result<Vec<PreToken>> {
         let content = &self.source.content;
 
         while self.pos < content.len() {
@@ -298,16 +317,16 @@ impl<'a> Tokenizer<'a> {
             }
 
             if ch == b'"' {
-                self.read_string_literal()?;
+                self.read_string_char_literal(false)?;
                 continue;
             }
 
             if ch == b'\'' {
-                self.read_char_literal()?;
+                self.read_string_char_literal(true)?;
                 continue;
             }
 
-            if is_ident1(&ch) {
+            if is_ident_start(&ch) {
                 self.read_ident();
                 continue;
             }
@@ -319,7 +338,7 @@ impl<'a> Tokenizer<'a> {
             return Err(self.source.error(self.pos, 1, "invalid token"));
         }
 
-        self.push(TokenKind::Eof, self.pos, 0);
+        self.push(PreTokenKind::Eof, self.pos, 0);
         Ok(self.tokens)
     }
 
@@ -359,8 +378,6 @@ impl<'a> Tokenizer<'a> {
         let bytes = content.as_bytes();
         let offset = self.pos;
 
-        // Scan as far as we can while the characters are valid in some kind of
-        // numeric literal, which might not yet be valid
         let mut end = offset + 1;
         while end < bytes.len() {
             let ch = bytes[end];
@@ -377,8 +394,160 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        let lexeme = &content[offset..end];
-        let bytes = lexeme.as_bytes();
+        self.push(PreTokenKind::NumLit, offset, end - offset);
+        self.pos = end;
+        Ok(())
+    }
+
+    /// Read a string or char literal token.
+    fn read_string_char_literal(&mut self, is_char: bool) -> Result<()> {
+        let bytes = self.source.content.as_bytes();
+        let mut i = self.pos + 1; // Skip opening quote
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\'' if is_char => {
+                    self.push(PreTokenKind::CharLit, self.pos, i - self.pos + 1);
+                    self.pos = i + 1; // Skip past closing quote
+                    return Ok(());
+                },
+                b'"' if !is_char => {
+                    self.push(PreTokenKind::StrLit, self.pos, i - self.pos + 1);
+                    self.pos = i + 1; // Skip past closing quote
+                    return Ok(());
+                },
+                b'\\' => {
+                    i += 1;
+                    if i >= bytes.len() || matches!(bytes[i], b'\n' | b'\0') {
+                        break;
+                    }
+                    i += 1;
+                },
+                b'\n' | b'\0' => break,
+                _ => i += 1,
+            }
+        }
+
+        Err(self.source.error(
+            self.pos,
+            i - self.pos,
+            format!(
+                "unclosed {} literal",
+                if is_char { "char" } else { "string" }
+            ),
+        ))
+    }
+
+    /// Read an identifier token.
+    fn read_ident(&mut self) {
+        let offset = self.pos;
+        let content = &self.source.content;
+
+        let len = content[self.pos..]
+            .bytes()
+            .take_while(|b| is_ident_start(b) || b.is_ascii_digit())
+            .count();
+        let lexeme = &content[offset..offset + len];
+        self.push(PreTokenKind::Ident(lexeme.into()), offset, len);
+        self.pos += len;
+    }
+
+    /// Read a punctuator token, returning whether there is one.
+    fn read_punct(&mut self) -> bool {
+        let offset = self.pos;
+        let rest = &self.source.content[offset..];
+
+        const PUNCTUATORS: &[&str] = &[
+            "<<=", ">>=", "...", "==", "!=", "<=", ">=", "<<", ">>", "->", "+=", "-=", "*=", "/=",
+            "%=", "&=", "|=", "^=", "++", "--", "&&", "||",
+        ];
+
+        let len = if let Some(punct) = PUNCTUATORS.iter().find(|&pfx| rest.starts_with(pfx)) {
+            punct.len()
+        } else if rest
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_punctuation)
+        {
+            1
+        } else {
+            0
+        };
+
+        if len == 0 {
+            return false;
+        }
+
+        self.push(PreTokenKind::Punct(rest[..len].into()), offset, len);
+        self.pos += len;
+        true
+    }
+}
+
+/// Helper for interpreting preprocessor tokens.
+pub struct PreTokenResolver<'a>(&'a SourceMap);
+
+impl<'a> PreTokenResolver<'a> {
+    /// Create a new preprocess token resolver.
+    pub fn new(source_map: &'a SourceMap) -> Self {
+        Self(source_map)
+    }
+
+    /// Return the spelling of a preprocessor token.
+    pub fn spelling<'t>(&'t self, token: &'t PreToken) -> Cow<'t, str> {
+        if let Some(spelling) = &token.synthetic {
+            spelling.as_str().into()
+        } else {
+            self.0.text(token.span).into()
+        }
+    }
+
+    /// Lower a preprocessor token into a regular token.
+    ///
+    /// If `for_pp_expr` is true, preprocessor expression rules will be applied.
+    /// In particular,
+    ///
+    /// - All identifiers are treated as 0;
+    /// - String literals are rejected;
+    /// - Floating-point literals are rejected.
+    pub fn lower(&self, token: PreToken, for_pp_expr: bool) -> Result<Token> {
+        let kind = match token.kind {
+            PreTokenKind::Ident(_) if for_pp_expr => TokenKind::Num(0, Type::INT),
+            PreTokenKind::Ident(ident) if let Ok(keyword) = Keyword::try_from(ident.as_str()) => {
+                TokenKind::Keyword(keyword)
+            },
+            PreTokenKind::Ident(ident) => TokenKind::Ident(ident),
+            PreTokenKind::Punct(punct) => TokenKind::Punct(punct),
+            PreTokenKind::NumLit => self.lower_numeric_literal(&token, for_pp_expr)?,
+            PreTokenKind::StrLit if for_pp_expr => {
+                return Err(self.0.error(
+                    token.span,
+                    "string literal is not valid in preprocessor expressions",
+                ));
+            },
+            PreTokenKind::StrLit => self.lower_string_char_literal(&token, false)?,
+            PreTokenKind::CharLit => self.lower_string_char_literal(&token, true)?,
+            PreTokenKind::Eof => TokenKind::Eof,
+        };
+
+        Ok(Token {
+            kind,
+            span: token.span,
+        })
+    }
+
+    /// Lower a numeric literal.
+    ///
+    /// This will output either an integer or floating-point number token, if
+    /// valid. The type will be determined by the suffix or otherwise inferred
+    /// from the value and radix according to the C standard rules.
+    ///
+    /// If `for_pp_expr` is true, floating-point literals will be rejected as
+    /// they are not allowed in C preprocessor expressions.
+    fn lower_numeric_literal(&self, token: &PreToken, for_pp_expr: bool) -> Result<TokenKind> {
+        let spelling = self.spelling(token);
+        let bytes = spelling.as_bytes();
+
         let starts_hex = bytes.starts_with(b"0x") || bytes.starts_with(b"0X");
         let starts_binary = bytes.starts_with(b"0b") || bytes.starts_with(b"0B");
 
@@ -390,48 +559,145 @@ impl<'a> Tokenizer<'a> {
             && (bytes.first() == Some(&b'.')
                 || bytes.iter().any(|b| matches!(b, b'.' | b'e' | b'E')));
 
+        // Floating-point literal
         if is_hex_flonum || is_dec_flonum {
-            let (num, ty) = parse_flonum_literal(lexeme, is_hex_flonum).ok_or_else(|| {
-                self.source
-                    .error(self.pos, lexeme.len(), "invalid floating-point literal")
-            })?;
-            self.push(TokenKind::Flonum(num, ty), offset, lexeme.len());
-        } else {
-            let (num, ty) = parse_integer_literal(lexeme).ok_or_else(|| {
-                self.source
-                    .error(self.pos, lexeme.len(), "invalid integer literal")
-            })?;
-            self.push(TokenKind::Num(num, ty), offset, lexeme.len());
+            if for_pp_expr {
+                return Err(self.0.error(
+                    token.span,
+                    "floating-point literal is not valid in preprocessor expressions",
+                ));
+            }
+
+            let (suffix_len, ty) = match bytes.last() {
+                Some(b'f' | b'F') => (1, Type::FLOAT),
+                Some(b'l' | b'L') => (1, Type::DOUBLE),
+                _ => (0, Type::DOUBLE),
+            };
+            let body = &spelling[..spelling.len() - suffix_len];
+            let val = if is_hex_flonum {
+                hexf_parse::parse_hexf64(body, false).ok()
+            } else {
+                body.parse::<f64>().ok()
+            };
+            let val =
+                val.ok_or_else(|| self.0.error(token.span, "invalid floating-point literal"))?;
+            return Ok(TokenKind::Flonum(val, ty));
         }
 
-        self.pos = end;
-        Ok(())
+        // Integer literal
+        let (radix, start) = match bytes {
+            [b'0', b'x' | b'X', ..] => (16, 2),
+            [b'0', b'b' | b'B', ..] => (2, 2),
+            // A leading 0 followed by more digits is an octal literal, e.g.,
+            // "08" is an invalid octal rather than a valid decimal; also we do
+            // not strip the leading 0 because it does not affect the parsed
+            // value, and that we want to accept a single "0"
+            [b'0', ..] => (8, 0),
+            _ => (10, 0),
+        };
+
+        let (suffix_len, l, u) = match bytes[start..] {
+            [.., b'L', b'L', b'U']
+            | [.., b'L', b'L', b'u']
+            | [.., b'l', b'l', b'U']
+            | [.., b'l', b'l', b'u']
+            | [.., b'U', b'L', b'L']
+            | [.., b'U', b'l', b'l']
+            | [.., b'u', b'L', b'L']
+            | [.., b'u', b'l', b'l'] => (3, true, true),
+            [.., b'L', b'U']
+            | [.., b'L', b'u']
+            | [.., b'l', b'U']
+            | [.., b'l', b'u']
+            | [.., b'U', b'L']
+            | [.., b'U', b'l']
+            | [.., b'u', b'L']
+            | [.., b'u', b'l'] => (2, true, true),
+            [.., b'L', b'L'] | [.., b'l', b'l'] => (2, true, false),
+            [.., b'L'] | [.., b'l'] => (1, true, false),
+            [.., b'U'] | [.., b'u'] => (1, false, true),
+            _ => (0, false, false),
+        };
+
+        let body = &spelling[start..bytes.len() - suffix_len];
+        let val = u64::from_str_radix(body, radix)
+            .map_err(|_| self.0.error(token.span, "invalid integer literal"))?;
+
+        let ty = if radix == 10 {
+            if l && u {
+                Type::ULONG
+            } else if l {
+                Type::LONG
+            } else if u {
+                if val > u32::MAX as _ {
+                    Type::ULONG
+                } else {
+                    Type::UINT
+                }
+            } else if val > i32::MAX as _ {
+                Type::LONG
+            } else {
+                Type::INT
+            }
+        } else if l && u {
+            Type::ULONG
+        } else if l {
+            if val > i64::MAX as _ {
+                Type::ULONG
+            } else {
+                Type::LONG
+            }
+        } else if u {
+            if val > u32::MAX as _ {
+                Type::ULONG
+            } else {
+                Type::UINT
+            }
+        } else if val > i64::MAX as _ {
+            Type::ULONG
+        } else if val > u32::MAX as _ {
+            Type::LONG
+        } else if val > i32::MAX as _ {
+            Type::UINT
+        } else {
+            Type::INT
+        };
+
+        Ok(TokenKind::Num(val, ty))
     }
 
-    /// Read a string literal token.
-    fn read_string_literal(&mut self) -> Result<()> {
-        let bytes = self.source.content.as_bytes();
-        let mut i = self.pos + 1; // Skip opening quote
+    /// Lower a string or character literal.
+    fn lower_string_char_literal(&self, token: &PreToken, is_char: bool) -> Result<TokenKind> {
+        let spelling = self.spelling(token);
+        let bytes = spelling.as_bytes();
+
+        if is_char && !matches!(bytes, [b'\'', .., b'\'']) {
+            return Err(self.0.error(token.span, "invalid char literal"));
+        }
+        if !is_char && !matches!(bytes, [b'"', .., b'"']) {
+            return Err(self.0.error(token.span, "invalid string literal"));
+        }
+
+        let mut i = 1; // Skip opening quote
+        let len = bytes.len() - 1; // Exclude closing quote
         let mut content = Vec::new();
 
-        while i < bytes.len() {
+        while i < len {
             match bytes[i] {
-                b'"' => {
-                    content.push(b'\0');
-                    self.push(TokenKind::Str(content.into()), self.pos, i - self.pos + 1);
-                    self.pos = i + 1; // Skip past closing quote
-                    return Ok(());
+                b'\n' | b'\0' => {
+                    return Err(self
+                        .0
+                        .error(token.span_at(i, 1), "invalid character in literal"));
                 },
                 b'\\' => {
-                    i += 1;
-                    if i >= bytes.len() || matches!(bytes[i], b'\n' | b'\0') {
-                        break;
+                    if i + 1 >= len {
+                        return Err(self.0.error(token.span_at(i, 1), "invalid escape sequence"));
                     }
-                    let (escaped, len) = self.read_escape_char(i)?;
+                    i += 1;
+                    let (escaped, len) = self.decode_escape_seq(token, bytes, i, len)?;
                     content.push(escaped);
                     i += len;
                 },
-                b'\n' | b'\0' => break,
                 byte => {
                     content.push(byte);
                     i += 1;
@@ -439,72 +705,45 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Err(self
-            .source
-            .error(self.pos, i - self.pos, "unclosed string literal"))
-    }
-
-    /// Read a character literal token.
-    fn read_char_literal(&mut self) -> Result<()> {
-        let bytes = self.source.content.as_bytes();
-        let mut i = self.pos + 1; // Skip opening quote
-
-        let byte = *bytes
-            .get(i)
-            .ok_or_else(|| self.source.error(self.pos, 1, "unclosed char literal"))?;
-
-        if matches!(byte, b'\n' | b'\0') {
-            return Err(self.source.error(self.pos, 1, "unclosed char literal"));
+        if is_char {
+            let [ch] = content.as_slice() else {
+                return Err(self.0.error(token.span, "multi-character char constant"));
+            };
+            // Interpret one-byte character constant using signed-char semantics,
+            // e.g., '\x80' becomes -128 (wrapped around)
+            return Ok(TokenKind::Num(*ch as i8 as _, Type::INT));
         }
 
-        let ch = if byte == b'\\' {
-            let (escaped, len) = self.read_escape_char(i + 1)?;
-            i += 1 + len;
-            escaped
-        } else {
-            i += 1;
-            byte
-        };
-
-        // Interpret one-byte character constant using signed-char semantics,
-        // e.g., '\x80' becomes -128 (wrapped around)
-        let ch = ch as i8;
-
-        let len = i - self.pos + 1;
-        match bytes[i..]
-            .iter()
-            .position(|&b| matches!(b, b'\'' | b'\n' | b'\0'))
-            .filter(|&pos| bytes[i + pos] == b'\'')
-        {
-            Some(0) => {
-                self.push(TokenKind::Num(ch as _, Type::INT), self.pos, len);
-                self.pos = i + 1; // Skip past closing quote
-                Ok(())
-            },
-            Some(j) => Err(self
-                .source
-                .error(self.pos, len + j, "multi-charcter char constant")),
-            None => Err(self.source.error(self.pos, 1, "unclosed char literal")),
-        }
+        content.push(b'\0');
+        Ok(TokenKind::Str(content.into()))
     }
 
-    /// Read an escape sequence starting at the first byte after the backslash.
+    /// Decode an escape sequence in a string or character literal.
     ///
-    /// Returns the decoded byte and the number of bytes consumed.
-    fn read_escape_char(&self, start: usize) -> Result<(u8, usize)> {
-        let bytes = self.source.content.as_bytes();
+    /// The `bytes` must correspond to the spelling of the given token. This
+    /// will decode `bytes[start..end]` and return the decoded byte and the
+    /// number of bytes consumed.
+    fn decode_escape_seq(
+        &self,
+        token: &PreToken,
+        bytes: &[u8],
+        start: usize,
+        end: usize,
+    ) -> Result<(u8, usize)> {
         let first = bytes[start];
 
         // Octal escape sequence (up to three octal digits)
         if (first as char).is_digit(8) {
             let mut octal_value = first - b'0';
             let mut len = 1;
-            for &byte in bytes.iter().skip(start + 1).take(2) {
-                if (byte as char).is_digit(8) {
-                    octal_value = (octal_value << 3) + (byte - b'0');
-                    len += 1;
-                } else {
-                    break;
+            if let Some(seq) = bytes.get(start + 1..end.min(start + 3)) {
+                for &byte in seq {
+                    if (byte as char).is_digit(8) {
+                        octal_value = octal_value.wrapping_shl(3).wrapping_add(byte - b'0');
+                        len += 1;
+                    } else {
+                        break;
+                    }
                 }
             }
             return Ok((octal_value, len));
@@ -513,14 +752,16 @@ impl<'a> Tokenizer<'a> {
         // Hexadecimal escape sequence
         if first == b'x' {
             let mut pos = start + 1;
-            if pos >= bytes.len() || !bytes[pos].is_ascii_hexdigit() {
-                return Err(self.source.error(pos, 1, "invalid hex escape sequence"));
+            if pos >= end || !bytes[pos].is_ascii_hexdigit() {
+                return Err(self
+                    .0
+                    .error(token.span_at(pos, 1), "invalid hex escape sequence"));
             }
 
             let mut hex_value = 0u8;
             let mut has_warned_overflow = false;
 
-            while pos < bytes.len() && bytes[pos].is_ascii_hexdigit() {
+            while pos < end && bytes[pos].is_ascii_hexdigit() {
                 let digit = (bytes[pos] as char).to_digit(16).unwrap() as u8;
                 if !has_warned_overflow {
                     if let Some(next) = hex_value.checked_mul(16).and_then(|v| v.checked_add(digit))
@@ -528,7 +769,8 @@ impl<'a> Tokenizer<'a> {
                         hex_value = next;
                     } else {
                         has_warned_overflow = true;
-                        self.source.warn(pos, 1, "hex escape sequence out of range");
+                        self.0
+                            .warn(token.span_at(pos, 1), "hex escape sequence out of range");
                         hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
                     }
                 } else {
@@ -552,200 +794,16 @@ impl<'a> Tokenizer<'a> {
             b'e' => b'\x1b', // GNU C extension
             b'"' | b'\'' | b'\\' | b'?' => first,
             _ => {
-                self.source.warn(start, 1, "unknown escape sequence");
+                self.0
+                    .warn(token.span_at(start, 1), "unknown escape sequence");
                 first
             },
         };
         Ok((decoded, 1))
     }
-
-    /// Read an identifier token.
-    fn read_ident(&mut self) {
-        let offset = self.pos;
-        let content = &self.source.content;
-
-        let len = content[self.pos..].bytes().take_while(is_ident2).count();
-        let lexeme = &content[offset..offset + len];
-        self.push(TokenKind::Ident(lexeme.into()), offset, len);
-        self.pos += len;
-    }
-
-    /// Read a punctuator token, returning whether there is one.
-    fn read_punct(&mut self) -> bool {
-        let offset = self.pos;
-        let rest = &self.source.content[offset..];
-
-        const PUNCTUATORS: &[&str] = &[
-            "<<=", ">>=", "...", "==", "!=", "<=", ">=", "<<", ">>", "->", "+=", "-=", "*=", "/=",
-            "%=", "&=", "|=", "^=", "++", "--", "&&", "||",
-        ];
-
-        let punct_len =
-            if let Some(punct) = PUNCTUATORS.iter().find(|prefix| rest.starts_with(*prefix)) {
-                punct.len()
-            } else if rest
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_punctuation)
-            {
-                1
-            } else {
-                0
-            };
-
-        if punct_len == 0 {
-            return false;
-        }
-
-        self.push(
-            TokenKind::Punct(rest[..punct_len].into()),
-            offset,
-            punct_len,
-        );
-        self.pos += punct_len;
-        true
-    }
-}
-
-/// Make the token stream EOF-terminated.
-///
-/// This requires the given token stream to be non-empty. It is no-op if the
-/// given token stream is already EOF-terminated.
-pub fn ensure_eof(mut tokens: Vec<Token>) -> Vec<Token> {
-    let last = tokens.last().expect("token stream must not be empty");
-    if last.is_eof() {
-        return tokens;
-    }
-
-    tokens.push(Token {
-        kind: TokenKind::Eof,
-        span: SourceSpan {
-            id: last.span.id,
-            offset: last.span.offset + last.span.len,
-            len: 0,
-        },
-        at_bol: false,
-        follows_space: false,
-        hideset: None,
-        synthetic: false,
-    });
-    tokens
 }
 
 /// Return whether the byte is valid at the start of an identifier.
-fn is_ident1(byte: &u8) -> bool {
+fn is_ident_start(byte: &u8) -> bool {
     byte.is_ascii_alphabetic() || *byte == b'_'
-}
-
-/// Return whether the byte is valid after the first identifier byte.
-fn is_ident2(byte: &u8) -> bool {
-    is_ident1(byte) || byte.is_ascii_digit()
-}
-
-/// Parse an integer literal from the given lexeme.
-///
-/// Returns the parsed value and its type, or `None` if the lexeme is not a
-/// valid integer literal.
-fn parse_integer_literal(lexeme: &str) -> Option<(u64, Type)> {
-    let bytes = lexeme.as_bytes();
-
-    let (radix, start) = match bytes {
-        [b'0', b'x' | b'X', ..] => (16, 2),
-        [b'0', b'b' | b'B', ..] => (2, 2),
-        // A leading 0 followed by more digits is an octal literal, e.g.,
-        // "08" is an invalid octal rather than a valid decimal; also we do
-        // not strip the leading 0 because it does not affect the parsed
-        // value, and that we want to accept a single "0"
-        [b'0', ..] => (8, 0),
-        _ => (10, 0),
-    };
-
-    let (suffix_len, l, u) = match bytes[start..] {
-        [.., b'L', b'L', b'U']
-        | [.., b'L', b'L', b'u']
-        | [.., b'l', b'l', b'U']
-        | [.., b'l', b'l', b'u']
-        | [.., b'U', b'L', b'L']
-        | [.., b'U', b'l', b'l']
-        | [.., b'u', b'L', b'L']
-        | [.., b'u', b'l', b'l'] => (3, true, true),
-        [.., b'L', b'U']
-        | [.., b'L', b'u']
-        | [.., b'l', b'U']
-        | [.., b'l', b'u']
-        | [.., b'U', b'L']
-        | [.., b'U', b'l']
-        | [.., b'u', b'L']
-        | [.., b'u', b'l'] => (2, true, true),
-        [.., b'L', b'L'] | [.., b'l', b'l'] => (2, true, false),
-        [.., b'L'] | [.., b'l'] => (1, true, false),
-        [.., b'U'] | [.., b'u'] => (1, false, true),
-        _ => (0, false, false),
-    };
-
-    let body = &lexeme[start..bytes.len() - suffix_len];
-    let num = u64::from_str_radix(body, radix).ok()?;
-
-    let ty = if radix == 10 {
-        if l && u {
-            Type::ULONG
-        } else if l {
-            Type::LONG
-        } else if u {
-            if num > u32::MAX as _ {
-                Type::ULONG
-            } else {
-                Type::UINT
-            }
-        } else if num > i32::MAX as _ {
-            Type::LONG
-        } else {
-            Type::INT
-        }
-    } else if l && u {
-        Type::ULONG
-    } else if l {
-        if num > i64::MAX as _ {
-            Type::ULONG
-        } else {
-            Type::LONG
-        }
-    } else if u {
-        if num > u32::MAX as _ {
-            Type::ULONG
-        } else {
-            Type::UINT
-        }
-    } else if num > i64::MAX as _ {
-        Type::ULONG
-    } else if num > u32::MAX as _ {
-        Type::LONG
-    } else if num > i32::MAX as _ {
-        Type::UINT
-    } else {
-        Type::INT
-    };
-
-    Some((num, ty))
-}
-
-/// Parse a floating-point literal from the given lexeme.
-///
-/// Returns the parsed value and its type, or `None` if the lexeme is not a
-/// valid floating-point literal.
-fn parse_flonum_literal(lexeme: &str, is_hex: bool) -> Option<(f64, Type)> {
-    let (suffix_len, ty) = match lexeme.as_bytes().last() {
-        Some(b'f' | b'F') => (1, Type::FLOAT),
-        Some(b'l' | b'L') => (1, Type::DOUBLE),
-        _ => (0, Type::DOUBLE),
-    };
-
-    let body = &lexeme[..lexeme.len() - suffix_len];
-    let num = if is_hex {
-        hexf_parse::parse_hexf64(body, false).ok()?
-    } else {
-        body.parse::<f64>().ok()?
-    };
-
-    Some((num, ty))
 }
