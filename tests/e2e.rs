@@ -1428,6 +1428,18 @@ fn test_macro() {
     f.line("#define paste4(x, y, z) x##y##z");
     f.assert(123, "paste4(1,2,3)");
 
+    f.line("#define paste5 +##+");
+    f.assert(4, "({ int x=3; paste5 x; })");
+
+    f.line("#define paste6 foo##bar");
+    f.assert(3, "({ int foobar=3; paste6; })");
+
+    f.line("#define paste7 0##xff");
+    f.assert(255, "paste7");
+
+    f.line("#define paste8 1##2##3");
+    f.assert(123, "paste8");
+
     f.finish();
     f.run("macro");
 }

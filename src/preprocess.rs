@@ -140,31 +140,6 @@ impl<'a> MacroExpander<'a> {
         Ok(arg)
     }
 
-    /// Substitute one replacement-list token with its macro argument.
-    ///
-    /// If the given token is not an identifier that matches some macro
-    /// parameter, this returns the token itself. Otherwise this returns the
-    /// corresponding argument tokens, expanded if `should_expand` is true.
-    fn substitute(
-        &mut self,
-        token: PreToken,
-        args: &FxHashMap<SmolStr, Vec<PreToken>>,
-        should_expand: bool,
-    ) -> Result<Vec<PreToken>> {
-        let PreTokenKind::Ident(name) = &token.kind else {
-            return Ok(vec![token]);
-        };
-        let Some(arg) = args.get(name) else {
-            return Ok(vec![token]);
-        };
-
-        if arg.is_empty() || !should_expand {
-            Ok(arg.clone())
-        } else {
-            self.expand_all(arg.clone())
-        }
-    }
-
     /// Stringize a macro argument for the "#" operator.
     ///
     /// Returns a string literal token joined form the given argument tokens.
@@ -237,6 +212,113 @@ impl<'a> MacroExpander<'a> {
             hideset: None,
             synthetic: Some(pasted),
         })
+    }
+
+    /// Substitute one replacement-list token if it names a macro parameter.
+    ///
+    /// `args` should be `None` for object-like macros, and the token will be
+    /// returned unchanged. Otherwise, a non-parameter token will be returned
+    /// unchanged, and a parameter token will be replaced with the corresponding
+    /// argument. If `expand_arg` is true, the argument will be fully expanded
+    /// via [`Self::expand_all`].
+    fn subst_param(
+        &mut self,
+        token: PreToken,
+        args: Option<&FxHashMap<SmolStr, Vec<PreToken>>>,
+        expand_arg: bool,
+    ) -> Result<Vec<PreToken>> {
+        let Some(args) = args else {
+            return Ok(vec![token]);
+        };
+
+        let PreTokenKind::Ident(name) = &token.kind else {
+            return Ok(vec![token]);
+        };
+        let Some(arg) = args.get(name) else {
+            return Ok(vec![token]);
+        };
+
+        if arg.is_empty() || !expand_arg {
+            Ok(arg.clone())
+        } else {
+            self.expand_all(arg.clone())
+        }
+    }
+
+    /// Expand this macro's replacement list in place.
+    ///
+    /// `args` should be `None` for object-like macros.
+    fn expand_replacement(
+        &mut self,
+        body: &mut Vec<PreToken>,
+        args: Option<&FxHashMap<SmolStr, Vec<PreToken>>>,
+    ) -> Result<()> {
+        let mut iter = std::mem::take(body).into_iter().peekable();
+
+        while let Some(token) = iter.next() {
+            let mut current = if token.is_punct("#")
+                && let Some(args) = args
+            {
+                // Stringize operator is only allowed for function-like macros,
+                // and we consume its next token as well
+                let Some(next) = iter.next() else {
+                    return Err(self
+                        .source_map
+                        .error(token.span, "'#' is not followed by a macro parameter"));
+                };
+                let Some(arg) = next.as_ident().and_then(|name| args.get(&name)) else {
+                    return Err(self
+                        .source_map
+                        .error(next.span, "'#' is not followed by a macro parameter"));
+                };
+                vec![self.stringize(&token, arg)]
+            } else if token.is_punct("##") {
+                // All "##"s will be consumed in a subsequent loop, so if
+                // we reach here that loop must have not been reached yet,
+                // which means this "##" is the first token in the macro
+                return Err(self
+                    .source_map
+                    .error(token.span, "'##' cannot appear at start of macro expansion"));
+            } else {
+                // Substitute parameters in a normal token; note that parameter
+                // immediately followed by "##" must be substituted as is (not
+                // expanded) as it participates in token pasting later
+                let has_pending_paste = iter.peek().is_some_and(|tok| tok.is_punct("##"));
+                self.subst_param(token, args, !has_pending_paste)?
+            };
+
+            // Consume and fold the whole "a ## b ## ..." chain, if any
+            while let Some(token) = iter.next_if(|tok| tok.is_punct("##")) {
+                let Some(next) = iter.next() else {
+                    return Err(self
+                        .source_map
+                        .error(token.span, "'##' cannot appear at end of macro expansion"));
+                };
+                let mut rhs = self.subst_param(next, args, false)?;
+
+                // If either side of "##" is empty, the result is simply the
+                // other side
+                if current.is_empty() {
+                    current = rhs;
+                    continue;
+                }
+                if rhs.is_empty() {
+                    continue;
+                }
+
+                // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]"
+                // becomes "[a, paste(b,c), d]"
+                let last = current.pop().unwrap();
+                let first = rhs.remove(0);
+                let pasted = self.paste(last, first, token.span)?;
+                current.push(pasted);
+                current.extend(rhs);
+            }
+
+            body.extend(current);
+        }
+
+        Ok(())
     }
 
     /// Try to expand the given token as a macro.
@@ -326,69 +408,10 @@ impl<'a> MacroExpander<'a> {
                 ));
             }
 
-            let mut iter = std::mem::take(&mut body).into_iter().peekable();
-            while let Some(token) = iter.next() {
-                let mut current = if token.is_punct("#") {
-                    // Stringize operator, consume its next token as well
-                    let Some(next) = iter.next() else {
-                        return Err(self
-                            .source_map
-                            .error(token.span, "'#' is not followed by a macro parameter"));
-                    };
-                    let Some(arg) = next.as_ident().and_then(|name| args.get(&name)) else {
-                        return Err(self
-                            .source_map
-                            .error(next.span, "'#' is not followed by a macro parameter"));
-                    };
-                    vec![self.stringize(&token, arg)]
-                } else if token.is_punct("##") {
-                    // All "##"s will be consumed in a subsequent loop, so if
-                    // we reach here that loop must have not been reached yet,
-                    // which means this "##" is the first token in the macro
-                    return Err(self
-                        .source_map
-                        .error(token.span, "'##' cannot appear at start of macro expansion"));
-                } else {
-                    // Substitute parameters in a normal token; note that a
-                    // parameter immediately followed by "##" must not be
-                    // expanded when substituted because it participates in
-                    // token pasting later
-                    let has_pending_paste = iter.peek().is_some_and(|tok| tok.is_punct("##"));
-                    self.substitute(token, &args, !has_pending_paste)?
-                };
-
-                // Consume and fold the whole "a ## b ## ..." chain, if any
-                while let Some(token) = iter.next_if(|tok| tok.is_punct("##")) {
-                    let Some(next) = iter.next() else {
-                        return Err(self
-                            .source_map
-                            .error(token.span, "'##' cannot appear at end of macro expansion"));
-                    };
-                    let mut rhs = self.substitute(next, &args, false)?;
-
-                    // If either side of "##" is empty, the result is simply the
-                    // other side
-                    if current.is_empty() {
-                        current = rhs;
-                        continue;
-                    }
-                    if rhs.is_empty() {
-                        continue;
-                    }
-
-                    // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]"
-                    // becomes "[a, paste(b,c), d]"
-                    let last = current.pop().unwrap();
-                    let first = rhs.remove(0);
-                    let pasted = self.paste(last, first, token.span)?;
-                    current.push(pasted);
-                    current.extend(rhs);
-                }
-
-                body.extend(current);
-            }
+            self.expand_replacement(&mut body, Some(&args))?;
         } else {
             // Object-like macro, inherit only the triggering token's hideset
+            self.expand_replacement(&mut body, None)?;
             base_hideset = token.hideset.as_deref().cloned().unwrap_or_default();
         }
 
