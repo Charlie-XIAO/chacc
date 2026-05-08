@@ -6,7 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 
 use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
@@ -104,11 +104,16 @@ struct Macro {
 
 /// Helper struct for macro expansion utilities.
 struct MacroExpander<'a> {
-    source_map: &'a SourceMap,
+    source_map: &'a mut SourceMap,
     macros: &'a FxHashMap<SmolStr, Macro>,
 }
 
 impl<'a> MacroExpander<'a> {
+    /// Create a new macro expander.
+    fn new(source_map: &'a mut SourceMap, macros: &'a FxHashMap<SmolStr, Macro>) -> Self {
+        Self { source_map, macros }
+    }
+
     /// Read an argument of a function-like macro call.
     ///
     /// This always stops at a "," or ")" token. The provided `span` should be
@@ -133,6 +138,31 @@ impl<'a> MacroExpander<'a> {
         }
 
         Ok(arg)
+    }
+
+    /// Substitute one replacement-list token with its macro argument.
+    ///
+    /// If the given token is not an identifier that matches some macro
+    /// parameter, this returns the token itself. Otherwise this returns the
+    /// corresponding argument tokens, expanded if `should_expand` is true.
+    fn substitute(
+        &mut self,
+        token: PreToken,
+        args: &FxHashMap<SmolStr, Vec<PreToken>>,
+        should_expand: bool,
+    ) -> Result<Vec<PreToken>> {
+        let PreTokenKind::Ident(name) = &token.kind else {
+            return Ok(vec![token]);
+        };
+        let Some(arg) = args.get(name) else {
+            return Ok(vec![token]);
+        };
+
+        if arg.is_empty() || !should_expand {
+            Ok(arg.clone())
+        } else {
+            self.expand_all(arg.clone())
+        }
     }
 
     /// Stringize a macro argument for the "#" operator.
@@ -171,6 +201,44 @@ impl<'a> MacroExpander<'a> {
         }
     }
 
+    /// Paste two tokens together for the "##" operator.
+    ///
+    /// The provided `span` should be the span of the "##" token that triggers
+    /// this pasting.
+    fn paste(&mut self, lhs: PreToken, rhs: PreToken, span: SourceSpan) -> Result<PreToken> {
+        let resolver = PreTokenResolver::new(self.source_map);
+        let pasted = format_smolstr!("{}{}", resolver.spelling(&lhs), resolver.spelling(&rhs));
+
+        let source = self.source_map.push_virtual(pasted.clone());
+        let source_name = source.name.clone();
+        let tokens = Tokenizer::new(source).tokenize(false).map_err(|_| {
+            self.source_map.error(
+                span,
+                format!(
+                    "pasting formed an invalid preprocessing token: '{pasted}'; see {source_name} \
+                     for more details"
+                ),
+            )
+        })?;
+
+        let [token, eof] = tokens.as_slice() else {
+            return Err(self.source_map.error(
+                span,
+                format!("pasting formed an invalid preprocessing token: '{pasted}'"),
+            ));
+        };
+        debug_assert!(eof.is_eof(), "tokenizer did not produce eof");
+
+        Ok(PreToken {
+            kind: token.kind.clone(),
+            span: lhs.span,
+            at_bol: lhs.at_bol,
+            follows_space: lhs.follows_space,
+            hideset: None,
+            synthetic: Some(pasted),
+        })
+    }
+
     /// Try to expand the given token as a macro.
     ///
     /// The token should be the one that precedes the given input stream, as
@@ -182,7 +250,7 @@ impl<'a> MacroExpander<'a> {
     ///
     /// The implementation is based on [X3J11/86-196 Complete macro expansion
     /// algorithm](https://www.spinellis.gr/blog/20060626/x3J11-86-196.pdf).
-    fn try_expand_in(&self, token: &PreToken, input: &mut TokenStream) -> Result<bool> {
+    fn try_expand_in(&mut self, token: &PreToken, input: &mut TokenStream) -> Result<bool> {
         let Some(name) = token.as_ident() else {
             return Ok(false);
         };
@@ -231,7 +299,7 @@ impl<'a> MacroExpander<'a> {
                     ));
                 };
 
-                args.insert(param, arg);
+                args.insert(param.clone(), arg);
                 last_span = input.current().span;
             }
 
@@ -258,9 +326,10 @@ impl<'a> MacroExpander<'a> {
                 ));
             }
 
-            let mut iter = std::mem::take(&mut body).into_iter();
+            let mut iter = std::mem::take(&mut body).into_iter().peekable();
             while let Some(token) = iter.next() {
-                if token.is_punct("#") {
+                let mut current = if token.is_punct("#") {
+                    // Stringize operator, consume its next token as well
                     let Some(next) = iter.next() else {
                         return Err(self
                             .source_map
@@ -271,21 +340,52 @@ impl<'a> MacroExpander<'a> {
                             .source_map
                             .error(next.span, "'#' is not followed by a macro parameter"));
                     };
-                    body.push(self.stringize(&token, arg));
-                    continue;
+                    vec![self.stringize(&token, arg)]
+                } else if token.is_punct("##") {
+                    // All "##"s will be consumed in a subsequent loop, so if
+                    // we reach here that loop must have not been reached yet,
+                    // which means this "##" is the first token in the macro
+                    return Err(self
+                        .source_map
+                        .error(token.span, "'##' cannot appear at start of macro expansion"));
+                } else {
+                    // Substitute parameters in a normal token; note that a
+                    // parameter immediately followed by "##" must not be
+                    // expanded when substituted because it participates in
+                    // token pasting later
+                    let has_pending_paste = iter.peek().is_some_and(|tok| tok.is_punct("##"));
+                    self.substitute(token, &args, !has_pending_paste)?
+                };
+
+                // Consume and fold the whole "a ## b ## ..." chain, if any
+                while let Some(token) = iter.next_if(|tok| tok.is_punct("##")) {
+                    let Some(next) = iter.next() else {
+                        return Err(self
+                            .source_map
+                            .error(token.span, "'##' cannot appear at end of macro expansion"));
+                    };
+                    let mut rhs = self.substitute(next, &args, false)?;
+
+                    // If either side of "##" is empty, the result is simply the
+                    // other side
+                    if current.is_empty() {
+                        current = rhs;
+                        continue;
+                    }
+                    if rhs.is_empty() {
+                        continue;
+                    }
+
+                    // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]"
+                    // becomes "[a, paste(b,c), d]"
+                    let last = current.pop().unwrap();
+                    let first = rhs.remove(0);
+                    let pasted = self.paste(last, first, token.span)?;
+                    current.push(pasted);
+                    current.extend(rhs);
                 }
 
-                if let PreTokenKind::Ident(name) = &token.kind
-                    && let Some(arg) = args.get(name)
-                {
-                    let mut arg = arg.clone();
-                    if !arg.is_empty() {
-                        arg = self.expand_all(arg)?;
-                    }
-                    body.extend(arg);
-                    continue;
-                }
-                body.push(token);
+                body.extend(current);
             }
         } else {
             // Object-like macro, inherit only the triggering token's hideset
@@ -311,7 +411,7 @@ impl<'a> MacroExpander<'a> {
     }
 
     /// Expand all macros in the given token stream.
-    fn expand_all(&self, tokens: Vec<PreToken>) -> Result<Vec<PreToken>> {
+    fn expand_all(&mut self, tokens: Vec<PreToken>) -> Result<Vec<PreToken>> {
         let mut input = TokenStream::new(tokens);
         let mut out = Vec::new();
 
@@ -498,10 +598,7 @@ where
                 break;
             }
 
-            let expander = MacroExpander {
-                source_map: self.source_map,
-                macros: &self.macros,
-            };
+            let mut expander = MacroExpander::new(self.source_map, &self.macros);
             if expander.try_expand_in(&token, &mut self.input)? {
                 continue;
             }
@@ -569,7 +666,7 @@ where
         }
 
         let source = self.source_map.push(&path)?;
-        let tokens = Tokenizer::new(source).tokenize()?;
+        let tokens = Tokenizer::new(source).tokenize(true)?;
 
         let old_input = std::mem::replace(&mut self.input, TokenStream::new(tokens));
         let old_conds = std::mem::take(&mut self.conds);
@@ -643,10 +740,7 @@ where
             return Ok(None);
         }
 
-        let expander = MacroExpander {
-            source_map: self.source_map,
-            macros: &self.macros,
-        };
+        let mut expander = MacroExpander::new(self.source_map, &self.macros);
         let tokens = expander.expand_all(line)?;
         if tokens.is_empty() {
             return Ok(None);

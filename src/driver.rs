@@ -30,7 +30,7 @@ use crate::tokenize::Tokenizer;
 fn cc1<W: Write>(input: &Path, out: &mut W, preprocess_only: bool) -> Result<()> {
     let mut source_map = SourceMap::default();
     let source = source_map.push(input)?;
-    let tokens = Tokenizer::new(source).tokenize()?;
+    let tokens = Tokenizer::new(source).tokenize(true)?;
 
     if preprocess_only {
         let mut sink = PreprocessedWriter::new(out);

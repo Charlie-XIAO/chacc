@@ -1408,6 +1408,26 @@ fn test_macro() {
     f.assert("'c'", "M14( a!b  `\"\"c)[7]");
     f.assert(0, "M14( a!b  `\"\"c)[8]");
 
+    f.line("#define paste(x,y) x##y");
+    f.assert(15, "paste(1,5)");
+    f.assert(255, "paste(0,xff)");
+    f.assert(3, "({ int foobar=3; paste(foo,bar); })");
+    f.assert(5, "paste(5,)");
+    f.assert(5, "paste(,5)");
+
+    f.line("#define i 5");
+    f.assert(101, "({ int i3=100; paste(1+i,3); })");
+    f.line("#undef i");
+
+    f.line("#define paste2(x) x##5");
+    f.assert(26, "paste2(1+2)");
+
+    f.line("#define paste3(x) 2##x");
+    f.assert(23, "paste3(1+2)");
+
+    f.line("#define paste4(x, y, z) x##y##z");
+    f.assert(123, "paste4(1,2,3)");
+
     f.finish();
     f.run("macro");
 }

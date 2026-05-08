@@ -281,13 +281,16 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize the entire source into a flat token list.
-    pub fn tokenize(mut self) -> Result<Vec<PreToken>> {
+    ///
+    /// If `allow_comment` is false, comments will be treated as invalid tokens
+    /// instead of being skipped.
+    pub fn tokenize(mut self, allow_comment: bool) -> Result<Vec<PreToken>> {
         let content = &self.source.content;
 
         while self.pos < content.len() {
             let ch = content.as_bytes()[self.pos];
 
-            if self.read_comment()? {
+            if allow_comment && self.read_comment()? {
                 self.follows_space = true;
                 continue;
             }
@@ -312,7 +315,7 @@ impl<'a> Tokenizer<'a> {
                         .get(self.pos + 1)
                         .is_some_and(u8::is_ascii_digit))
             {
-                self.read_numeric_literal()?;
+                self.read_numeric_literal();
                 continue;
             }
 
@@ -373,7 +376,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Read a numeric literal token.
-    fn read_numeric_literal(&mut self) -> Result<()> {
+    fn read_numeric_literal(&mut self) {
         let content = &self.source.content;
         let bytes = content.as_bytes();
         let offset = self.pos;
@@ -396,7 +399,6 @@ impl<'a> Tokenizer<'a> {
 
         self.push(PreTokenKind::NumLit, offset, end - offset);
         self.pos = end;
-        Ok(())
     }
 
     /// Read a string or char literal token.
@@ -459,7 +461,7 @@ impl<'a> Tokenizer<'a> {
 
         const PUNCTUATORS: &[&str] = &[
             "<<=", ">>=", "...", "==", "!=", "<=", ">=", "<<", ">>", "->", "+=", "-=", "*=", "/=",
-            "%=", "&=", "|=", "^=", "++", "--", "&&", "||",
+            "%=", "&=", "|=", "^=", "++", "--", "&&", "||", "##",
         ];
 
         let len = if let Some(punct) = PUNCTUATORS.iter().find(|&pfx| rest.starts_with(pfx)) {

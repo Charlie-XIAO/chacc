@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use line_index::{LineIndex, TextSize};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 
 use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
@@ -21,8 +22,8 @@ pub struct SourceSpan {
 pub struct Source {
     pub id: usize,
     pub path: PathBuf,
-    pub name: String,
-    pub content: String,
+    pub name: SmolStr,
+    pub content: SmolStr,
     line_index: LineIndex,
 }
 
@@ -87,11 +88,11 @@ impl SourceMap {
         let (content, name) = if path.as_os_str() == "-" {
             let mut content = String::new();
             std::io::stdin().read_to_string(&mut content)?;
-            (content, "<stdin>".to_string())
+            (content, "<stdin>".to_smolstr())
         } else {
             let content =
                 std::fs::read_to_string(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
-            (content, path.display().to_string())
+            (content, path.display().to_smolstr())
         };
 
         let line_index = LineIndex::new(&content);
@@ -100,11 +101,29 @@ impl SourceMap {
             id: self.0.len(),
             path,
             name,
-            content,
+            content: content.into(),
             line_index,
         };
         self.0.push(source);
         Ok(self.0.last().unwrap())
+    }
+
+    /// Push a new virtual source file with the given content.
+    ///
+    /// Returns a reference to the newly created source.
+    pub fn push_virtual(&mut self, content: SmolStr) -> &Source {
+        let line_index = LineIndex::new(&content);
+
+        let id = self.0.len();
+        let source = Source {
+            id,
+            path: PathBuf::new(),
+            name: format_smolstr!("<virtual-{id}>"),
+            content,
+            line_index,
+        };
+        self.0.push(source);
+        self.0.last().unwrap()
     }
 
     /// Return the source corresponding to the given ID.
