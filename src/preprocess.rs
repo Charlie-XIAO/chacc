@@ -238,11 +238,17 @@ impl<'a> MacroExpander<'a> {
             return Ok(vec![token]);
         };
 
-        if arg.is_empty() || !expand_arg {
-            Ok(arg.clone())
+        let mut tokens = if arg.is_empty() || !expand_arg {
+            arg.clone()
         } else {
-            self.expand_all(arg.clone())
+            self.expand_all(arg.clone())?
+        };
+
+        if let Some(first) = tokens.first_mut() {
+            first.at_bol = token.at_bol;
+            first.follows_space = token.follows_space;
         }
+        Ok(tokens)
     }
 
     /// Expand this macro's replacement list in place.
@@ -413,6 +419,11 @@ impl<'a> MacroExpander<'a> {
             // Object-like macro, inherit only the triggering token's hideset
             self.expand_replacement(&mut body, None)?;
             base_hideset = token.hideset.as_deref().cloned().unwrap_or_default();
+        }
+
+        if let Some(first) = body.first_mut() {
+            first.at_bol = token.at_bol;
+            first.follows_space = token.follows_space;
         }
 
         // Add this macro's own name to prevent the replacement from immediately

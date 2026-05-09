@@ -1477,6 +1477,20 @@ fn test_macro() {
     f.line("#endif");
     f.assert(5, "m");
 
+    f.line("#define STR(x) #x");
+    f.line("#define M16(x) STR(x)");
+    f.line("#define M17(x) M16(foo.x)");
+    f.assert(0, "strcmp(M17(bar), \"foo.bar\")");
+    f.line("#define M18(x) M16(foo. x)");
+    f.assert(0, "strcmp(M18(bar), \"foo. bar\")");
+
+    f.line("#define M19 foo");
+    f.line("#define M20(x) STR(x)");
+    f.line("#define M21(x) M20(x.M19)");
+    f.assert(0, "strcmp(M21(bar), \"bar.foo\")");
+    f.line("#define M22(x) M20(x. M19)");
+    f.assert(0, "strcmp(M22(bar), \"bar. foo\")");
+
     f.finish();
     f.run("macro");
 }
