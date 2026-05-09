@@ -1470,6 +1470,13 @@ fn test_macro() {
     f.line("#endif");
     f.assert(4, "m");
 
+    f.line("#if NO_SUCH_SYMBOL == 0");
+    f.line("m = 5;");
+    f.line("#else");
+    f.line("m = 6;");
+    f.line("#endif");
+    f.assert(5, "m");
+
     f.finish();
     f.run("macro");
 }
