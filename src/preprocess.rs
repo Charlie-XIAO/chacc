@@ -758,9 +758,52 @@ where
     /// If there is no tokens remaining in the current logical line, this
     /// returns `Ok(None)`.
     fn process_constexpr(&mut self) -> Result<Option<ConstValue>> {
-        let line = self.line();
+        let mut line = self.line();
         if line.is_empty() {
             return Ok(None);
+        }
+
+        let mut iter = std::mem::take(&mut line).into_iter().peekable();
+        while let Some(token) = iter.next() {
+            if token.as_ident().as_deref() != Some("defined") {
+                line.push(token);
+                continue;
+            }
+
+            let Some(next) = iter.next() else {
+                return Err(self.error(token.span, "expected an identifier after 'defined'"));
+            };
+
+            // Either "defined MACRO" or "defined(MACRO)"
+            let name = if next.is_punct("(") {
+                let Some(ident) = iter.next() else {
+                    return Err(self.error(next.span, "expected an identifier after 'defined'"));
+                };
+                let Some(name) = ident.as_ident() else {
+                    return Err(self.error(ident.span, "expected an identifier after 'defined'"));
+                };
+                let Some(rparen) = iter.next() else {
+                    return Err(self.error(ident.span, "missing ')' after 'defined'"));
+                };
+                if !rparen.is_punct(")") {
+                    return Err(self.error(rparen.span, "missing ')' after 'defined'"));
+                }
+                name
+            } else if let Some(name) = next.as_ident() {
+                name
+            } else {
+                return Err(self.error(next.span, "expected an identifier after 'defined'"));
+            };
+
+            let value = self.macros.contains_key(&name) as u8; // 0/1
+            line.push(PreToken {
+                kind: PreTokenKind::NumLit,
+                span: token.span,
+                at_bol: token.at_bol,
+                follows_space: token.follows_space,
+                hideset: None,
+                synthetic: Some(format_smolstr!("{value}")),
+            });
         }
 
         let mut expander = MacroExpander::new(self.source_map, &self.macros);
