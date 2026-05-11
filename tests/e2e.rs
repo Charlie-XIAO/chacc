@@ -1169,6 +1169,8 @@ fn test_literal() {
     f.assert(8, "sizeof(5.l)");
     f.assert(8, "sizeof(2.0L)");
 
+    f.assert(1, "size\\\nof(char)");
+
     f.finish();
     f.run("literal");
 }
