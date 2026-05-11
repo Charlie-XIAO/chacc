@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -466,6 +466,7 @@ impl<'a> MacroExpander<'a> {
 /// Preprocessor for a C token stream.
 pub struct Preprocessor<'a, S: PreprocessorSink> {
     source_map: &'a mut SourceMap,
+    includes: &'a [PathBuf],
     input: TokenStream,
     sink: &'a mut S,
     conds: Vec<CondFrame>,
@@ -477,9 +478,15 @@ where
     S: PreprocessorSink,
 {
     /// Create a new preprocessor for the given token stream.
-    pub fn new(source_map: &'a mut SourceMap, tokens: Vec<PreToken>, sink: &'a mut S) -> Self {
+    pub fn new(
+        source_map: &'a mut SourceMap,
+        includes: &'a [PathBuf],
+        tokens: Vec<PreToken>,
+        sink: &'a mut S,
+    ) -> Self {
         Self {
             source_map,
+            includes,
             input: TokenStream::new(tokens),
             sink,
             conds: Vec::new(),
@@ -622,6 +629,28 @@ where
         Ok(())
     }
 
+    /// Resolve an include file path.
+    ///
+    /// If `root` is provided, it is searched first. This returns `None` if
+    /// the file cannot be found in any possible search path.
+    fn resolve_include(&self, filename: &str, root: Option<&Path>) -> Option<PathBuf> {
+        if let Some(root) = root {
+            let candidate = root.join(filename);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        for include in self.includes {
+            let candidate = include.join(filename);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        None
+    }
+
     /// Preprocess the token stream.
     pub fn preprocess(&mut self, emit_eof: bool) -> Result<()> {
         while let Some(token) = self.input.next() {
@@ -680,20 +709,22 @@ where
 
         let resolver = PreTokenResolver::new(self.source_map);
         let spelling = resolver.spelling(&token);
-        let Some(path) = spelling
+        let Some(filename) = spelling
             .strip_prefix('"')
             .and_then(|spelling| spelling.strip_suffix('"'))
         else {
             return Err(self.error(token.span, "expected a filename"));
         };
 
-        let path = self
+        let root = self
             .source_map
             .get(span.id)
             .path
             .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path);
+            .unwrap_or_else(|| Path::new("."));
+        let Some(path) = self.resolve_include(filename, Some(root)) else {
+            return Err(self.error(token.span, "file not found"));
+        };
 
         if let Some(span) = self.skip_line() {
             self.warn(span, "extra tokens after #include");

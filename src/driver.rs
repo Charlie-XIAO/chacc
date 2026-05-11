@@ -12,6 +12,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -27,19 +28,19 @@ use crate::source::SourceMap;
 use crate::tokenize::Tokenizer;
 
 /// The chacc compiler proper (cc1 mode).
-fn cc1<W: Write>(input: &Path, out: &mut W, preprocess_only: bool) -> Result<()> {
+fn cc1<W: Write>(input: &Path, out: &mut W, cli: &Cli) -> Result<()> {
     let mut source_map = SourceMap::default();
     let source = source_map.push(input)?;
     let tokens = Tokenizer::new(source).tokenize(true)?;
 
-    if preprocess_only {
+    if cli.preprocess_only {
         let mut sink = PreprocessedWriter::new(out);
-        Preprocessor::new(&mut source_map, tokens, &mut sink).preprocess(true)?;
+        Preprocessor::new(&mut source_map, &cli.includes, tokens, &mut sink).preprocess(true)?;
         return Ok(());
     }
 
     let mut sink = PreprocessedTokens::default();
-    Preprocessor::new(&mut source_map, tokens, &mut sink).preprocess(true)?;
+    Preprocessor::new(&mut source_map, &cli.includes, tokens, &mut sink).preprocess(true)?;
     let tokens = sink.lower(&source_map)?;
     let program = Parser::new(&source_map, tokens, false).parse_program()?;
     Codegen::new(&source_map, out)?.generate(program)?;
@@ -180,6 +181,10 @@ impl Driver {
                     }
                     command.arg("-o");
                     command.arg(&compile_job.output);
+                    for include in &self.cli.includes {
+                        command.arg("-I");
+                        command.arg(include);
+                    }
                     command.arg("--");
                     command.arg(&compile_job.input);
                     command
@@ -257,12 +262,12 @@ impl Driver {
         if output.as_os_str() == "-" {
             let out = std::io::stdout();
             let mut out = BufWriter::new(out.lock());
-            return cc1(input, &mut out, self.cli.preprocess_only);
+            return cc1(input, &mut out, &self.cli);
         }
 
         let out = File::create(output)?;
         let mut out = BufWriter::new(out);
-        cc1(input, &mut out, self.cli.preprocess_only)
+        cc1(input, &mut out, &self.cli)
     }
 
     /// Produce the compilation plan.
@@ -466,7 +471,7 @@ impl Hostcc {
             return Err(Error::HostccResolutionFailed(name));
         }
 
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let path = OsStr::from_bytes(output.stdout.trim_ascii());
         if path.is_empty() || path == name {
             return Err(Error::HostccResolutionFailed(name));
         }

@@ -16,6 +16,7 @@ fn help() {
     println!();
     println!("Options:");
     println!("  -o <file>           Output file, or \"-\" for stdout only with -E or -S.");
+    println!("  -I <dir>            Add a directory to the include search path.");
     println!("  -E                  Only run the preprocessor.");
     println!("  -S                  Only run preprocess and compile stages.");
     println!("  -c                  Only run preprocess, compile, and assemble stages.");
@@ -53,6 +54,7 @@ pub struct CliInput {
 pub struct Cli {
     pub inputs: Vec<CliInput>,
     pub output: Option<PathBuf>,
+    pub includes: Vec<PathBuf>,
     pub preprocess_only: bool,
     pub compile_only: bool,
     pub assemble_only: bool,
@@ -121,6 +123,11 @@ impl Cli {
             match arg {
                 Arg::Short('o') => {
                     cli.output = Some(PathBuf::from(parser.value()?));
+                },
+                Arg::Short('I') => {
+                    let path = std::path::absolute(parser.value()?)
+                        .map_err(|e| format!("failed to resolve '-I': {e}"))?;
+                    cli.includes.push(path);
                 },
                 Arg::Short('E') => {
                     cli.preprocess_only = true;

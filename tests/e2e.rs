@@ -1935,6 +1935,35 @@ fn test_output_flag() {
 }
 
 #[test]
+fn test_include_flag() {
+    let tmp = tempdir().expect("failed to create temporary directory");
+
+    let dir1 = tmp.path().join("dir1");
+    let dir2 = tmp.path().join("dir2");
+    std::fs::create_dir(&dir1).expect("failed to create subdirectory");
+    std::fs::create_dir(&dir2).expect("failed to create subdirectory");
+    std::fs::write(dir1.join("foo.h"), "foo").expect("failed to write file");
+    std::fs::write(dir2.join("bar.h"), "bar").expect("failed to write file");
+
+    let input = tmp.path().join("main.c");
+    std::fs::write(&input, "#include \"foo.h\"\n#include \"bar.h\"\n")
+        .expect("failed to write input");
+
+    let output = Command::chacc(tmp.path())
+        .arg("-I")
+        .arg(&dir1)
+        .arg("-I./dir2")
+        .arg("-E")
+        .arg("-o")
+        .arg("-")
+        .arg(&input)
+        .run_checked("compiling with -I flag", None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("foo"));
+    assert!(stdout.contains("bar"));
+}
+
+#[test]
 fn test_preprocess_only_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
 
