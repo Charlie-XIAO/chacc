@@ -49,7 +49,7 @@ pub struct CliInput {
 }
 
 /// Parsed CLI options and arguments.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Cli {
     pub inputs: Vec<CliInput>,
     pub output: Option<PathBuf>,
@@ -64,97 +64,17 @@ pub struct Cli {
     pub cc1: bool,
 }
 
-/// Intermediate representation of CLI options and arguments during parsing.
-#[derive(Debug, Default)]
-struct CliPartial {
-    inputs: Vec<CliInput>,
-    output: Option<PathBuf>,
-    preprocess_only: bool,
-    compile_only: bool,
-    assemble_only: bool,
-    auto_run: Option<Vec<OsString>>,
-    tool_search_paths: Vec<PathBuf>,
-    save_temps: bool,
-    print_subprocess_commands: bool,
-    pass_exit_codes: bool,
-    cc1: bool,
-}
-
-impl TryFrom<CliPartial> for Cli {
-    type Error = lexopt::Error;
-
-    fn try_from(cli: CliPartial) -> Result<Self, Self::Error> {
-        let CliPartial {
-            inputs,
-            output,
-            preprocess_only,
-            compile_only,
-            assemble_only,
-            auto_run,
-            tool_search_paths,
-            save_temps,
-            print_subprocess_commands,
-            pass_exit_codes,
-            cc1,
-        } = cli;
-
-        if cli.cc1 {
-            if inputs.len() != 1 {
-                return Err("cc1 mode expected exactly one input file".into());
-            }
-            if output.is_none() {
-                return Err("cc1 mode expects an output file".into());
-            }
-        }
-
-        if !cli.cc1
-            && !cli.preprocess_only
-            && !cli.compile_only
-            && let Some(ref output) = output
-            && output.as_os_str() == "-"
-        {
-            return Err("'-S' or '-E' required when output is to stdout".into());
-        }
-
-        if inputs.is_empty() {
-            return Err("no input file".into());
-        }
-
-        if inputs.len() > 1
-            && output.is_some()
-            && (preprocess_only || compile_only || assemble_only)
-        {
-            return Err("cannot specify '-o' with '-c', '-S', or '-E' with multiple files".into());
-        }
-
-        if auto_run.is_some() && (preprocess_only || compile_only || assemble_only) {
-            return Err("cannot specify '-run' with '-c', '-S', or '-E'".into());
-        }
-
-        Ok(Cli {
-            inputs,
-            output,
-            preprocess_only,
-            compile_only,
-            assemble_only,
-            auto_run,
-            tool_search_paths,
-            save_temps,
-            print_subprocess_commands,
-            pass_exit_codes,
-            cc1,
-        })
-    }
-}
-
 impl Cli {
     /// Parse the CLI from command line.
     pub fn parse() -> Result<Self> {
-        Ok(Self::parse_inner()?)
+        let cli = Self::parse_raw()?;
+        cli.validate()?;
+        Ok(cli)
     }
 
-    fn parse_inner() -> Result<Self, lexopt::Error> {
-        let mut cli = CliPartial::default();
+    /// Parse the CLI from command line without validation.
+    fn parse_raw() -> Result<Self, lexopt::Error> {
+        let mut cli = Cli::default();
         let mut parser = lexopt::Parser::from_env();
 
         loop {
@@ -233,7 +153,47 @@ impl Cli {
             }
         }
 
-        cli.try_into()
+        Ok(cli)
+    }
+
+    /// Validate the parsed CLI options and arguments.
+    fn validate(&self) -> Result<(), lexopt::Error> {
+        if self.cc1 {
+            if self.inputs.len() != 1 {
+                return Err("cc1 mode expected exactly one input file".into());
+            }
+            if self.output.is_none() {
+                return Err("cc1 mode expects an output file".into());
+            }
+        }
+
+        if !self.cc1
+            && !self.preprocess_only
+            && !self.compile_only
+            && let Some(output) = &self.output
+            && output.as_os_str() == "-"
+        {
+            return Err("'-S' or '-E' required when output is to stdout".into());
+        }
+
+        if self.inputs.is_empty() {
+            return Err("no input file".into());
+        }
+
+        if self.inputs.len() > 1
+            && self.output.is_some()
+            && (self.preprocess_only || self.compile_only || self.assemble_only)
+        {
+            return Err("cannot specify '-o' with '-c', '-S', or '-E' with multiple files".into());
+        }
+
+        if self.auto_run.is_some()
+            && (self.preprocess_only || self.compile_only || self.assemble_only)
+        {
+            return Err("cannot specify '-run' with '-c', '-S', or '-E'".into());
+        }
+
+        Ok(())
     }
 
     /// Resolve the path of a tool.
