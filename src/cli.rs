@@ -1,12 +1,13 @@
 //! The CLI interface of chacc.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use lexopt::Arg;
 
 use crate::error::Result;
 
+/// Print the help message to stdout.
 fn help() {
     println!("Usage: chacc [options] <input>...");
     println!();
@@ -18,6 +19,8 @@ fn help() {
     println!("  -E                  Only run the preprocessor.");
     println!("  -S                  Only run preprocess and compile stages.");
     println!("  -c                  Only run preprocess, compile, and assemble stages.");
+    println!("  -run                Automatically run the compiled program. When specified, ");
+    println!("                      arguments after '--' are passed to the compiled program.");
     println!("  -B <dir>            Add a directory to the search path for tools.");
     println!("  -save-temps         Keep intermediate files.");
     println!("  -###                Print subprocess commands.");
@@ -30,6 +33,7 @@ fn help() {
     println!("                      cc, and clang in order.");
 }
 
+/// Input file kind for [`CliInput`].
 #[derive(Debug, Clone, Copy)]
 pub enum CliInputKind {
     C,
@@ -37,12 +41,14 @@ pub enum CliInputKind {
     Object,
 }
 
+/// Input file specified in CLI.
 #[derive(Debug)]
 pub struct CliInput {
     pub path: PathBuf,
     pub kind: CliInputKind,
 }
 
+/// Parsed CLI options and arguments.
 #[derive(Debug)]
 pub struct Cli {
     pub inputs: Vec<CliInput>,
@@ -50,6 +56,7 @@ pub struct Cli {
     pub preprocess_only: bool,
     pub compile_only: bool,
     pub assemble_only: bool,
+    pub auto_run: Option<Vec<OsString>>,
     pub tool_search_paths: Vec<PathBuf>,
     pub save_temps: bool,
     pub print_subprocess_commands: bool,
@@ -57,6 +64,7 @@ pub struct Cli {
     pub cc1: bool,
 }
 
+/// Intermediate representation of CLI options and arguments during parsing.
 #[derive(Debug, Default)]
 struct CliPartial {
     inputs: Vec<CliInput>,
@@ -64,6 +72,7 @@ struct CliPartial {
     preprocess_only: bool,
     compile_only: bool,
     assemble_only: bool,
+    auto_run: Option<Vec<OsString>>,
     tool_search_paths: Vec<PathBuf>,
     save_temps: bool,
     print_subprocess_commands: bool,
@@ -81,6 +90,7 @@ impl TryFrom<CliPartial> for Cli {
             preprocess_only,
             compile_only,
             assemble_only,
+            auto_run,
             tool_search_paths,
             save_temps,
             print_subprocess_commands,
@@ -117,12 +127,17 @@ impl TryFrom<CliPartial> for Cli {
             return Err("cannot specify '-o' with '-c', '-S', or '-E' with multiple files".into());
         }
 
+        if auto_run.is_some() && (preprocess_only || compile_only || assemble_only) {
+            return Err("cannot specify '-run' with '-c', '-S', or '-E'".into());
+        }
+
         Ok(Cli {
             inputs,
             output,
             preprocess_only,
             compile_only,
             assemble_only,
+            auto_run,
             tool_search_paths,
             save_temps,
             print_subprocess_commands,
@@ -145,6 +160,16 @@ impl Cli {
         loop {
             if let Some(mut raw) = parser.try_raw_args() {
                 match raw.peek().and_then(|arg| arg.to_str()) {
+                    Some("--") if let Some(auto_run) = &mut cli.auto_run => {
+                        raw.next();
+                        auto_run.extend(raw);
+                        break;
+                    },
+                    Some("-run") => {
+                        raw.next();
+                        cli.auto_run = Some(Vec::new());
+                        continue;
+                    },
                     Some("-save-temps") => {
                         raw.next();
                         cli.save_temps = true;

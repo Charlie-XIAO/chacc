@@ -155,11 +155,8 @@ impl Driver {
         self.cli.cc1
     }
 
-    /// Return the highest exit code recorded, only if requested.
+    /// Return the highest exit code recorded.
     pub fn code(&self) -> Option<ExitCode> {
-        if !self.cli.pass_exit_codes {
-            return None;
-        }
         self.highest_exit_code.map(ExitCode::from)
     }
 
@@ -175,7 +172,7 @@ impl Driver {
         // not get deleted until the end of the compilation process
         for job in &plan.jobs {
             if let Some(compile_job) = &job.compile {
-                self.run_subprocess("compile", {
+                self.run_subprocess("compile", false, {
                     let mut command = Command::new(std::env::current_exe()?);
                     command.arg("-cc1");
                     if compile_job.preprocess_only {
@@ -183,13 +180,14 @@ impl Driver {
                     }
                     command.arg("-o");
                     command.arg(&compile_job.output);
+                    command.arg("--");
                     command.arg(&compile_job.input);
                     command
                 })?;
             }
 
             if let Some(assemble_job) = &job.assemble {
-                self.run_subprocess("assemble", {
+                self.run_subprocess("assemble", false, {
                     let mut command = Command::new(self.cli.resolve_tool("as"));
                     command.arg("-c");
                     command.arg(&assemble_job.input);
@@ -202,7 +200,7 @@ impl Driver {
 
         if let Some((inputs, output)) = &plan.link {
             let hostcc = Hostcc::resolve()?;
-            self.run_subprocess("link", {
+            self.run_subprocess("link", false, {
                 let mut command = Command::new(self.cli.resolve_tool("ld"));
                 command.arg("-o");
                 command.arg(output);
@@ -225,6 +223,16 @@ impl Driver {
                 command.arg(hostcc.find("crtn.o")?);
                 command
             })?;
+
+            if let Some(args) = &self.cli.auto_run {
+                self.run_subprocess("autorun", true, {
+                    let mut exe = PathBuf::from(".");
+                    exe.push(output);
+                    let mut command = Command::new(exe);
+                    command.args(args);
+                    command
+                })?;
+            }
         }
 
         Ok(())
@@ -394,7 +402,12 @@ impl Driver {
     }
 
     /// Run a subprocess command.
-    fn run_subprocess(&mut self, name: &str, mut command: Command) -> Result<()> {
+    fn run_subprocess(
+        &mut self,
+        name: &str,
+        overwrite_exit_code: bool,
+        mut command: Command,
+    ) -> Result<()> {
         if self.cli.print_subprocess_commands {
             eprintln!("{name}: {command:?}");
         }
@@ -404,7 +417,11 @@ impl Driver {
             return Ok(());
         }
 
-        if self.cli.pass_exit_codes {
+        if overwrite_exit_code {
+            self.highest_exit_code = None;
+        }
+
+        if self.cli.pass_exit_codes || overwrite_exit_code {
             self.highest_exit_code = self
                 .highest_exit_code
                 .max(status.code().map(|code| code as u8));
