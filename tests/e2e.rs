@@ -1181,6 +1181,8 @@ fn test_macro() {
     let mut f = Fixture::new();
     f.includes.insert("include1.h", "#include \"include2.h\"\nint include1 = 5;");
     f.includes.insert("include2.h", "int include2 = 7;");
+    f.includes.insert("include3.h", "#define foo 3");
+    f.includes.insert("include4.h", "#define foo 4");
 
     f.line("#include \"include1.h\"");
     f.line("#");
@@ -1191,6 +1193,21 @@ fn test_macro() {
 
     f.assert(5, "include1");
     f.assert(7, "include2");
+
+    f.line("#include \"include3.h\"");
+    f.assert(3, "foo");
+    f.line("#include \"include4.h\"");
+    f.assert(4, "foo");
+
+    f.line("#define INCLUDE3 \"include3.h\"");
+    f.line("#include INCLUDE3");
+    f.assert(3, "foo");
+
+    f.line("#define INCLUDE4 < include4.h");
+    f.line("#include INCLUDE4 >");
+    f.assert(4, "foo");
+
+    f.line("#undef foo");
 
     f.line("#if 0");
     f.line("#include \"/no/such/file\"");

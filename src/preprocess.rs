@@ -20,10 +20,12 @@ struct TokenStream(VecDeque<PreToken>);
 
 impl TokenStream {
     /// Create a new token stream from the given tokens.
-    fn new(mut tokens: Vec<PreToken>) -> Self {
-        let last = tokens.last().expect("token stream must not be empty");
+    fn new(tokens: impl Into<VecDeque<PreToken>>) -> Self {
+        let mut tokens = tokens.into();
+
+        let last = tokens.back().expect("token stream must not be empty");
         if !last.is_eof() {
-            tokens.push(PreToken {
+            tokens.push_back(PreToken {
                 kind: PreTokenKind::Eof,
                 span: SourceSpan {
                     id: last.span.id,
@@ -37,7 +39,7 @@ impl TokenStream {
             });
         }
 
-        Self(tokens.into())
+        Self(tokens)
     }
 
     /// Return the current token.
@@ -262,7 +264,7 @@ impl<'a> MacroExpander<'a> {
         let mut iter = std::mem::take(body).into_iter().peekable();
 
         while let Some(token) = iter.next() {
-            let mut current = if token.is_punct("#")
+            let current = if token.is_punct("#")
                 && let Some(args) = args
             {
                 // Stringize operator is only allowed for function-like macros,
@@ -293,6 +295,8 @@ impl<'a> MacroExpander<'a> {
                 self.subst_param(token, args, !has_pending_paste)?
             };
 
+            let mut current = VecDeque::from(current);
+
             // Consume and fold the whole "a ## b ## ..." chain, if any
             while let Some(token) = iter.next_if(|tok| tok.is_punct("##")) {
                 let Some(next) = iter.next() else {
@@ -300,24 +304,20 @@ impl<'a> MacroExpander<'a> {
                         .source_map
                         .error(token.span, "'##' cannot appear at end of macro expansion"));
                 };
-                let mut rhs = self.subst_param(next, args, false)?;
+                let mut rhs = VecDeque::from(self.subst_param(next, args, false)?);
 
-                // If either side of "##" is empty, the result is simply the
-                // other side
-                if current.is_empty() {
+                // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]" becomes
+                // "[a, paste(b,c), d]"
+                let Some(left) = current.pop_back() else {
                     current = rhs;
                     continue;
-                }
-                if rhs.is_empty() {
+                };
+                let Some(right) = rhs.pop_front() else {
+                    current.push_back(left);
                     continue;
-                }
-
-                // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]"
-                // becomes "[a, paste(b,c), d]"
-                let last = current.pop().unwrap();
-                let first = rhs.remove(0);
-                let pasted = self.paste(last, first, token.span)?;
-                current.push(pasted);
+                };
+                let pasted = self.paste(left, right, token.span)?;
+                current.push_back(pasted);
                 current.extend(rhs);
             }
 
@@ -445,7 +445,7 @@ impl<'a> MacroExpander<'a> {
     }
 
     /// Expand all macros in the given token stream.
-    fn expand_all(&mut self, tokens: Vec<PreToken>) -> Result<Vec<PreToken>> {
+    fn expand_all(&mut self, tokens: impl Into<VecDeque<PreToken>>) -> Result<Vec<PreToken>> {
         let mut input = TokenStream::new(tokens);
         let mut out = Vec::new();
 
@@ -629,28 +629,6 @@ where
         Ok(())
     }
 
-    /// Resolve an include file path.
-    ///
-    /// If `root` is provided, it is searched first. This returns `None` if
-    /// the file cannot be found in any possible search path.
-    fn resolve_include(&self, filename: &str, root: Option<&Path>) -> Option<PathBuf> {
-        if let Some(root) = root {
-            let candidate = root.join(filename);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        for include in self.includes {
-            let candidate = include.join(filename);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        None
-    }
-
     /// Preprocess the token stream.
     pub fn preprocess(&mut self, emit_eof: bool) -> Result<()> {
         while let Some(token) = self.input.next() {
@@ -697,24 +675,75 @@ where
         Ok(())
     }
 
-    /// Process an "#include" directive.
-    fn process_include(&mut self, span: SourceSpan) -> Result<()> {
-        let Some(token) = self.input.next_if_mol() else {
+    /// Process the filename after an "#include" directive.
+    ///
+    /// The span should be the span of the "#include" directive. The tokens
+    /// should be remaining tokens in the same logical line after the "#include"
+    /// directive. If `expand` is true, this will try to expand the tokens once
+    /// as a macro before processing them as a filename. The resolved filename
+    /// and its span will be returned on success.
+    fn process_include_filename(
+        &mut self,
+        span: SourceSpan,
+        tokens: Vec<PreToken>,
+        expand: bool,
+    ) -> Result<(String, SourceSpan)> {
+        let mut tokens = VecDeque::from(tokens);
+        let Some(first) = tokens.pop_front() else {
             return Err(self.error(span, "bare #include without a filename"));
         };
 
-        if !token.is_str_lit() {
-            return Err(self.error(token.span, "expected a filename"));
+        let resolver = PreTokenResolver::new(self.source_map);
+
+        if first.is_str_lit() {
+            let spelling = resolver.spelling(&first);
+            let filename = spelling
+                .strip_prefix('"')
+                .and_then(|spelling| spelling.strip_suffix('"'))
+                .ok_or_else(|| self.error(first.span, "expected a filename"))?;
+            if let Some(front) = tokens.front() {
+                self.warn(front.span, "extra tokens after #include");
+            }
+            return Ok((filename.to_string(), first.span));
         }
 
-        let resolver = PreTokenResolver::new(self.source_map);
-        let spelling = resolver.spelling(&token);
-        let Some(filename) = spelling
-            .strip_prefix('"')
-            .and_then(|spelling| spelling.strip_suffix('"'))
-        else {
-            return Err(self.error(token.span, "expected a filename"));
-        };
+        if first.is_punct("<") {
+            let mut filename = String::new();
+
+            for token in tokens {
+                if token.is_punct(">") {
+                    if filename.is_empty() {
+                        return Err(self.error(first.span, "empty filename"));
+                    }
+                    return Ok((filename, first.span));
+                }
+                if !filename.is_empty() && token.follows_space {
+                    filename.push(' ');
+                }
+                let spelling = resolver.spelling(&token);
+                filename.push_str(&spelling);
+            }
+
+            return Err(self.error(first.span, "expected '>'"));
+        }
+
+        if expand {
+            tokens.push_front(first);
+            let mut expander = MacroExpander::new(self.source_map, &self.macros);
+            let tokens = expander.expand_all(tokens)?;
+            return self.process_include_filename(span, tokens, false);
+        }
+
+        Err(self.error(first.span, "expected a filename"))
+    }
+
+    /// Process an "#include" directive.
+    fn process_include(&mut self, span: SourceSpan) -> Result<()> {
+        let line = self.line();
+        let (filename, span) = self.process_include_filename(span, line, true)?;
+        if filename.is_empty() {
+            return Err(self.error(span, "empty filename"));
+        }
 
         let root = self
             .source_map
@@ -722,13 +751,14 @@ where
             .path
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        let Some(path) = self.resolve_include(filename, Some(root)) else {
-            return Err(self.error(token.span, "file not found"));
-        };
 
-        if let Some(span) = self.skip_line() {
-            self.warn(span, "extra tokens after #include");
-        }
+        let Some(path) = std::iter::once(root)
+            .chain(self.includes.iter().map(PathBuf::as_ref))
+            .map(|base| base.join(&filename))
+            .find(|path| path.is_file())
+        else {
+            return Err(self.error(span, "file not found"));
+        };
 
         let source = self.source_map.push(&path)?;
         let tokens = Tokenizer::new(source).tokenize(true)?;
