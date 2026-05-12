@@ -231,9 +231,7 @@ impl Driver {
 
             if let Some(args) = &self.cli.auto_run {
                 self.run_subprocess("autorun", true, {
-                    let mut exe = PathBuf::from(".");
-                    exe.push(output);
-                    let mut command = Command::new(exe);
+                    let mut command = Command::new(output);
                     command.args(args);
                     command
                 })?;
@@ -475,6 +473,6 @@ impl Hostcc {
         if path.is_empty() || path == name {
             return Err(Error::HostccResolutionFailed(name));
         }
-        Ok(path.into())
+        Ok(std::fs::canonicalize(path)?)
     }
 }
