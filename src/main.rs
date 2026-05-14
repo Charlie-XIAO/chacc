@@ -9,11 +9,13 @@ use crate::cli::Cli;
 use crate::driver::Driver;
 
 mod ast;
+mod cc1;
 mod cli;
 mod codegen;
 mod constexpr;
 mod driver;
 mod error;
+mod hostcc;
 mod parse;
 mod preprocess;
 mod source;

@@ -753,7 +753,7 @@ where
             .unwrap_or_else(|| Path::new("."));
 
         let Some(path) = std::iter::once(root)
-            .chain(self.includes.iter().map(PathBuf::as_ref))
+            .chain(self.includes.iter().map(AsRef::as_ref))
             .map(|base| base.join(&filename))
             .find(|path| path.is_file())
         else {

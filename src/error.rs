@@ -52,8 +52,8 @@ pub enum Error {
     IoWithPath(PathBuf, std::io::Error),
     #[error("cannot resolve host compiler toolchain: {0}")]
     HostccNotFound(String),
-    #[error("host compiler cannot resolve '{0}'")]
-    HostccResolutionFailed(&'static str),
+    #[error("host compiler cannot resolve {0}")]
+    HostccResolutionFailed(String),
 }
 
 impl Error {

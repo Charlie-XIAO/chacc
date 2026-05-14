@@ -5,47 +5,24 @@
 //! (the chacc compiler proper), [as] (the GNU assembler), and [ld] (the GNU
 //! linker).
 //!
+//! [cc1]: crate::cc1
 //! [as]: https://man7.org/linux/man-pages/man1/as.1.html
 //! [ld]: https://man7.org/linux/man-pages/man1/ld.1.html
 
 use std::ffi::OsStr;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{BufWriter, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use rustc_hash::{FxHashMap, FxHasher};
 use tempfile::TempDir;
 
+use crate::cc1::CC1;
 use crate::cli::{Cli, CliInput, CliInputKind};
-use crate::codegen::Codegen;
 use crate::error::{Error, Result};
-use crate::parse::Parser;
-use crate::preprocess::{PreprocessedTokens, PreprocessedWriter, Preprocessor};
-use crate::source::SourceMap;
-use crate::tokenize::Tokenizer;
-
-/// The chacc compiler proper (cc1 mode).
-fn cc1<W: Write>(input: &Path, out: &mut W, cli: &Cli) -> Result<()> {
-    let mut source_map = SourceMap::default();
-    let source = source_map.push(input)?;
-    let tokens = Tokenizer::new(source).tokenize(true)?;
-
-    if cli.preprocess_only {
-        let mut sink = PreprocessedWriter::new(out);
-        Preprocessor::new(&mut source_map, &cli.includes, tokens, &mut sink).preprocess(true)?;
-        return Ok(());
-    }
-
-    let mut sink = PreprocessedTokens::default();
-    Preprocessor::new(&mut source_map, &cli.includes, tokens, &mut sink).preprocess(true)?;
-    let tokens = sink.lower(&source_map)?;
-    let program = Parser::new(&source_map, tokens, false).parse_program()?;
-    Codegen::new(&source_map, out)?.generate(program)?;
-    Ok(())
-}
+use crate::hostcc::Hostcc;
 
 /// A compilation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -260,12 +237,12 @@ impl Driver {
         if output.as_os_str() == "-" {
             let out = std::io::stdout();
             let mut out = BufWriter::new(out.lock());
-            return cc1(input, &mut out, &self.cli);
+            return CC1::new(&self.cli, &mut out).run(input);
         }
 
         let out = File::create(output)?;
         let mut out = BufWriter::new(out);
-        cc1(input, &mut out, &self.cli)
+        CC1::new(&self.cli, &mut out).run(input)
     }
 
     /// Produce the compilation plan.
@@ -430,49 +407,5 @@ impl Driver {
                 .max(status.code().map(|code| code as u8));
         }
         Err(Error::Terminate)
-    }
-}
-
-/// The host C compiler.
-struct Hostcc(PathBuf);
-
-impl Hostcc {
-    /// Resolve the host C compiler to use.
-    ///
-    /// This will first check the `CHACC_HOST_CC` environment variable, then try
-    /// to find `gcc`, `cc`, and `clang` executables in order.
-    pub fn resolve() -> Result<Self> {
-        let path = if let Some(hostcc) = std::env::var_os("CHACC_HOST_CC") {
-            which::which(&hostcc).map_err(|e| {
-                Error::HostccNotFound(format!("CHACC_HOST_CC='{}': {e}", hostcc.display()))
-            })?
-        } else if let Ok(gcc) = which::which("gcc") {
-            gcc
-        } else if let Ok(cc) = which::which("cc") {
-            cc
-        } else if let Ok(clang) = which::which("clang") {
-            clang
-        } else {
-            let msg = "either make gcc, cc, or clang discoverable in PATH, or set CHACC_HOST_CC \
-                       to a valid C compiler";
-            return Err(Error::HostccNotFound(msg.to_string()));
-        };
-        Ok(Self(path))
-    }
-
-    /// Find the library path of a toolchain file.
-    fn find(&self, name: &'static str) -> Result<PathBuf> {
-        let output = Command::new(&self.0)
-            .arg(format!("-print-file-name={name}"))
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::HostccResolutionFailed(name));
-        }
-
-        let path = OsStr::from_bytes(output.stdout.trim_ascii());
-        if path.is_empty() || path == name {
-            return Err(Error::HostccResolutionFailed(name));
-        }
-        Ok(std::fs::canonicalize(path)?)
     }
 }
