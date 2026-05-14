@@ -2446,11 +2446,15 @@ impl<'a> Parser<'a> {
     fn parse_cast(&mut self) -> Result<Node> {
         let span = self.current().span;
 
-        if !self.preprocess && self.current().is_punct("(") {
+        if self.current().is_punct("(") {
             let pos = self.pos;
             self.advance();
 
             if self.at_typename() {
+                if self.preprocess {
+                    return Err(self.error(span, "casts are not valid in preprocessor expressions"));
+                }
+
                 let ty = self.parse_typename()?;
                 self.skip_punct(")")?;
 
@@ -4013,13 +4017,7 @@ impl<'a> Parser<'a> {
                     self.eval(else_expr)?
                 }
             },
-            NodeKind::Cast(expr) => {
-                debug_assert!(
-                    !self.preprocess,
-                    "casts should not appear in preprocessing mode",
-                );
-                self.eval(expr)?.cast(ty)
-            },
+            NodeKind::Cast(expr) => self.eval(expr)?.cast(ty),
             NodeKind::Dummy => unreachable!(),
             _ => {
                 return Err(self.error(node.span, "not a compile-time constant"));
