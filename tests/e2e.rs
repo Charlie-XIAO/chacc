@@ -1510,6 +1510,8 @@ fn test_macro() {
     f.line("#define M22(x) M20(x. M19)");
     f.assert(0, "strcmp(M22(bar), \"bar. foo\")");
 
+    f.assert(1, "__chacc__");
+
     f.finish();
     f.run("macro");
 }

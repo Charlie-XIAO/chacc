@@ -95,6 +95,26 @@ pub struct PreToken {
 }
 
 impl PreToken {
+    /// Create a synthetic preprocessor token.
+    pub fn synthetic(
+        kind: PreTokenKind,
+        spelling: impl Into<SmolStr>,
+        follows_space: bool,
+    ) -> Self {
+        Self {
+            kind,
+            span: SourceSpan {
+                id: 0,
+                offset: 0,
+                len: 0,
+            },
+            at_bol: false,
+            follows_space,
+            hideset: None,
+            synthetic: Some(spelling.into()),
+        }
+    }
+
     /// Return whether this token is a punctuator.
     pub fn is_punct(&self, expected: &str) -> bool {
         matches!(self.kind, PreTokenKind::Punct(ref p) if p == expected)

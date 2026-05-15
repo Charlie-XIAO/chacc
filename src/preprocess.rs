@@ -104,6 +104,38 @@ struct Macro {
     params: Option<Rc<[SmolStr]>>,
 }
 
+impl Macro {
+    /// Create a macro with the given numeric literal.
+    fn num(spelling: &str) -> Self {
+        Self {
+            body: vec![PreToken::synthetic(PreTokenKind::NumLit, spelling, false)],
+            params: None,
+        }
+    }
+
+    /// Create a macro with the given string literal.
+    fn str(spelling: &str) -> Self {
+        Self {
+            body: vec![PreToken::synthetic(PreTokenKind::StrLit, spelling, false)],
+            params: None,
+        }
+    }
+
+    /// Create a macro with the given identifiers.
+    fn idents(spellings: &[&str]) -> Self {
+        Self {
+            body: spellings
+                .iter()
+                .enumerate()
+                .map(|(index, &spelling)| {
+                    PreToken::synthetic(PreTokenKind::Ident(spelling.into()), spelling, index != 0)
+                })
+                .collect(),
+            params: None,
+        }
+    }
+}
+
 /// Helper struct for macro expansion utilities.
 struct MacroExpander<'a> {
     source_map: &'a mut SourceMap,
@@ -484,13 +516,58 @@ where
         tokens: Vec<PreToken>,
         sink: &'a mut S,
     ) -> Self {
+        let macros = FxHashMap::from_iter([
+            ("__VERSION__".into(), Macro::str(env!("CARGO_PKG_VERSION"))),
+            ("_LP64".into(), Macro::num("1")),
+            ("__C99_MACRO_WITH_VA_ARGS".into(), Macro::num("1")),
+            ("__ELF__".into(), Macro::num("1")),
+            ("__LP64__".into(), Macro::num("1")),
+            ("__SIZEOF_DOUBLE__".into(), Macro::num("8")),
+            ("__SIZEOF_FLOAT__".into(), Macro::num("4")),
+            ("__SIZEOF_INT__".into(), Macro::num("4")),
+            ("__SIZEOF_LONG_DOUBLE__".into(), Macro::num("8")),
+            ("__SIZEOF_LONG_LONG__".into(), Macro::num("8")),
+            ("__SIZEOF_LONG__".into(), Macro::num("8")),
+            ("__SIZEOF_POINTER__".into(), Macro::num("8")),
+            ("__SIZEOF_PTRDIFF_T__".into(), Macro::num("8")),
+            ("__SIZEOF_SHORT__".into(), Macro::num("2")),
+            ("__SIZEOF_SIZE_T__".into(), Macro::num("8")),
+            ("__SIZE_TYPE__".into(), Macro::idents(&["unsigned", "long"])),
+            ("__STDC_HOSTED__".into(), Macro::num("1")),
+            ("__STDC_NO_ATOMICS__".into(), Macro::num("1")),
+            ("__STDC_NO_COMPLEX__".into(), Macro::num("1")),
+            ("__STDC_NO_THREADS__".into(), Macro::num("1")),
+            ("__STDC_NO_VLA__".into(), Macro::num("1")),
+            ("__STDC_VERSION__".into(), Macro::num("201112L")),
+            ("__STDC__".into(), Macro::num("1")),
+            ("__USER_LABEL_PREFIX__".into(), Macro::str("")),
+            ("__alignof__".into(), Macro::idents(&["_Alignof"])),
+            ("__amd64".into(), Macro::num("1")),
+            ("__amd64__".into(), Macro::num("1")),
+            ("__chacc__".into(), Macro::num("1")),
+            ("__const__".into(), Macro::idents(&["const"])),
+            ("__gnu_linux__".into(), Macro::num("1")),
+            ("__inline__".into(), Macro::idents(&["inline"])),
+            ("linux".into(), Macro::num("1")),
+            ("__linux".into(), Macro::num("1")),
+            ("__linux__".into(), Macro::num("1")),
+            ("__signed__".into(), Macro::idents(&["signed"])),
+            ("__typeof__".into(), Macro::idents(&["typeof"])),
+            ("unix".into(), Macro::num("1")),
+            ("__unix".into(), Macro::num("1")),
+            ("__unix__".into(), Macro::num("1")),
+            ("__volatile__".into(), Macro::idents(&["volatile"])),
+            ("__x86_64".into(), Macro::num("1")),
+            ("__x86_64__".into(), Macro::num("1")),
+        ]);
+
         Self {
             source_map,
             includes,
             input: TokenStream::new(tokens),
             sink,
             conds: Vec::new(),
-            macros: Default::default(),
+            macros,
         }
     }
 
