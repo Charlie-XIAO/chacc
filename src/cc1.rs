@@ -70,7 +70,7 @@ impl<'a, W: Write> CC1<'a, W> {
             .cloned()
             .chain(cpath.iter().flat_map(std::env::split_paths))
             .chain(c_include_path.iter().flat_map(std::env::split_paths))
-            .chain(system_includes.into_iter())
+            .chain(system_includes)
             .collect())
     }
 }

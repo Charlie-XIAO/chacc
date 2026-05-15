@@ -663,6 +663,8 @@ where
                 Some("elif") => self.process_elif(token.span)?,
                 Some("else") => self.process_else(token.span)?,
                 Some("endif") => self.process_endif(token.span)?,
+                Some("error") => self.process_warning_error(directive.span, true)?,
+                Some("warning") => self.process_warning_error(directive.span, false)?,
                 _ => {
                     return Err(self.error(directive.span, "invalid preprocessor directive"));
                 },
@@ -985,6 +987,27 @@ where
             self.warn(span, "extra tokens after #endif");
         }
         Ok(())
+    }
+
+    /// Process a "#warning" or "#error" directive.
+    fn process_warning_error(&mut self, span: SourceSpan, is_error: bool) -> Result<()> {
+        let line = self.line();
+        let mut message = String::new();
+        let resolver = PreTokenResolver::new(self.source_map);
+
+        for token in &line {
+            if !message.is_empty() && token.follows_space {
+                message.push(' ');
+            }
+            message.push_str(&resolver.spelling(token));
+        }
+
+        if is_error {
+            Err(self.error(span, message))
+        } else {
+            self.warn(span, message);
+            Ok(())
+        }
     }
 }
 
