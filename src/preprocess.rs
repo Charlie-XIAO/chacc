@@ -95,6 +95,14 @@ struct CondFrame {
     ctx: CondFrameContext,
 }
 
+/// An "#include" filename.
+#[derive(Debug)]
+struct IncludeFilename {
+    name: String,
+    span: SourceSpan,
+    is_quoted: bool,
+}
+
 /// Handler for builtin macros that cannot be represented as simple replacement.
 #[derive(Debug, Clone, Copy)]
 enum MacroHandler {
@@ -884,7 +892,7 @@ where
         span: SourceSpan,
         tokens: Vec<PreToken>,
         expand: bool,
-    ) -> Result<(String, SourceSpan)> {
+    ) -> Result<IncludeFilename> {
         let mut tokens = VecDeque::from(tokens);
         let Some(first) = tokens.pop_front() else {
             return Err(self.error(span, "bare #include without a filename"));
@@ -901,7 +909,11 @@ where
             if let Some(front) = tokens.front() {
                 self.warn(front.span, "extra tokens after #include");
             }
-            return Ok((filename.to_string(), first.span));
+            return Ok(IncludeFilename {
+                name: filename.to_string(),
+                span: first.span,
+                is_quoted: true,
+            });
         }
 
         if first.is_punct("<") {
@@ -912,7 +924,11 @@ where
                     if filename.is_empty() {
                         return Err(self.error(first.span, "empty filename"));
                     }
-                    return Ok((filename, first.span));
+                    return Ok(IncludeFilename {
+                        name: filename,
+                        span: first.span,
+                        is_quoted: false,
+                    });
                 }
                 if !filename.is_empty() && token.follows_space {
                     filename.push(' ');
@@ -937,21 +953,29 @@ where
     /// Process an "#include" directive.
     fn process_include(&mut self, span: SourceSpan) -> Result<()> {
         let line = self.line();
-        let (filename, span) = self.process_include_filename(span, line, true)?;
-        if filename.is_empty() {
+        let IncludeFilename {
+            name,
+            span,
+            is_quoted,
+        } = self.process_include_filename(span, line, true)?;
+
+        if name.is_empty() {
             return Err(self.error(span, "empty filename"));
         }
 
-        let root = self
-            .source_map
-            .get(span.id)
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        // The source file directory is searched only for quoted includes
+        let root = is_quoted.then(|| {
+            self.source_map
+                .get(span.id)
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+        });
 
-        let Some(path) = std::iter::once(root)
+        let Some(path) = root
+            .into_iter()
             .chain(self.includes.iter().map(AsRef::as_ref))
-            .map(|base| base.join(&filename))
+            .map(|base| base.join(&name))
             .find(|path| path.is_file())
         else {
             return Err(self.error(span, "file not found"));

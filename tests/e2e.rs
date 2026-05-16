@@ -140,6 +140,7 @@ impl Fixture {
 
         Command::chacc(path)
             .arg("-c")
+            .arg("-I.")
             .arg("-o")
             .arg(&obj)
             .arg(&source)
