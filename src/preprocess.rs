@@ -36,6 +36,7 @@ impl TokenStream {
                 follows_space: false,
                 hideset: None,
                 synthetic: None,
+                origin: None,
             });
         }
 
@@ -94,6 +95,52 @@ struct CondFrame {
     ctx: CondFrameContext,
 }
 
+/// Handler for builtin macros that cannot be represented as simple replacement.
+#[derive(Debug, Clone, Copy)]
+enum MacroHandler {
+    File,
+    Line,
+}
+
+impl MacroHandler {
+    /// Call this macro handler on the given token.
+    fn call(self, token: &PreToken, source_map: &SourceMap) -> Vec<PreToken> {
+        match self {
+            Self::File => {
+                let mut filename = String::new();
+                filename.push('"');
+                let span = token.origin.unwrap_or(token.span);
+                for ch in source_map.get(span.id).name.chars() {
+                    match ch {
+                        '\\' => filename.push_str("\\\\"),
+                        '"' => filename.push_str("\\\""),
+                        ch => filename.push(ch),
+                    }
+                }
+                filename.push('"');
+                vec![PreToken::synthetic(
+                    PreTokenKind::StrLit,
+                    span,
+                    token.at_bol,
+                    token.follows_space,
+                    filename,
+                )]
+            },
+            Self::Line => {
+                let span = token.origin.unwrap_or(token.span);
+                let (_, line, _) = source_map.file_line_col(span);
+                vec![PreToken::synthetic(
+                    PreTokenKind::NumLit,
+                    span,
+                    token.at_bol,
+                    token.follows_space,
+                    format_smolstr!("{line}"),
+                )]
+            },
+        }
+    }
+}
+
 /// A macro definition.
 #[derive(Debug, Clone)]
 struct Macro {
@@ -102,36 +149,40 @@ struct Macro {
     ///
     /// The macro is object-like if this is `None`.
     params: Option<Rc<[SmolStr]>>,
+    /// A [`MacroHandler`], if applicable.
+    ///
+    /// If this is given, the other fields are ignored and the macro is expanded
+    /// by calling the handler rather than going through normal replacement.
+    handler: Option<MacroHandler>,
 }
 
 impl Macro {
-    /// Create a macro with the given numeric literal.
-    fn num(spelling: &str) -> Self {
+    /// Create an object-like macro from the given spelling.
+    fn obj(spelling: &str, source_map: &mut SourceMap) -> Self {
+        let source = source_map.push_virtual(spelling.into(), Some("<built-in>".into()));
+        let mut body = Tokenizer::new(source)
+            .tokenize(false)
+            .expect("built-in macro has invalid spelling");
+
+        debug_assert!(
+            body.last().is_some_and(|tok| tok.is_eof()),
+            "tokenizer did not produce eof",
+        );
+        body.pop();
+
         Self {
-            body: vec![PreToken::synthetic(PreTokenKind::NumLit, spelling, false)],
+            body,
             params: None,
+            handler: None,
         }
     }
 
-    /// Create a macro with the given string literal.
-    fn str(spelling: &str) -> Self {
+    /// Create a macro with the given handler.
+    fn handler(handler: MacroHandler) -> Self {
         Self {
-            body: vec![PreToken::synthetic(PreTokenKind::StrLit, spelling, false)],
+            body: Vec::new(),
             params: None,
-        }
-    }
-
-    /// Create a macro with the given identifiers.
-    fn idents(spellings: &[&str]) -> Self {
-        Self {
-            body: spellings
-                .iter()
-                .enumerate()
-                .map(|(index, &spelling)| {
-                    PreToken::synthetic(PreTokenKind::Ident(spelling.into()), spelling, index != 0)
-                })
-                .collect(),
-            params: None,
+            handler: Some(handler),
         }
     }
 }
@@ -200,14 +251,13 @@ impl<'a> MacroExpander<'a> {
 
         content.push('"');
 
-        PreToken {
-            kind: PreTokenKind::StrLit,
-            span: hash.span,
-            at_bol: hash.at_bol,
-            follows_space: hash.follows_space,
-            hideset: None,
-            synthetic: Some(content.into()),
-        }
+        PreToken::synthetic(
+            PreTokenKind::StrLit,
+            hash.span,
+            hash.at_bol,
+            hash.follows_space,
+            content,
+        )
     }
 
     /// Paste two tokens together for the "##" operator.
@@ -218,7 +268,7 @@ impl<'a> MacroExpander<'a> {
         let resolver = PreTokenResolver::new(self.source_map);
         let pasted = format_smolstr!("{}{}", resolver.spelling(&lhs), resolver.spelling(&rhs));
 
-        let source = self.source_map.push_virtual(pasted.clone());
+        let source = self.source_map.push_virtual(pasted.clone(), None);
         let source_name = source.name.clone();
         let tokens = Tokenizer::new(source).tokenize(false).map_err(|_| {
             self.source_map.error(
@@ -238,14 +288,13 @@ impl<'a> MacroExpander<'a> {
         };
         debug_assert!(eof.is_eof(), "tokenizer did not produce eof");
 
-        Ok(PreToken {
-            kind: token.kind.clone(),
-            span: lhs.span,
-            at_bol: lhs.at_bol,
-            follows_space: lhs.follows_space,
-            hideset: None,
-            synthetic: Some(pasted),
-        })
+        Ok(PreToken::synthetic(
+            token.kind.clone(),
+            lhs.span,
+            lhs.at_bol,
+            lhs.follows_space,
+            pasted,
+        ))
     }
 
     /// Substitute one replacement-list token if it names a macro parameter.
@@ -386,9 +435,20 @@ impl<'a> MacroExpander<'a> {
             return Ok(false);
         }
 
-        let Some(Macro { mut body, params }) = self.macros.get(&name).cloned() else {
+        let Some(Macro {
+            mut body,
+            params,
+            handler,
+        }) = self.macros.get(&name).cloned()
+        else {
             return Ok(false);
         };
+
+        if let Some(handler) = handler {
+            let expanded = handler.call(token, self.source_map);
+            input.prepend(expanded);
+            return Ok(true);
+        }
 
         let mut base_hideset = FxHashSet::default();
 
@@ -458,6 +518,11 @@ impl<'a> MacroExpander<'a> {
             first.follows_space = token.follows_space;
         }
 
+        let origin = token.origin.unwrap_or(token.span);
+        for token in &mut body {
+            token.origin = Some(origin);
+        }
+
         // Add this macro's own name to prevent the replacement from immediately
         // expanding the same macro again
         base_hideset.insert(name.clone());
@@ -516,50 +581,64 @@ where
         tokens: Vec<PreToken>,
         sink: &'a mut S,
     ) -> Self {
-        let macros = FxHashMap::from_iter([
-            ("__VERSION__".into(), Macro::str(env!("CARGO_PKG_VERSION"))),
-            ("_LP64".into(), Macro::num("1")),
-            ("__C99_MACRO_WITH_VA_ARGS".into(), Macro::num("1")),
-            ("__ELF__".into(), Macro::num("1")),
-            ("__LP64__".into(), Macro::num("1")),
-            ("__SIZEOF_DOUBLE__".into(), Macro::num("8")),
-            ("__SIZEOF_FLOAT__".into(), Macro::num("4")),
-            ("__SIZEOF_INT__".into(), Macro::num("4")),
-            ("__SIZEOF_LONG_DOUBLE__".into(), Macro::num("8")),
-            ("__SIZEOF_LONG_LONG__".into(), Macro::num("8")),
-            ("__SIZEOF_LONG__".into(), Macro::num("8")),
-            ("__SIZEOF_POINTER__".into(), Macro::num("8")),
-            ("__SIZEOF_PTRDIFF_T__".into(), Macro::num("8")),
-            ("__SIZEOF_SHORT__".into(), Macro::num("2")),
-            ("__SIZEOF_SIZE_T__".into(), Macro::num("8")),
-            ("__SIZE_TYPE__".into(), Macro::idents(&["unsigned", "long"])),
-            ("__STDC_HOSTED__".into(), Macro::num("1")),
-            ("__STDC_NO_ATOMICS__".into(), Macro::num("1")),
-            ("__STDC_NO_COMPLEX__".into(), Macro::num("1")),
-            ("__STDC_NO_THREADS__".into(), Macro::num("1")),
-            ("__STDC_NO_VLA__".into(), Macro::num("1")),
-            ("__STDC_VERSION__".into(), Macro::num("201112L")),
-            ("__STDC__".into(), Macro::num("1")),
-            ("__USER_LABEL_PREFIX__".into(), Macro::str("")),
-            ("__alignof__".into(), Macro::idents(&["_Alignof"])),
-            ("__amd64".into(), Macro::num("1")),
-            ("__amd64__".into(), Macro::num("1")),
-            ("__chacc__".into(), Macro::num("1")),
-            ("__const__".into(), Macro::idents(&["const"])),
-            ("__gnu_linux__".into(), Macro::num("1")),
-            ("__inline__".into(), Macro::idents(&["inline"])),
-            ("linux".into(), Macro::num("1")),
-            ("__linux".into(), Macro::num("1")),
-            ("__linux__".into(), Macro::num("1")),
-            ("__signed__".into(), Macro::idents(&["signed"])),
-            ("__typeof__".into(), Macro::idents(&["typeof"])),
-            ("unix".into(), Macro::num("1")),
-            ("__unix".into(), Macro::num("1")),
-            ("__unix__".into(), Macro::num("1")),
-            ("__volatile__".into(), Macro::idents(&["volatile"])),
-            ("__x86_64".into(), Macro::num("1")),
-            ("__x86_64__".into(), Macro::num("1")),
-        ]);
+        let mut macros = FxHashMap::default();
+
+        for (name, replacement) in [
+            (
+                "__VERSION__",
+                concat!("\"", env!("CARGO_PKG_VERSION"), "\""),
+            ),
+            ("_LP64", "1"),
+            ("__C99_MACRO_WITH_VA_ARGS", "1"),
+            ("__ELF__", "1"),
+            ("__LP64__", "1"),
+            ("__SIZEOF_DOUBLE__", "8"),
+            ("__SIZEOF_FLOAT__", "4"),
+            ("__SIZEOF_INT__", "4"),
+            ("__SIZEOF_LONG_DOUBLE__", "8"),
+            ("__SIZEOF_LONG_LONG__", "8"),
+            ("__SIZEOF_LONG__", "8"),
+            ("__SIZEOF_POINTER__", "8"),
+            ("__SIZEOF_PTRDIFF_T__", "8"),
+            ("__SIZEOF_SHORT__", "2"),
+            ("__SIZEOF_SIZE_T__", "8"),
+            ("__SIZE_TYPE__", "unsigned long"),
+            ("__STDC_HOSTED__", "1"),
+            ("__STDC_NO_ATOMICS__", "1"),
+            ("__STDC_NO_COMPLEX__", "1"),
+            ("__STDC_NO_THREADS__", "1"),
+            ("__STDC_NO_VLA__", "1"),
+            ("__STDC_VERSION__", "201112L"),
+            ("__STDC__", "1"),
+            ("__USER_LABEL_PREFIX__", "\"\""),
+            ("__alignof__", "_Alignof"),
+            ("__amd64", "1"),
+            ("__amd64__", "1"),
+            ("__chacc__", "1"),
+            ("__const__", "const"),
+            ("__gnu_linux__", "1"),
+            ("__inline__", "inline"),
+            ("linux", "1"),
+            ("__linux", "1"),
+            ("__linux__", "1"),
+            ("__signed__", "signed"),
+            ("__typeof__", "typeof"),
+            ("unix", "1"),
+            ("__unix", "1"),
+            ("__unix__", "1"),
+            ("__volatile__", "volatile"),
+            ("__x86_64", "1"),
+            ("__x86_64__", "1"),
+        ] {
+            macros.insert(name.into(), Macro::obj(replacement, source_map));
+        }
+
+        for (name, handler) in [
+            ("__FILE__", MacroHandler::File),
+            ("__LINE__", MacroHandler::Line),
+        ] {
+            macros.insert(name.into(), Macro::handler(handler));
+        }
 
         Self {
             source_map,
@@ -607,19 +686,26 @@ where
 
         let redefined = match self.macros.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(Macro { body, params });
+                entry.insert(Macro {
+                    body,
+                    params,
+                    handler: None,
+                });
                 false
             },
             Entry::Occupied(mut entry) => {
                 let mut same = true;
                 let old_macro = entry.get();
 
-                if old_macro.body.len() != body.len() || old_macro.params != params {
+                if old_macro.handler.is_some()
+                    || old_macro.body.len() != body.len()
+                    || old_macro.params != params
+                {
                     same = false;
                 } else {
                     for (old, new) in old_macro.body.iter().zip(&body) {
-                        if self.source_map.text(old.span) != self.source_map.text(new.span)
-                            || old.follows_space != new.follows_space
+                        if old.follows_space != new.follows_space
+                            || self.source_map.text(old.span) != self.source_map.text(new.span)
                         {
                             same = false;
                             break;
@@ -628,7 +714,11 @@ where
                 }
 
                 if !same {
-                    entry.insert(Macro { body, params });
+                    entry.insert(Macro {
+                        body,
+                        params,
+                        handler: None,
+                    });
                 }
                 !same
             },
@@ -947,14 +1037,13 @@ where
             };
 
             let value = self.macros.contains_key(&name) as u8; // 0/1
-            line.push(PreToken {
-                kind: PreTokenKind::NumLit,
-                span: token.span,
-                at_bol: token.at_bol,
-                follows_space: token.follows_space,
-                hideset: None,
-                synthetic: Some(format_smolstr!("{value}")),
-            });
+            line.push(PreToken::synthetic(
+                PreTokenKind::NumLit,
+                token.span,
+                token.at_bol,
+                token.follows_space,
+                format_smolstr!("{value}"),
+            ));
         }
 
         let mut expander = MacroExpander::new(self.source_map, &self.macros);

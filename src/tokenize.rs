@@ -92,26 +92,27 @@ pub struct PreToken {
     /// If this is `None`, this token must originate from the source content,
     /// and its spelling can be obtained from the source using its `span`.
     pub synthetic: Option<SmolStr>,
+    /// The origin span, if this token needs to be expanded elsewhere.
+    pub origin: Option<SourceSpan>,
 }
 
 impl PreToken {
     /// Create a synthetic preprocessor token.
     pub fn synthetic(
         kind: PreTokenKind,
-        spelling: impl Into<SmolStr>,
+        span: SourceSpan,
+        at_bol: bool,
         follows_space: bool,
+        spelling: impl Into<SmolStr>,
     ) -> Self {
         Self {
             kind,
-            span: SourceSpan {
-                id: 0,
-                offset: 0,
-                len: 0,
-            },
-            at_bol: false,
+            span,
+            at_bol,
             follows_space,
             hideset: None,
             synthetic: Some(spelling.into()),
+            origin: None,
         }
     }
 
@@ -295,6 +296,7 @@ impl<'a> Tokenizer<'a> {
             follows_space: self.follows_space,
             hideset: None,
             synthetic: None,
+            origin: None,
         });
         self.at_bol = false;
         self.follows_space = false;

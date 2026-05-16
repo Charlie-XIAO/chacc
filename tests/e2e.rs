@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use rustc_hash::FxHashMap;
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 fn tests_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -77,15 +77,20 @@ impl CommandExt for Command {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Fixture {
     source: String,
     includes: FxHashMap<&'static str, &'static str>,
+    tmp: TempDir,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let mut f = Self::default();
+        let mut f = Self {
+            source: String::new(),
+            includes: FxHashMap::default(),
+            tmp: tempdir().expect("failed to create temporary directory"),
+        };
         f.line("int assert(int expected, int actual, char *code);");
         f.line("int strcmp(char *lhs, char *rhs);");
         f.line("int memcmp(char *lhs, char *rhs, int n);");
@@ -120,27 +125,27 @@ impl Fixture {
 
     fn run(&self, stem: &str) {
         let tests_dir = tests_dir();
+        let path = self.tmp.path();
 
-        let tmp = tempdir().expect("failed to create temporary directory");
-        let source = tmp.path().join(format!("{stem}.c"));
-        let obj = tmp.path().join(format!("{stem}.o"));
-        let exe = tmp.path().join(stem);
+        let source = path.join(format!("{stem}.c"));
+        let obj = path.join(format!("{stem}.o"));
+        let exe = path.join(stem);
 
         std::fs::write(&source, &self.source).expect("failed to write fixture");
 
         for (name, content) in &self.includes {
-            let path = tmp.path().join(name);
+            let path = path.join(name);
             std::fs::write(&path, content).expect("failed to write fixture include");
         }
 
-        Command::chacc(tmp.path())
+        Command::chacc(path)
             .arg("-c")
             .arg("-o")
             .arg(&obj)
             .arg(&source)
             .run_checked(&format!("compiling {}", source.display()), None);
 
-        Command::cc(tmp.path())
+        Command::cc(path)
             .arg("-o")
             .arg(&exe)
             .arg(&obj)
@@ -1179,10 +1184,15 @@ fn test_literal() {
 #[test]
 fn test_macro() {
     let mut f = Fixture::new();
-    f.includes.insert("include1.h", "#include \"include2.h\"\nint include1 = 5;");
+    f.includes.insert("include1.h", "#include \"include2.h\"\nchar *include1_filename = __FILE__;\nint include1_line = __LINE__;\nint include1 = 5;");
     f.includes.insert("include2.h", "int include2 = 7;");
     f.includes.insert("include3.h", "#define foo 3");
     f.includes.insert("include4.h", "#define foo 4");
+
+    f.line("char *main_filename1 = __FILE__;");
+    f.line("int main_line1 = __LINE__;");
+    f.line("#define LINE() __LINE__");
+    f.line("int main_line2 = LINE();");
 
     f.line("#include \"include1.h\"");
     f.line("#");
@@ -1511,6 +1521,12 @@ fn test_macro() {
     f.assert(0, "strcmp(M22(bar), \"bar. foo\")");
 
     f.assert(1, "__chacc__");
+
+    f.assert(0, &format!("strcmp(main_filename1, \"{}\")", f.tmp.path().join("macro.c").display()));
+    f.assert(6, "main_line1");
+    f.assert(8, "main_line2");
+    f.assert(0, &format!("strcmp(include1_filename, \"{}\")", f.tmp.path().join("include1.h").display()));
+    f.assert(3, "include1_line");
 
     f.finish();
     f.run("macro");

@@ -215,11 +215,7 @@ impl Node {
     /// Construct a dummy node, used as temporary placeholders.
     pub fn dummy() -> Self {
         Self {
-            span: SourceSpan {
-                id: usize::MAX, // Non-existent source
-                offset: 0,
-                len: 0,
-            },
+            span: SourceSpan::fake(),
             ty: None,
             kind: NodeKind::Dummy,
         }

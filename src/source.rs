@@ -17,6 +17,17 @@ pub struct SourceSpan {
     pub len: usize,
 }
 
+impl SourceSpan {
+    /// Return a fake invalid source span.
+    pub fn fake() -> Self {
+        Self {
+            id: usize::MAX,
+            offset: 0,
+            len: 0,
+        }
+    }
+}
+
 /// A C program source to be compiled.
 #[derive(Debug)]
 pub struct Source {
@@ -187,13 +198,14 @@ impl SourceMap {
 
     /// Push a new virtual source file with the given content.
     ///
-    /// Returns a reference to the newly created source.
-    pub fn push_virtual(&mut self, content: SmolStr) -> &Source {
+    /// If the name is not provided, a default virtual name will be generated
+    /// uniquely. Returns a reference to the newly created source.
+    pub fn push_virtual(&mut self, content: SmolStr, name: Option<SmolStr>) -> &Source {
         let id = self.0.len();
         let source = Source::new(
             id,
             PathBuf::new(),
-            format_smolstr!("<virtual-{id}>"),
+            name.unwrap_or_else(|| format_smolstr!("<virtual:{}>", id)),
             content,
         );
         self.0.push(source);
@@ -202,6 +214,7 @@ impl SourceMap {
 
     /// Return the source corresponding to the given ID.
     pub fn get(&self, id: usize) -> &Source {
+        debug_assert!(id != usize::MAX, "fake source id leaked here");
         self.0.get(id).expect("invalid source id")
     }
 
