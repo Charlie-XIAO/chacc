@@ -1184,6 +1184,9 @@ fn test_literal() {
 
     f.assert(1, "size\\\nof(char)");
 
+    f.assert(4, "sizeof(L'\\0')");
+    f.assert(97, "L'a'");
+
     f.finish();
     f.run("literal");
 }

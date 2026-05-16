@@ -308,50 +308,53 @@ impl<'a> Tokenizer<'a> {
     /// instead of being skipped.
     pub fn tokenize(mut self, allow_comment: bool) -> Result<Vec<PreToken>> {
         let content = &self.source.content;
+        let bytes = content.as_bytes();
 
         while self.pos < content.len() {
-            let ch = content.as_bytes()[self.pos];
+            let cur = bytes[self.pos];
 
             if allow_comment && self.read_comment()? {
                 self.follows_space = true;
                 continue;
             }
 
-            if ch == b'\n' {
+            if cur == b'\n' {
                 self.pos += 1;
                 self.at_bol = true;
                 self.follows_space = false;
                 continue;
             }
 
-            if ch.is_ascii_whitespace() {
+            if cur.is_ascii_whitespace() {
                 self.pos += 1;
                 self.follows_space = true;
                 continue;
             }
 
-            if ch.is_ascii_digit()
-                || (ch == b'.'
-                    && content
-                        .as_bytes()
-                        .get(self.pos + 1)
-                        .is_some_and(u8::is_ascii_digit))
+            if cur.is_ascii_digit()
+                || (cur == b'.' && bytes.get(self.pos + 1).is_some_and(u8::is_ascii_digit))
             {
                 self.read_numeric_literal();
                 continue;
             }
 
-            if ch == b'"' {
+            if cur == b'"' {
                 self.read_string_char_literal(false)?;
                 continue;
             }
 
-            if ch == b'\'' {
+            if cur == b'\'' {
                 self.read_string_char_literal(true)?;
                 continue;
             }
 
-            if is_ident_start(&ch) {
+            if cur == b'L' && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'') {
+                self.pos += 1;
+                self.read_string_char_literal(true)?;
+                continue;
+            }
+
+            if is_ident_start(&cur) {
                 self.read_ident();
                 continue;
             }
