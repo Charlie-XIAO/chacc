@@ -1748,6 +1748,12 @@ fn test_string() {
     f.assert(0, r#""\x00"[0]"#);
     f.assert(119, r#""\x77"[0]"#);
 
+    f.assert(7, r#"sizeof("abc" "def")"#);
+    f.assert(9, r#"sizeof("abc" "d" "efgh")"#);
+    f.assert(0, r#"strcmp("abc" "d" "\nefgh", "abcd\nefgh")"#);
+    f.assert(0, r#"!strcmp("abc" "d", "abcd\nefgh")"#);
+    f.assert(0, r#"strcmp("\x9" "0", "\t0")"#);
+
     f.finish();
     f.run("string");
 }

@@ -12,7 +12,7 @@ use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{PreToken, PreTokenKind, PreTokenResolver, Token, Tokenizer};
+use crate::tokenize::{PreToken, PreTokenKind, PreTokenResolver, Token, TokenKind, Tokenizer};
 
 /// A consumable and prependable stream of tokens.
 #[derive(Debug)]
@@ -1243,10 +1243,30 @@ impl PreprocessedTokens {
     /// Lower the collected preprocessed tokens into regular tokens.
     pub fn lower(self, source_map: &SourceMap) -> Result<Vec<Token>> {
         let resolver = PreTokenResolver::new(source_map);
-        self.0
-            .into_iter()
-            .map(|tok| resolver.lower(tok, false))
-            .collect()
+        let mut tokens: Vec<Token> = Vec::with_capacity(self.0.len());
+
+        for token in self.0 {
+            let token = resolver.lower(token, false)?;
+
+            // Fold adjacent string literals into one.
+            if let TokenKind::Str(current) = &token.kind
+                && let Some(Token {
+                    kind: TokenKind::Str(next),
+                    ..
+                }) = tokens.last_mut()
+            {
+                debug_assert_eq!(next.last(), Some(&b'\0'));
+                let mut content = Vec::with_capacity(next.len() + current.len() - 1);
+                content.extend_from_slice(&next[..next.len() - 1]);
+                content.extend_from_slice(current);
+                *next = content.into();
+                continue;
+            }
+
+            tokens.push(token);
+        }
+
+        Ok(tokens)
     }
 }
 
