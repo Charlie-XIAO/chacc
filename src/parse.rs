@@ -1321,6 +1321,18 @@ impl<'a> Parser<'a> {
             None
         };
 
+        {
+            let name = self.functions[func_id].name.as_bytes();
+            let mut bytes = Vec::with_capacity(name.len() + 1);
+            bytes.extend(name);
+            bytes.push(0);
+
+            let id = self.create_string_literal(bytes.into());
+            let ident = OrdinaryIdent::Global(id, true);
+            self.push_scope_ident("__func__".into(), ident);
+            self.push_scope_ident("__FUNCTION__".into(), ident);
+        }
+
         self.skip_punct("{")?;
         let mut body = Stmt::block(self.parse_compound_stmt()?, body_span);
 
@@ -2741,19 +2753,7 @@ impl<'a> Parser<'a> {
                 !self.preprocess,
                 "string literals should not leak here in preprocessing mode",
             );
-
-            let ty = self.types.array(Type::CHAR, Some(content.len()));
-            let label = self.unique_label();
-            let global_id = self.create_global(
-                label,
-                ty,
-                None,
-                GlobalStorage::Data(GlobalInitData {
-                    bytes: content,
-                    relocations: Default::default(),
-                }),
-                true,
-            );
+            let global_id = self.create_string_literal(content);
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), span));
         }
@@ -3088,6 +3088,23 @@ impl<'a> Parser<'a> {
         // Rebind the reused global in current scope
         self.push_scope_ident(name, OrdinaryIdent::Global(global_id, true));
         Ok(global_id)
+    }
+
+    /// Create a new string literal as an anonymous global variable.
+    fn create_string_literal(&mut self, content: Rc<[u8]>) -> usize {
+        let ty = self.types.array(Type::CHAR, Some(content.len()));
+        let label = self.unique_label();
+
+        self.create_global(
+            label,
+            ty,
+            None,
+            GlobalStorage::Data(GlobalInitData {
+                bytes: content,
+                relocations: Default::default(),
+            }),
+            true,
+        )
     }
 
     /// Create a new function declaration.

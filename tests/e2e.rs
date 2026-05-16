@@ -829,6 +829,8 @@ fn test_function() {
     f.line("double add_double3(double x, double y, double z) { return x + y + z; }");
     f.line("int (*fnptr(int (*fn)(int n, ...)))(int, ...) { return fn; }");
     f.line("int param_decay2(int x()) { return x(); }");
+    f.line("char *func_fn(void) { return __func__; }");
+    f.line("char *function_fn(void) { return __FUNCTION__; }");
     f.main();
 
     f.assert(3, "ret3()");
@@ -900,6 +902,12 @@ fn test_function() {
     f.assert(6, "fnptr(add_all)(3, 1, 2, 3)");
 
     f.assert(3, "param_decay2(ret3)");
+
+    f.assert(5, "sizeof(__func__)");
+    f.assert(0, "strcmp(\"main\", __func__)");
+    f.assert(0, "strcmp(\"func_fn\", func_fn())");
+    f.assert(0, "strcmp(\"main\", __FUNCTION__)");
+    f.assert(0, "strcmp(\"function_fn\", function_fn())");
 
     f.finish();
     f.run("function");
