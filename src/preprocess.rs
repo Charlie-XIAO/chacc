@@ -149,6 +149,8 @@ struct Macro {
     ///
     /// The macro is object-like if this is `None`.
     params: Option<Rc<[SmolStr]>>,
+    /// Whether a function-like macro is variadic.
+    is_variadic: bool,
     /// A [`MacroHandler`], if applicable.
     ///
     /// If this is given, the other fields are ignored and the macro is expanded
@@ -173,6 +175,7 @@ impl Macro {
         Self {
             body,
             params: None,
+            is_variadic: false,
             handler: None,
         }
     }
@@ -182,6 +185,7 @@ impl Macro {
         Self {
             body: Vec::new(),
             params: None,
+            is_variadic: false,
             handler: Some(handler),
         }
     }
@@ -201,13 +205,26 @@ impl<'a> MacroExpander<'a> {
 
     /// Read an argument of a function-like macro call.
     ///
-    /// This always stops at a "," or ")" token. The provided `span` should be
-    /// the span of the triggering token of the macro call.
-    fn read_arg(&self, input: &mut TokenStream, span: SourceSpan) -> Result<Vec<PreToken>> {
+    /// This always stops at a "," or ")" token. If `read_all` is true, this
+    /// only stops at ")", i.e., it reads all remaining arguments. The provided
+    /// `span` should be the span of the triggering token of the macro call.
+    fn read_arg(
+        &self,
+        input: &mut TokenStream,
+        read_all: bool,
+        span: SourceSpan,
+    ) -> Result<Vec<PreToken>> {
         let mut arg = Vec::new();
         let mut depth = 0;
 
-        while depth > 0 || (!input.current().is_punct(",") && !input.current().is_punct(")")) {
+        loop {
+            if depth == 0 && input.current().is_punct(")") {
+                break;
+            }
+            if depth == 0 && !read_all && input.current().is_punct(",") {
+                break;
+            }
+
             let token = input.next().unwrap();
             if token.is_eof() {
                 return Err(self.source_map.error(span, "unterminated macro call"));
@@ -438,6 +455,7 @@ impl<'a> MacroExpander<'a> {
         let Some(Macro {
             mut body,
             params,
+            is_variadic,
             handler,
         }) = self.macros.get(&name).cloned()
         else {
@@ -459,29 +477,45 @@ impl<'a> MacroExpander<'a> {
             input.next();
 
             let n_params = params.len();
-            let mut params = params.iter();
             let mut args = FxHashMap::default();
-            let mut last_span = input.current().span;
 
-            while !input.current().is_punct(")") {
-                if !args.is_empty() {
+            for (index, param) in params.iter().enumerate() {
+                if index > 0 {
+                    if input.current().is_punct(")") {
+                        return Err(self.source_map.error(
+                            input.current().span,
+                            format!("too few arguments for macro call (expected {n_params})"),
+                        ));
+                    }
                     debug_assert!(input.current().is_punct(","));
                     input.next();
                 }
-
-                let span = input.current().span;
-                let arg = self.read_arg(input, token.span)?;
-
-                let Some(param) = params.next() else {
-                    return Err(self.source_map.error(
-                        span,
-                        format!("too many arguments provided to macro call (expected {n_params})"),
-                    ));
-                };
-
+                let arg = self.read_arg(input, false, token.span)?;
                 args.insert(param.clone(), arg);
-                last_span = input.current().span;
             }
+
+            if is_variadic {
+                if input.current().is_punct(")") {
+                    args.insert("__VA_ARGS__".into(), Vec::new());
+                } else {
+                    if n_params > 0 {
+                        debug_assert!(input.current().is_punct(","));
+                        input.next();
+                    }
+                    let arg = self.read_arg(input, true, token.span)?;
+                    args.insert("__VA_ARGS__".into(), arg);
+                }
+            } else if !input.current().is_punct(")") {
+                return Err(self.source_map.error(
+                    input.current().span,
+                    format!("too many arguments for macro call (expected {n_params})"),
+                ));
+            }
+
+            debug_assert!(input.current().is_punct(")"));
+            input.next();
+
+            self.expand_replacement(&mut body, Some(&args))?;
 
             // For function-like macros, the invocation may have been assembled
             // from tokens with different expansion lineages, so we inherit the
@@ -496,20 +530,10 @@ impl<'a> MacroExpander<'a> {
                     .cloned()
                     .collect();
             }
-
-            input.next();
-
-            if params.next().is_some() {
-                return Err(self.source_map.error(
-                    last_span,
-                    format!("too few arguments provided to macro call (expected {n_params})"),
-                ));
-            }
-
-            self.expand_replacement(&mut body, Some(&args))?;
         } else {
-            // Object-like macro, inherit only the triggering token's hideset
             self.expand_replacement(&mut body, None)?;
+
+            // Object-like macros only inherit the triggering token's hideset
             base_hideset = token.hideset.as_deref().cloned().unwrap_or_default();
         }
 
@@ -680,6 +704,7 @@ where
         name: SmolStr,
         body: Vec<PreToken>,
         params: Option<Rc<[SmolStr]>>,
+        is_variadic: bool,
         span: SourceSpan,
     ) -> Result<()> {
         use std::collections::hash_map::Entry;
@@ -689,6 +714,7 @@ where
                 entry.insert(Macro {
                     body,
                     params,
+                    is_variadic,
                     handler: None,
                 });
                 false
@@ -698,6 +724,7 @@ where
                 let old_macro = entry.get();
 
                 if old_macro.handler.is_some()
+                    || old_macro.is_variadic != is_variadic
                     || old_macro.body.len() != body.len()
                     || old_macro.params != params
                 {
@@ -717,6 +744,7 @@ where
                     entry.insert(Macro {
                         body,
                         params,
+                        is_variadic,
                         handler: None,
                     });
                 }
@@ -954,6 +982,7 @@ where
     /// Process a "#define" directive.
     fn process_define(&mut self, span: SourceSpan) -> Result<()> {
         let (name, token) = self.process_macro(span, "define")?;
+        let mut is_variadic = false;
 
         let params = if self
             .input
@@ -966,6 +995,13 @@ where
                 if !params.is_empty() && self.input.next_if(|tok| tok.is_punct(",")).is_none() {
                     return Err(self.error_current("expected ','"));
                 }
+
+                if self.input.current().is_punct("...") {
+                    is_variadic = true;
+                    self.input.next();
+                    break;
+                }
+
                 let Some(ident) = self.input.current().as_ident() else {
                     return Err(self.error_current("expected an identifier"));
                 };
@@ -973,6 +1009,9 @@ where
                 self.input.next();
             }
 
+            if !self.input.current().is_punct(")") {
+                return Err(self.error_current("expected ')'"));
+            }
             self.input.next();
             Some(params)
         } else {
@@ -980,7 +1019,13 @@ where
         };
 
         let tokens = self.line();
-        self.define_macro(name, tokens, params.map(Into::into), token.span)?;
+        self.define_macro(
+            name,
+            tokens,
+            params.map(Into::into),
+            is_variadic,
+            token.span,
+        )?;
         Ok(())
     }
 

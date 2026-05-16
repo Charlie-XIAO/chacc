@@ -1199,6 +1199,8 @@ fn test_macro() {
     f.line("/* */ #");
     f.line("int ret3(void) { return 3; }");
     f.line("int dbl(int x) { return x*x; }");
+    f.line("int add2(int x, int y) { return x+y; }");
+    f.line("int add6(int a, int b, int c, int d, int e, int f) { return a+b+c+d+e+f; }");
     f.main();
 
     f.assert(5, "include1");
@@ -1527,6 +1529,23 @@ fn test_macro() {
     f.assert(8, "main_line2");
     f.assert(0, &format!("strcmp(include1_filename, \"{}\")", f.tmp.path().join("include1.h").display()));
     f.assert(3, "include1_line");
+
+    f.line("#define M23(...) 3");
+    f.assert(3, "M23()");
+    f.line("#define M23(x, ...) x");
+    f.assert(5, "M23(5)");
+
+    f.line("#define M24(...) __VA_ARGS__");
+    f.assert(2, "M24() 2");
+    f.assert(5, "M24(5)");
+
+    f.line("#define M25(...) add2(__VA_ARGS__)");
+    f.assert(8, "M25(2,6)");
+
+    f.line("#define M26(...) add6(1,2,__VA_ARGS__,6)");
+    f.assert(21, "M26(3,4,5)");
+    f.line("#define M26(x, ...) add6(1,2,x,__VA_ARGS__,6)");
+    f.assert(21, "M26(3,4,5)");
 
     f.finish();
     f.run("macro");
