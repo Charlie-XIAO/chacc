@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::Cli;
 use crate::codegen::Codegen;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::flock::FileLock;
 use crate::hostcc::Hostcc;
 use crate::parse::Parser;
 use crate::preprocess::{PreprocessedTokens, PreprocessedWriter, Preprocessor};
@@ -54,6 +55,7 @@ impl<'a, W: Write> CC1<'a, W> {
     ///
     /// - The paths specified by the `-I` flag;
     /// - The paths specified by the `CPATH` environment variable;
+    /// - The built-in chacc headers directory;
     /// - The paths specified by the `C_INCLUDE_PATH` environment variable;
     /// - The system include paths, probed from the host C compiler.
     fn include_paths(&self) -> Result<Vec<PathBuf>> {
@@ -62,6 +64,9 @@ impl<'a, W: Write> CC1<'a, W> {
 
         let hostcc = Hostcc::resolve()?;
         let system_includes = hostcc.find_system_includes()?;
+        let builtin_headers_dir = self
+            .ensure_builtin_headers()
+            .map_err(Error::BuiltinHeaders)?;
 
         Ok(self
             .cli
@@ -69,8 +74,70 @@ impl<'a, W: Write> CC1<'a, W> {
             .iter()
             .cloned()
             .chain(cpath.iter().flat_map(std::env::split_paths))
+            .chain(std::iter::once(builtin_headers_dir))
             .chain(c_include_path.iter().flat_map(std::env::split_paths))
             .chain(system_includes)
             .collect())
+    }
+
+    /// Ensure that the built-in headers are available.
+    ///
+    /// Returns the path to the built-in headers directory.
+    fn ensure_builtin_headers(&self) -> Result<PathBuf, std::io::Error> {
+        let abs_env_path = |key: &str| -> Option<PathBuf> {
+            let val = std::env::var_os(key)?;
+            if val.is_empty() {
+                None
+            } else {
+                let path = PathBuf::from(val);
+                path.is_absolute().then_some(path)
+            }
+        };
+
+        let data_dir = abs_env_path("XDG_DATA_HOME")
+            .or_else(|| abs_env_path("HOME").map(|p| p.join(".local/share")))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "cannot find data directory")
+            })?;
+
+        let target_parent = data_dir
+            .join(env!("CARGO_PKG_NAME"))
+            .join(env!("CARGO_PKG_VERSION"));
+        std::fs::create_dir_all(&target_parent)?;
+
+        let target = target_parent.join("include");
+        let lock_path = target.with_extension("lock");
+
+        let marker_path = target.join(".complete");
+        let hash = env!("BUILTIN_INCLUDE_HEADERS_HASH");
+        let marker_is_valid =
+            || std::fs::read_to_string(&marker_path).is_ok_and(|marker| marker.trim() == hash);
+
+        if marker_is_valid() {
+            return Ok(target);
+        }
+
+        let _lock = FileLock::lock(&lock_path)?;
+
+        if marker_is_valid() {
+            return Ok(target);
+        }
+
+        std::fs::create_dir_all(&target)?;
+
+        for (name, content) in [
+            ("float.h", include_str!("../include/float.h")),
+            ("stdalign.h", include_str!("../include/stdalign.h")),
+            ("stdarg.h", include_str!("../include/stdarg.h")),
+            ("stdbool.h", include_str!("../include/stdbool.h")),
+            ("stddef.h", include_str!("../include/stddef.h")),
+            ("stdnoreturn.h", include_str!("../include/stdnoreturn.h")),
+        ] {
+            let path = target.join(name);
+            std::fs::write(&path, content)?;
+        }
+
+        std::fs::write(&marker_path, hash)?;
+        Ok(target)
     }
 }

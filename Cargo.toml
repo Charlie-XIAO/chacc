@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 hexf-parse = "0.2"
 lexopt = "0.3"
+libc = "0.2"
 line-index = "0.1"
 rustc-hash = "2"
 smol_str = "0.3"
@@ -13,6 +14,9 @@ strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
 tempfile = "3"
 which = "8"
+
+[build-dependencies]
+xxhash-rust = { version = "0.8", features = ["xxh3", "std"] }
 
 [profile.release]
 codegen-units = 1

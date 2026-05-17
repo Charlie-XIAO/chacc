@@ -15,6 +15,7 @@ mod codegen;
 mod constexpr;
 mod driver;
 mod error;
+mod flock;
 mod hostcc;
 mod parse;
 mod preprocess;

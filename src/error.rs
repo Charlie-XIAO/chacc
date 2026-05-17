@@ -54,6 +54,8 @@ pub enum Error {
     HostccNotFound(String),
     #[error("host compiler cannot resolve {0}")]
     HostccResolutionFailed(String),
+    #[error("cannot create or access builtin headers: {0}")]
+    BuiltinHeaders(std::io::Error),
 }
 
 impl Error {

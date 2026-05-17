@@ -787,6 +787,7 @@ fn test_float() {
 #[test]
 fn test_function() {
     let mut f = Fixture::new();
+    f.line("#include <stdarg.h>");
 
     f.line("int ret3(void) { return 3; return 5; }");
     f.line("int add2(int x, int y) { return x + y; }");
@@ -817,12 +818,10 @@ fn test_function() {
     f.line("signed char schar_fn();");
     f.line("signed short sshort_fn();");
 
-    f.line("typedef struct {int gp_offset; int fp_offset; void *overflow_arg_area; void *reg_save_area;} __va_elem;");
-    f.line("typedef __va_elem va_list[1];");
     f.line("int add_all(int n, ...);");
     f.line("int sprintf(char *buf, char *fmt, ...);");
     f.line("int vsprintf(char *buf, char *fmt, va_list ap);");
-    f.line("void fmt(char *buf, char *fmt, ...) { va_list ap; *ap = *(__va_elem *)__va_area__; vsprintf(buf, fmt, ap); }");
+    f.line("void fmt(char *buf, char *fmt, ...) { va_list ap; va_start(ap, 0); vsprintf(buf, fmt, ap); }");
 
     f.line("double add_double(double x, double y);");
     f.line("float add_float(float x, float y);");
@@ -1711,6 +1710,22 @@ fn test_sizeof() {
 
     f.finish();
     f.run("sizeof");
+}
+
+#[rustfmt::skip]
+#[test]
+fn test_stdhdr() {
+    let mut f = Fixture::new();
+    f.line("#include <float.h>");
+    f.line("#include <stdalign.h>");
+    f.line("#include <stdarg.h>");
+    f.line("#include <stdbool.h>");
+    f.line("#include <stddef.h>");
+    f.line("#include <stdnoreturn.h>");
+    f.main();
+
+    f.finish();
+    f.run("stdhdr");
 }
 
 #[rustfmt::skip]
