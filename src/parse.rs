@@ -99,6 +99,7 @@ struct Declspec {
     align: Option<u64>,
     storage_class: Option<StorageClass>,
     noreturn: bool,
+    declares_tag: bool,
 }
 
 /// An ordinary identifier.
@@ -472,6 +473,7 @@ impl<'a> Parser<'a> {
         let mut align = None;
         let mut noreturn = false;
         let mut defaults_to_int = false;
+        let mut declares_tag = false;
 
         while self.at_typename() {
             let span = self.current().span;
@@ -549,7 +551,8 @@ impl<'a> Parser<'a> {
                     None if signed.is_none() => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(true, context)?,
-                        ))
+                        ));
+                        declares_tag = true;
                     },
                     _ => bail_multiple_types!(),
                 },
@@ -557,13 +560,15 @@ impl<'a> Parser<'a> {
                     None if signed.is_none() => {
                         spec = Some(TypeSpec::Other(
                             self.parse_struct_or_union_decl(false, context)?,
-                        ))
+                        ));
+                        declares_tag = true;
                     },
                     _ => bail_multiple_types!(),
                 },
                 Keyword::Enum => match spec {
                     None if signed.is_none() => {
-                        spec = Some(TypeSpec::Other(self.parse_enum_specifier()?))
+                        spec = Some(TypeSpec::Other(self.parse_enum_specifier()?));
+                        declares_tag = true;
                     },
                     _ => bail_multiple_types!(),
                 },
@@ -699,6 +704,7 @@ impl<'a> Parser<'a> {
             align,
             storage_class,
             noreturn,
+            declares_tag,
         })
     }
 
@@ -1367,7 +1373,9 @@ impl<'a> Parser<'a> {
     fn parse_global_variable(&mut self, declspec: Declspec) -> Result<()> {
         self.disallow_speculation();
         if self.current().is_punct(";") {
-            self.warn_current("useless type name in empty declaration");
+            if !declspec.declares_tag {
+                self.warn_current("useless type name in empty declaration");
+            }
             self.advance();
             return Ok(());
         }
@@ -1743,7 +1751,9 @@ impl<'a> Parser<'a> {
         let span = self.current().span;
         let mut stmts = Vec::new();
         if self.current().is_punct(";") {
-            self.warn_current("useless type name in empty declaration");
+            if !declspec.declares_tag {
+                self.warn_current("useless type name in empty declaration");
+            }
             self.advance();
             return Ok(Stmt::block(Vec::new(), span));
         }
