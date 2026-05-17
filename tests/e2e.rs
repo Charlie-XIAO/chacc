@@ -1912,6 +1912,43 @@ fn test_usual_conv() {
 
 #[rustfmt::skip]
 #[test]
+fn test_varargs() {
+    let mut f = Fixture::new();
+    f.line("#include <stdarg.h>");
+
+    f.line("int sum1(int x, ...) {");
+    f.line("  va_list ap;");
+    f.line("  va_start(ap, x);");
+    f.line("  for (;;) {");
+    f.line("    int y = va_arg(ap, int);");
+    f.line("    if (y == 0) return x;");
+    f.line("    x += y;");
+    f.line("  }");
+    f.line("}");
+
+    f.line("int sum2(int x, ...) {");
+    f.line("  va_list ap;");
+    f.line("  va_start(ap, x);");
+    f.line("  for (;;) {");
+    f.line("    double y = va_arg(ap, double);");
+    f.line("    x += y;");
+    f.line("    int z = va_arg(ap, int);");
+    f.line("    if (z == 0) return x;");
+    f.line("    x += z;");
+    f.line("  }");
+    f.line("}");
+
+    f.main();
+
+    f.assert(6, "sum1(1, 2, 3, 0)");
+    f.assert(10, "sum2(1, 2.0, 3, 4.0, 0)");
+
+    f.finish();
+    f.run("varargs");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_variable() {
     let mut f = Fixture::new();
     f.line("int g1, g2[4];");

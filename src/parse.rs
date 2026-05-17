@@ -2636,6 +2636,7 @@ impl<'a> Parser<'a> {
     ///   | "(" <expr> ")"
     ///   | "sizeof" ("(" <typename> ")" | <unary>)
     ///   | "_Alignof" ("(" <typename> ")" | <unary>)
+    ///   | "__builtin_reg_class" "(" <typename> ")"
     ///   | <ident>
     ///   | <str>
     ///   | <num>
@@ -2721,6 +2722,25 @@ impl<'a> Parser<'a> {
             self.infer_type(&mut operand)?;
             let size = self.types.align(operand.expect_ty());
             return Ok(Node::num(size, Type::ULONG, span));
+        }
+
+        if !self.preprocess
+            && let Some(ident) = self.current().as_ident()
+            && ident == "__builtin_reg_class"
+        {
+            self.advance();
+            self.skip_punct("(")?;
+            let ty = self.parse_typename()?;
+            self.skip_punct(")")?;
+
+            let klass = if ty.is_integer() || self.types.is_ptr(ty) {
+                0
+            } else if ty.is_flonum() {
+                1
+            } else {
+                2
+            };
+            return Ok(Node::num(klass, Type::INT, span));
         }
 
         if let Some(name) = self.current().as_ident() {
