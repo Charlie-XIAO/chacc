@@ -32,13 +32,6 @@ fn create_multi_c(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 trait CommandExt {
-    fn cc(dir: impl AsRef<Path>) -> Command {
-        let cc = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
-        let mut command = Command::new(cc);
-        command.current_dir(dir);
-        command
-    }
-
     fn chacc(dir: impl AsRef<Path>) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_chacc"));
         command.arg("-###");
@@ -128,7 +121,6 @@ impl Fixture {
         let path = self.tmp.path();
 
         let source = path.join(format!("{stem}.c"));
-        let obj = path.join(format!("{stem}.o"));
         let exe = path.join(stem);
 
         std::fs::write(&source, &self.source).expect("failed to write fixture");
@@ -139,19 +131,12 @@ impl Fixture {
         }
 
         Command::chacc(path)
-            .arg("-c")
             .arg("-I.")
             .arg("-o")
-            .arg(&obj)
-            .arg(&source)
-            .run_checked(&format!("compiling {}", source.display()), None);
-
-        Command::cc(path)
-            .arg("-o")
             .arg(&exe)
-            .arg(&obj)
+            .arg(&source)
             .arg(tests_dir.join("test.c"))
-            .run_checked(&format!("linking {}", source.display()), None);
+            .run_checked(&format!("compiling {}", source.display()), None);
 
         Command::new(&exe).run_checked(
             &format!("running {}", source.file_name().unwrap().to_string_lossy()),
