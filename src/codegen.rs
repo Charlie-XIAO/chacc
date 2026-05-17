@@ -297,7 +297,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             return Ok(());
         };
 
-        let stack_size = self.assign_lvar_offsets(&mut locals);
+        let stack_size = self.assign_lvar_offsets(&mut locals, &param_locals);
 
         if is_static {
             writeln!(self.out, "  .local {name}")?;
@@ -350,8 +350,12 @@ impl<'a, W: Write> Codegen<'a, W> {
 
         let mut gp = 0;
         let mut fp = 0;
+
         for param_id in param_locals {
             let local = &locals[param_id];
+            if local.offset > 0 {
+                continue;
+            }
             if local.ty.is_flonum() {
                 self.store_fp(fp, local.offset, local.ty)?;
                 fp += 1;
@@ -698,29 +702,61 @@ impl<'a, W: Write> Codegen<'a, W> {
                 _ => unreachable!(),
             },
             NodeKind::FuncCall { callee, args } => {
-                let n_fp_args = args
+                // Mask that is true for arguments that need to be passed on
+                // stack (versus in registers)
+                let mut gp = 0;
+                let mut fp = 0;
+                let stack_mask = args
                     .iter()
-                    .filter(|arg| arg.expect_ty().is_flonum())
-                    .count();
+                    .map(|arg| {
+                        if arg.expect_ty().is_flonum() {
+                            fp += 1;
+                            fp > MAX_FP_ARG_REGS
+                        } else {
+                            gp += 1;
+                            gp > MAX_GP_ARG_REGS
+                        }
+                    })
+                    .collect::<Vec<_>>();
 
-                if n_fp_args > MAX_FP_ARG_REGS || args.len() - n_fp_args > MAX_GP_ARG_REGS {
-                    return Err(self.source_map.error(node.span, "too many arguments"));
+                // Ensure 16-byte alignment of the stack before the call by
+                // reserving an extra slot if necessary (each slot is 8 bytes)
+                let mut n_stack_slots = stack_mask.iter().filter(|stack| **stack).count();
+                if !(self.function().depth + n_stack_slots).is_multiple_of(2) {
+                    writeln!(self.out, "  sub $8, %rsp")?;
+                    self.function_mut().depth += 1;
+                    n_stack_slots += 1;
                 }
 
-                for arg in args.iter().rev() {
-                    self.gen_expr(arg)?;
-                    if arg.expect_ty().is_flonum() {
-                        self.pushf()?;
-                    } else {
-                        self.push()?;
+                let mut push_args = |stack: bool| -> Result<()> {
+                    for (arg, &pass_by_stack) in args.iter().zip(&stack_mask).rev() {
+                        if pass_by_stack != stack {
+                            continue;
+                        }
+                        self.gen_expr(arg)?;
+                        if arg.expect_ty().is_flonum() {
+                            self.pushf()?;
+                        } else {
+                            self.push()?;
+                        }
                     }
-                }
+                    Ok(())
+                };
+
+                // Stack arguments are pushed first and left there until end of
+                // call; register arguments are then pushed temporarily, but
+                // will be popped before call later
+                push_args(true)?;
+                push_args(false)?;
 
                 self.gen_expr(callee)?;
 
-                let mut gp = 0;
-                let mut fp = 0;
-                for arg in args {
+                gp = 0;
+                fp = 0;
+                for (arg, &pass_by_stack) in args.iter().zip(&stack_mask) {
+                    if pass_by_stack {
+                        continue;
+                    }
                     if arg.expect_ty().is_flonum() {
                         self.popf(fp)?;
                         fp += 1;
@@ -730,18 +766,17 @@ impl<'a, W: Write> Codegen<'a, W> {
                     }
                 }
 
-                // After the prologue and local allocation, we have made the
-                // frame size a multiple of 16; each temporary push subtracts
-                // 8 bytes, so an even depth would still be 16-byte aligned but
-                // an odd depth would not, in which case we must subtract 8
-                // bytes to realign %rsp before calling and then add it back
-                let depth = self.function().depth;
-                if depth.is_multiple_of(2) {
-                    writeln!(self.out, "  call *%rax")?;
-                } else {
-                    writeln!(self.out, "  sub $8, %rsp")?;
-                    writeln!(self.out, "  call *%rax")?;
-                    writeln!(self.out, "  add $8, %rsp")?;
+                // Call the function pointer in %rax, but we have to first move
+                // it elsewhere because %rax must carry the number of floating
+                // point register arguments (for variadic calls)
+                writeln!(self.out, "  mov %rax, %r10")?;
+                writeln!(self.out, "  mov ${fp}, %rax")?;
+                writeln!(self.out, "  call *%r10")?;
+
+                // Clean up stack arguments if any
+                if n_stack_slots > 0 {
+                    writeln!(self.out, "  add ${}, %rsp", n_stack_slots * 8)?;
+                    self.function_mut().depth -= n_stack_slots;
                 }
 
                 // Per x86-64 psABI, for "_Bool", "char", and "short" return
@@ -1165,19 +1200,47 @@ impl<'a, W: Write> Codegen<'a, W> {
         label
     }
 
-    /// Assign stack offsets to locals and return the aligned stack size.
-    fn assign_lvar_offsets(&self, locals: &mut [LocalVar]) -> u64 {
-        let mut offset = 0;
+    /// Assign frame offsets to parameters and locals.
+    ///
+    /// Returns the total size of the stack frame in bytes, 16-byte aligned.
+    fn assign_lvar_offsets(&self, locals: &mut [LocalVar], param_locals: &[usize]) -> u64 {
+        let mut top = 16;
+        let mut bottom = 0;
 
-        // The first parsed local stays closest to `%rbp`
+        let mut gp = 0;
+        let mut fp = 0;
+
+        // Assign offsets to pass-by-stack parameters
+        for &param_id in param_locals {
+            let local = &mut locals[param_id];
+            if local.ty.is_flonum() {
+                fp += 1;
+                if fp <= MAX_FP_ARG_REGS {
+                    continue;
+                }
+            } else {
+                gp += 1;
+                if gp <= MAX_GP_ARG_REGS {
+                    continue;
+                }
+            }
+            top = align_to(top, 8);
+            local.offset = i64::try_from(top).expect("stack frame too large");
+            top += self.types.size(local.ty);
+        }
+
+        // Assign offsets to register-passed parameters and local variables
         for local in locals.iter_mut().rev() {
-            offset += self.types.size(local.ty);
-            offset = align_to(offset, self.types.eff_align(local.align, local.ty));
-            let offset = i64::try_from(offset).expect("stack frame too large");
+            if local.offset != 0 {
+                continue;
+            }
+            bottom += self.types.size(local.ty);
+            bottom = align_to(bottom, self.types.eff_align(local.align, local.ty));
+            let offset = i64::try_from(bottom).expect("stack frame too large");
             local.offset = -offset;
         }
 
-        align_to(offset, 16)
+        align_to(bottom, 16)
     }
 }
 
