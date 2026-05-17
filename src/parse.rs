@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{Keyword, Token, TokenKind};
 use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
-use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE};
+use crate::utils::{MAX_FP_ARG_REGS, MAX_GP_ARG_REGS, VA_AREA_SIZE};
 
 /// Declaration of a function parameter.
 struct Parameter {
@@ -830,6 +830,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         let mut param_names = FxHashSet::default();
         let mut is_variadic = false;
+        let mut n_fp_params = 0;
 
         while !self.current().is_punct(")") {
             if !params.is_empty() {
@@ -884,13 +885,17 @@ impl<'a> Parser<'a> {
                 return Err(self.error(span, "redefinition of parameter"));
             }
 
+            if ty.is_flonum() {
+                n_fp_params += 1;
+            }
+
             params.push(Parameter {
                 name: declarator.name,
                 ty,
                 span: declarator.span,
             });
 
-            if params.len() > MAX_FUNC_PARAMS {
+            if n_fp_params > MAX_FP_ARG_REGS || params.len() - n_fp_params > MAX_GP_ARG_REGS {
                 return Err(self.error(declarator.span, "too many parameters"));
             }
         }

@@ -11,12 +11,12 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::{SourceMap, SourceSpan};
 use crate::types::{Type, TypeStore};
-use crate::utils::{MAX_FUNC_PARAMS, VA_AREA_SIZE, align_to};
+use crate::utils::{MAX_FP_ARG_REGS, MAX_GP_ARG_REGS, VA_AREA_SIZE, align_to};
 
-const GP_ARG_REGS_8: [&str; MAX_FUNC_PARAMS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
-const GP_ARG_REGS_16: [&str; MAX_FUNC_PARAMS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
-const GP_ARG_REGS_32: [&str; MAX_FUNC_PARAMS] = ["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
-const GP_ARG_REGS_64: [&str; MAX_FUNC_PARAMS] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+const GP_ARG_REGS_8: [&str; MAX_GP_ARG_REGS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
+const GP_ARG_REGS_16: [&str; MAX_GP_ARG_REGS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
+const GP_ARG_REGS_32: [&str; MAX_GP_ARG_REGS] = ["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
+const GP_ARG_REGS_64: [&str; MAX_GP_ARG_REGS] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
 /// Width of an integer scalar used to select size-specific x86-64 operations.
 #[derive(Clone, Copy)]
@@ -698,11 +698,13 @@ impl<'a, W: Write> Codegen<'a, W> {
                 _ => unreachable!(),
             },
             NodeKind::FuncCall { callee, args } => {
-                if args.len() > MAX_FUNC_PARAMS {
-                    return Err(self.source_map.error(
-                        node.span,
-                        format!("too many arguments; expected at most {MAX_FUNC_PARAMS}"),
-                    ));
+                let n_fp_args = args
+                    .iter()
+                    .filter(|arg| arg.expect_ty().is_flonum())
+                    .count();
+
+                if n_fp_args > MAX_FP_ARG_REGS || args.len() - n_fp_args > MAX_GP_ARG_REGS {
+                    return Err(self.source_map.error(node.span, "too many arguments"));
                 }
 
                 for arg in args.iter().rev() {
@@ -1070,7 +1072,11 @@ impl<'a, W: Write> Codegen<'a, W> {
     }
 
     /// Pop the top of the temporary stack into an XMM register.
-    fn popf(&mut self, register: i32) -> Result<()> {
+    fn popf(&mut self, register: usize) -> Result<()> {
+        debug_assert!(
+            register < MAX_FP_ARG_REGS,
+            "invalid floating-point argument register index",
+        );
         writeln!(self.out, "  movsd (%rsp), %xmm{register}")?;
         writeln!(self.out, "  add $8, %rsp")?;
         self.function_mut().depth -= 1;
