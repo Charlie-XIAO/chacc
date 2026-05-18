@@ -27,18 +27,21 @@ enum ScalarWidth {
     Qword,
 }
 
-impl ScalarWidth {
-    /// Convert a scalar size in bytes to its corresponding width.
-    fn from_size(size: u64) -> Self {
-        match size {
-            1 => Self::Byte,
-            2 => Self::Word,
-            4 => Self::Dword,
-            8 => Self::Qword,
-            _ => unreachable!("unsupported scalar width: {size}"),
+impl TryFrom<u64> for ScalarWidth {
+    type Error = ();
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Byte),
+            2 => Ok(Self::Word),
+            4 => Ok(Self::Dword),
+            8 => Ok(Self::Qword),
+            _ => Err(()),
         }
     }
+}
 
+impl ScalarWidth {
     /// Return the register width used for binary integer operations.
     ///
     /// char, short, and int are computed in 32-bit registers. long and pointers
@@ -138,6 +141,13 @@ impl ScalarWidth {
             Self::Qword => "cqo",
         }
     }
+}
+
+/// Register indexes for argument parsing.
+#[derive(Debug, Default)]
+struct ArgRegIndex {
+    fp: usize,
+    gp: usize,
 }
 
 /// Subset of [`Function`] necessary for codegen.
@@ -348,20 +358,35 @@ impl<'a, W: Write> Codegen<'a, W> {
             writeln!(self.out, "  movsd %xmm7, {}(%rbp)", offset + 128)?;
         }
 
-        let mut gp = 0;
-        let mut fp = 0;
+        let mut index = ArgRegIndex::default();
 
         for param_id in param_locals {
-            let local = &locals[param_id];
-            if local.offset > 0 {
+            let &LocalVar { ty, offset, .. } = &locals[param_id];
+            if offset > 0 {
                 continue;
             }
-            if local.ty.is_flonum() {
-                self.store_fp(fp, local.offset, local.ty)?;
-                fp += 1;
+            let size = self.types.size(ty);
+
+            if self.types.as_struct_or_union(ty).is_some() {
+                // For struct or union arguments, bytes 0..8 and 8..16 are two
+                // separate chunks that may be passed in registers; remaining
+                // bytes are passed on stack so we don't care about them here
+                self.store_arg(
+                    self.types.is_fp_chunk(ty, 0, 8, 0),
+                    &mut index,
+                    offset,
+                    size.min(8),
+                )?;
+                if size > 8 {
+                    self.store_arg(
+                        self.types.is_fp_chunk(ty, 8, 16, 0),
+                        &mut index,
+                        offset + 8,
+                        size - 8,
+                    )?;
+                }
             } else {
-                self.store_gp(gp, local.offset, self.types.size(local.ty))?;
-                gp += 1;
+                self.store_arg(ty.is_flonum(), &mut index, offset, size)?;
             }
         }
 
@@ -702,39 +727,49 @@ impl<'a, W: Write> Codegen<'a, W> {
                 _ => unreachable!(),
             },
             NodeKind::FuncCall { callee, args } => {
-                // Mask that is true for arguments that need to be passed on
-                // stack (versus in registers)
-                let mut gp = 0;
-                let mut fp = 0;
-                let stack_mask = args
+                let mut rindex = ArgRegIndex::default();
+                let args_regs = args
                     .iter()
-                    .map(|arg| {
-                        if arg.expect_ty().is_flonum() {
-                            fp += 1;
-                            fp > MAX_FP_ARG_REGS
+                    .map(|arg| self.arg_regs(arg.expect_ty(), &mut rindex))
+                    .collect::<Vec<_>>();
+
+                let mut n_stack_slots = args
+                    .iter()
+                    .zip(&args_regs)
+                    .try_fold(0usize, |acc, (arg, regs)| {
+                        if regs.is_some() {
+                            Some(acc) // Register argument, no stack slot needed
                         } else {
-                            gp += 1;
-                            gp > MAX_GP_ARG_REGS
+                            let ty = arg.expect_ty();
+                            if self.types.as_struct_or_union(ty).is_some() {
+                                let size = align_to(self.types.size(ty), 8);
+                                acc.checked_add((size / 8) as usize)
+                            } else {
+                                acc.checked_add(1)
+                            }
                         }
                     })
-                    .collect::<Vec<_>>();
+                    .expect("stack arguments exceed available stack space");
 
                 // Ensure 16-byte alignment of the stack before the call by
                 // reserving an extra slot if necessary (each slot is 8 bytes)
-                let mut n_stack_slots = stack_mask.iter().filter(|stack| **stack).count();
                 if !(self.function().depth + n_stack_slots).is_multiple_of(2) {
                     writeln!(self.out, "  sub $8, %rsp")?;
                     self.function_mut().depth += 1;
                     n_stack_slots += 1;
                 }
 
-                let mut push_args = |stack: bool| -> Result<()> {
-                    for (arg, &pass_by_stack) in args.iter().zip(&stack_mask).rev() {
-                        if pass_by_stack != stack {
+                let mut push_args = |pass_by_stack: bool| -> Result<()> {
+                    for (arg, regs) in args.iter().zip(&args_regs).rev() {
+                        if regs.is_none() != pass_by_stack {
                             continue;
                         }
                         self.gen_expr(arg)?;
-                        if arg.expect_ty().is_flonum() {
+
+                        let ty = arg.expect_ty();
+                        if self.types.as_struct_or_union(ty).is_some() {
+                            self.push_struct_or_union(ty)?;
+                        } else if ty.is_flonum() {
                             self.pushf()?;
                         } else {
                             self.push()?;
@@ -751,18 +786,18 @@ impl<'a, W: Write> Codegen<'a, W> {
 
                 self.gen_expr(callee)?;
 
-                gp = 0;
-                fp = 0;
-                for (arg, &pass_by_stack) in args.iter().zip(&stack_mask) {
-                    if pass_by_stack {
-                        continue;
-                    }
-                    if arg.expect_ty().is_flonum() {
-                        self.popf(fp)?;
-                        fp += 1;
-                    } else {
-                        self.pop(GP_ARG_REGS_64[gp])?;
-                        gp += 1;
+                // Pop register arguments into appropriate registers, also used
+                // to count how many fp registers are used
+                let mut rindex = ArgRegIndex::default();
+                for regs in args_regs.iter().flatten() {
+                    for is_fp in regs {
+                        if *is_fp {
+                            self.popf(rindex.fp)?;
+                            rindex.fp += 1;
+                        } else {
+                            self.pop(GP_ARG_REGS_64[rindex.gp])?;
+                            rindex.gp += 1;
+                        }
                     }
                 }
 
@@ -770,7 +805,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                 // it elsewhere because %rax must carry the number of floating
                 // point register arguments (for variadic calls)
                 writeln!(self.out, "  mov %rax, %r10")?;
-                writeln!(self.out, "  mov ${fp}, %rax")?;
+                writeln!(self.out, "  mov ${}, %rax", rindex.fp)?;
                 writeln!(self.out, "  call *%r10")?;
 
                 // Clean up stack arguments if any
@@ -1044,6 +1079,21 @@ impl<'a, W: Write> Codegen<'a, W> {
         Ok(())
     }
 
+    /// Push the struct or union pointer by `%rax` onto the temporary stack.
+    fn push_struct_or_union(&mut self, ty: Type) -> Result<()> {
+        let size = self.types.size(ty);
+        let aligned = align_to(size, 8);
+
+        writeln!(self.out, "  sub ${aligned}, %rsp")?;
+        self.function_mut().depth += (aligned / 8) as usize;
+
+        for i in 0..size {
+            writeln!(self.out, "  mov {i}(%rax), %r10b")?;
+            writeln!(self.out, "  mov %r10b, {i}(%rsp)")?;
+        }
+        Ok(())
+    }
+
     /// Load a scalar value from where `%rax` points to.
     ///
     /// This does not attempt to load arrays, functions, and aggregates as
@@ -1062,7 +1112,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             return Ok(());
         }
 
-        let width = ScalarWidth::from_size(self.types.size(ty));
+        let width = ScalarWidth::try_from(self.types.size(ty)).expect("invalid scalar width");
         writeln!(
             self.out,
             "  {} (%rax), {}",
@@ -1080,8 +1130,9 @@ impl<'a, W: Write> Codegen<'a, W> {
     fn store(&mut self, ty: Type) -> Result<()> {
         self.pop("%rdi")?;
 
+        let size = self.types.size(ty);
         if self.types.as_struct_or_union(ty).is_some() {
-            for i in 0..self.types.size(ty) {
+            for i in 0..size {
                 writeln!(self.out, "  mov {i}(%rax), %r8b")?;
                 writeln!(self.out, "  mov %r8b, {i}(%rdi)")?;
             }
@@ -1094,7 +1145,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             return Ok(());
         }
 
-        let width = ScalarWidth::from_size(self.types.size(ty));
+        let width = ScalarWidth::try_from(size).expect("invalid scalar width");
         writeln!(self.out, "  mov {}, (%rdi)", width.acc_reg())?;
         Ok(())
     }
@@ -1118,17 +1169,39 @@ impl<'a, W: Write> Codegen<'a, W> {
         Ok(())
     }
 
-    /// Store an incoming general-purpose argument register to its stack slot.
-    fn store_gp(&mut self, r: usize, offset: i64, size: u64) -> Result<()> {
-        let register = ScalarWidth::from_size(size).gp_arg_reg(r);
-        writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
-        Ok(())
-    }
+    /// Store an incoming argument register to its stack slot.
+    fn store_arg(
+        &mut self,
+        is_fp: bool,
+        rindex: &mut ArgRegIndex,
+        offset: i64,
+        size: u64,
+    ) -> Result<()> {
+        if is_fp {
+            let sz = match size {
+                4 => "s",
+                8 => "d",
+                _ => unreachable!("invalid floating-point argument chunk size: {size}"),
+            };
+            writeln!(self.out, "  movs{sz} %xmm{}, {offset}(%rbp)", rindex.fp)?;
+            rindex.fp += 1;
+            return Ok(());
+        }
 
-    /// Store an incoming floating-point argument register to its stack slot.
-    fn store_fp(&mut self, r: usize, offset: i64, ty: Type) -> Result<()> {
-        let sz = fp_mnemonic_sz(ty);
-        writeln!(self.out, "  movs{sz} %xmm{r}, {offset}(%rbp)")?;
+        if let Ok(width) = ScalarWidth::try_from(size) {
+            let register = width.gp_arg_reg(rindex.gp);
+            writeln!(self.out, "  mov {register}, {offset}(%rbp)")?;
+            rindex.gp += 1;
+            return Ok(());
+        }
+
+        // Not trivially representable with a single instruction, so we take the
+        // dumb (and inefficient) approach of storing byte by byte
+        for off in offset..offset + size as i64 {
+            writeln!(self.out, "  mov {}, {off}(%rbp)", GP_ARG_REGS_8[rindex.gp])?;
+            writeln!(self.out, "  shr $8, {}", GP_ARG_REGS_64[rindex.gp])?;
+        }
+        rindex.gp += 1;
         Ok(())
     }
 
@@ -1193,6 +1266,50 @@ impl<'a, W: Write> Codegen<'a, W> {
         Ok(())
     }
 
+    /// Determine the register assignments for an argument.
+    ///
+    /// Returns `None` if the argument should be passed on stack. Otherwise,
+    /// each boolean in the returned vector represents whether the register
+    /// should be floating-point (true) or general-purpose (false). The returned
+    /// vector can have only one or two elements.
+    fn arg_regs(&self, ty: Type, rindex: &mut ArgRegIndex) -> Option<Vec<bool>> {
+        if self.types.as_struct_or_union(ty).is_some() {
+            let size = self.types.size(ty);
+            if size > 16 {
+                return None;
+            }
+
+            let mut regs = vec![self.types.is_fp_chunk(ty, 0, 8, 0)];
+            if size > 8 {
+                regs.push(self.types.is_fp_chunk(ty, 8, 16, 0));
+            }
+
+            let fp_needed = regs.iter().filter(|is_fp| **is_fp).count();
+            let gp_needed = regs.len() - fp_needed;
+            if rindex.gp + gp_needed > MAX_GP_ARG_REGS || rindex.fp + fp_needed > MAX_FP_ARG_REGS {
+                return None;
+            }
+
+            rindex.gp += gp_needed;
+            rindex.fp += fp_needed;
+            return Some(regs);
+        }
+
+        if ty.is_flonum() {
+            if rindex.fp >= MAX_FP_ARG_REGS {
+                return None;
+            }
+            rindex.fp += 1;
+            return Some(vec![true]);
+        }
+
+        if rindex.gp >= MAX_GP_ARG_REGS {
+            return None;
+        }
+        rindex.gp += 1;
+        Some(vec![false])
+    }
+
     /// Allocate a fresh numeric suffix for local labels.
     fn take_label(&mut self) -> usize {
         let label = self.next_label;
@@ -1207,22 +1324,13 @@ impl<'a, W: Write> Codegen<'a, W> {
         let mut top = 16;
         let mut bottom = 0;
 
-        let mut gp = 0;
-        let mut fp = 0;
+        let mut rindex = ArgRegIndex::default();
 
         // Assign offsets to pass-by-stack parameters
         for &param_id in param_locals {
             let local = &mut locals[param_id];
-            if local.ty.is_flonum() {
-                fp += 1;
-                if fp <= MAX_FP_ARG_REGS {
-                    continue;
-                }
-            } else {
-                gp += 1;
-                if gp <= MAX_GP_ARG_REGS {
-                    continue;
-                }
+            if self.arg_regs(local.ty, &mut rindex).is_some() {
+                continue;
             }
             top = align_to(top, 8);
             local.offset = i64::try_from(top).expect("stack frame too large");
@@ -1248,6 +1356,6 @@ fn fp_mnemonic_sz(ty: Type) -> &'static str {
     match ty {
         Type::FLOAT => "s",
         Type::DOUBLE => "d",
-        _ => unreachable!(),
+        _ => unreachable!("not a floating-point type"),
     }
 }

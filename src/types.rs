@@ -501,6 +501,35 @@ impl TypeStore {
         )
     }
 
+    /// Return whether the byte chunk `lo..hi` should be passed in fp register.
+    ///
+    /// A chunk is passed in a floating-point register if and only if the type
+    /// is itself a floating-point type, or it is an aggregate type with all
+    /// fields overlapping that byte range being floating-point types.
+    ///
+    /// Callers must pass 0 for `offset`; it is used internally for recursion.
+    pub fn is_fp_chunk(&self, ty: Type, lo: u64, hi: u64, offset: u64) -> bool {
+        if let Some(sou) = self.as_struct_or_union(ty) {
+            let Some(members) = &sou.members else {
+                return false;
+            };
+            return members
+                .iter()
+                .all(|member| self.is_fp_chunk(member.ty, lo, hi, offset + member.offset as u64));
+        }
+
+        if let Some(array) = self.as_array(ty) {
+            let Some(len) = array.len else {
+                return false;
+            };
+            let base_size = self.size(array.base);
+            return (0..len)
+                .all(|i| self.is_fp_chunk(array.base, lo, hi, offset + base_size * i as u64));
+        }
+
+        offset < lo || offset >= hi || ty.is_flonum()
+    }
+
     /// Return whether two types are the same.
     ///
     /// - Trivial types are compared directly.

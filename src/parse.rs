@@ -2823,13 +2823,9 @@ impl<'a> Parser<'a> {
             self.infer_type(&mut arg)?;
 
             if let Some(param_ty) = param_tys.next() {
-                if self.types.as_struct_or_union(param_ty).is_some() {
-                    return Err(self.error(
-                        arg.span,
-                        "passing struct or union by value is not supported yet",
-                    ));
+                if self.types.as_struct_or_union(param_ty).is_none() {
+                    self.apply_cast(&mut arg, param_ty)?;
                 }
-                self.apply_cast(&mut arg, param_ty)?;
             } else {
                 if !func.is_variadic {
                     return Err(self.error(arg.span, "too many arguments"));
