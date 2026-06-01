@@ -820,12 +820,14 @@ fn test_function() {
     f.line("float add10_float(float x1, float x2, float x3, float x4, float x5, float x6, float x7, float x8, float x9, float x10);");
     f.line("double add10_double(double x1, double x2, double x3, double x4, double x5, double x6, double x7, double x8, double x9, double x10);");
 
-    f.line("typedef struct { int a,b; short c; char d; } Ty4;");
-    f.line("typedef struct { int a; float b; double c; } Ty5;");
-    f.line("typedef struct { unsigned char a[3]; } Ty6;");
-    f.line("typedef struct { long a, b, c; } Ty7;");
+    f.line("typedef struct { int a,b; short c; char d; } Ty1;");
+    f.line("typedef struct { int a; float b; double c; } Ty2;");
+    f.line("typedef struct { unsigned char a[3]; } Ty3;");
+    f.line("typedef struct { long a, b, c; } Ty4;");
+    f.line("typedef struct { unsigned char a[10]; } Ty5;");
+    f.line("typedef struct { unsigned char a[20]; } Ty6;");
 
-    f.line("int struct_test4(Ty4 x, int n) {");
+    f.line("int struct_test1(Ty1 x, int n) {");
     f.line("  switch (n) {");
     f.line("  case 0: return x.a;");
     f.line("  case 1: return x.b;");
@@ -833,21 +835,28 @@ fn test_function() {
     f.line("  default: return x.d;");
     f.line("  }");
     f.line("}");
-    f.line("int struct_test5(Ty5 x, int n) {");
+    f.line("int struct_test2(Ty2 x, int n) {");
     f.line("  switch (n) {");
     f.line("  case 0: return x.a;");
     f.line("  case 1: return x.b;");
     f.line("  default: return x.c;");
     f.line("  }");
     f.line("}");
-    f.line("int struct_test6(Ty6 x, int n) { return x.a[n]; }");
-    f.line("int struct_test7(Ty7 x, int n) {");
+    f.line("int struct_test3(Ty3 x, int n) { return x.a[n]; }");
+    f.line("int struct_test4(Ty4 x, int n) {");
     f.line("  switch (n) {");
     f.line("  case 0: return x.a;");
     f.line("  case 1: return x.b;");
     f.line("  default: return x.c;");
     f.line("  }");
     f.line("}");
+
+    f.line("Ty1 struct_test5(void) { return (Ty1){10,20,30,40}; }");
+    f.line("Ty2 struct_test6(void) { return (Ty2){10,20,30}; }");
+    f.line("Ty3 struct_test7(void) { return (Ty3){10,20,30}; }");
+    f.line("Ty4 struct_test8(void) { return (Ty4){10,20,30}; }");
+    f.line("Ty5 struct_test9(void) { return (Ty5){10,20,30,40,50,60,70,80,90,100}; }");
+    f.line("Ty6 struct_test10(void) { return (Ty6){1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}; }");
 
     f.main();
 
@@ -936,22 +945,49 @@ fn test_function() {
                             1, 1.0, 1.0, 1.0, 1, 1, 1.0, 1, 1, 1, 1, 1.0, 1, 1, 1.0, 1.0, 1.0, 1.0, 1);
                     strcmp(\"1 1.0 1.0 1.0 1 1 1.0 1 1 1 1 1.0 1 1 1.0 1.0 1.0 1.0 1\", buf); })");
 
-    f.assert(10, "({ Ty4 x={10,20,30,40}; struct_test4(x, 0); })");
-    f.assert(20, "({ Ty4 x={10,20,30,40}; struct_test4(x, 1); })");
-    f.assert(30, "({ Ty4 x={10,20,30,40}; struct_test4(x, 2); })");
-    f.assert(40, "({ Ty4 x={10,20,30,40}; struct_test4(x, 3); })");
+    f.assert(10, "({ Ty1 x={10,20,30,40}; struct_test1(x, 0); })");
+    f.assert(20, "({ Ty1 x={10,20,30,40}; struct_test1(x, 1); })");
+    f.assert(30, "({ Ty1 x={10,20,30,40}; struct_test1(x, 2); })");
+    f.assert(40, "({ Ty1 x={10,20,30,40}; struct_test1(x, 3); })");
 
-    f.assert(10, "({ Ty5 x={10,20,30}; struct_test5(x, 0); })");
-    f.assert(20, "({ Ty5 x={10,20,30}; struct_test5(x, 1); })");
-    f.assert(30, "({ Ty5 x={10,20,30}; struct_test5(x, 2); })");
+    f.assert(10, "({ Ty2 x={10,20,30}; struct_test2(x, 0); })");
+    f.assert(20, "({ Ty2 x={10,20,30}; struct_test2(x, 1); })");
+    f.assert(30, "({ Ty2 x={10,20,30}; struct_test2(x, 2); })");
 
-    f.assert(10, "({ Ty6 x={10,20,30}; struct_test6(x, 0); })");
-    f.assert(20, "({ Ty6 x={10,20,30}; struct_test6(x, 1); })");
-    f.assert(30, "({ Ty6 x={10,20,30}; struct_test6(x, 2); })");
+    f.assert(10, "({ Ty3 x={10,20,30}; struct_test3(x, 0); })");
+    f.assert(20, "({ Ty3 x={10,20,30}; struct_test3(x, 1); })");
+    f.assert(30, "({ Ty3 x={10,20,30}; struct_test3(x, 2); })");
 
-    f.assert(10, "({ Ty7 x={10,20,30}; struct_test7(x, 0); })");
-    f.assert(20, "({ Ty7 x={10,20,30}; struct_test7(x, 1); })");
-    f.assert(30, "({ Ty7 x={10,20,30}; struct_test7(x, 2); })");
+    f.assert(10, "({ Ty4 x={10,20,30}; struct_test4(x, 0); })");
+    f.assert(20, "({ Ty4 x={10,20,30}; struct_test4(x, 1); })");
+    f.assert(30, "({ Ty4 x={10,20,30}; struct_test4(x, 2); })");
+
+    f.assert(10, "struct_test5().a");
+    f.assert(20, "struct_test5().b");
+    f.assert(30, "struct_test5().c");
+    f.assert(40, "struct_test5().d");
+
+    f.assert(10, "struct_test6().a");
+    f.assert(20, "struct_test6().b");
+    f.assert(30, "struct_test6().c");
+
+    f.assert(10, "struct_test7().a[0]");
+    f.assert(20, "struct_test7().a[1]");
+    f.assert(30, "struct_test7().a[2]");
+
+    f.assert(10, "struct_test8().a");
+    f.assert(20, "struct_test8().b");
+    f.assert(30, "struct_test8().c");
+
+    f.assert(10, "struct_test9().a[0]");
+    f.assert(60, "struct_test9().a[5]");
+    f.assert(100, "struct_test9().a[9]");
+
+    f.assert(1, "struct_test10().a[0]");
+    f.assert(5, "struct_test10().a[4]");
+    f.assert(10, "struct_test10().a[9]");
+    f.assert(15, "struct_test10().a[14]");
+    f.assert(20, "struct_test10().a[19]");
 
     f.finish();
     f.run("function");

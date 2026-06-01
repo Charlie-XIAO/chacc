@@ -17,6 +17,8 @@ const GP_ARG_REGS_8: [&str; MAX_GP_ARG_REGS] = ["%dil", "%sil", "%dl", "%cl", "%
 const GP_ARG_REGS_16: [&str; MAX_GP_ARG_REGS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
 const GP_ARG_REGS_32: [&str; MAX_GP_ARG_REGS] = ["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
 const GP_ARG_REGS_64: [&str; MAX_GP_ARG_REGS] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+const GP_RET_REGS_8: [&str; 2] = ["%al", "%dl"];
+const GP_RET_REGS_64: [&str; 2] = ["%rax", "%rdx"];
 
 /// Width of an integer scalar used to select size-specific x86-64 operations.
 #[derive(Clone, Copy)]
@@ -169,6 +171,7 @@ impl From<&Function> for FunctionData {
 struct FunctionState {
     name: SmolStr,
     locals: Vec<LocalVar>,
+    ret_buf_local: Option<usize>,
     depth: usize,
 }
 
@@ -297,6 +300,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             name,
             body,
             param_locals,
+            ret_buf_local,
             va_area_local,
             mut locals,
             is_static,
@@ -358,7 +362,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             writeln!(self.out, "  movsd %xmm7, {}(%rbp)", offset + 128)?;
         }
 
-        let mut index = ArgRegIndex::default();
+        let mut rindex = ArgRegIndex::default();
 
         for param_id in param_locals {
             let &LocalVar { ty, offset, .. } = &locals[param_id];
@@ -373,26 +377,27 @@ impl<'a, W: Write> Codegen<'a, W> {
                 // bytes are passed on stack so we don't care about them here
                 self.store_arg(
                     self.types.is_fp_chunk(ty, 0, 8, 0),
-                    &mut index,
+                    &mut rindex,
                     offset,
                     size.min(8),
                 )?;
                 if size > 8 {
                     self.store_arg(
                         self.types.is_fp_chunk(ty, 8, 16, 0),
-                        &mut index,
+                        &mut rindex,
                         offset + 8,
                         size - 8,
                     )?;
                 }
             } else {
-                self.store_arg(ty.is_flonum(), &mut index, offset, size)?;
+                self.store_arg(ty.is_flonum(), &mut rindex, offset, size)?;
             }
         }
 
         self.function = Some(FunctionState {
             name,
             locals,
+            ret_buf_local,
             depth: 0,
         });
 
@@ -417,6 +422,31 @@ impl<'a, W: Write> Codegen<'a, W> {
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.gen_expr(expr)?;
+                    let ty = expr.expect_ty();
+                    if self.types.as_struct_or_union(ty).is_some() {
+                        if self.types.size(ty) <= 16 {
+                            // Copy to registers
+                            let mut rindex = ArgRegIndex::default();
+                            writeln!(self.out, "  mov %rax, %rdi")?;
+                            self.load_ret_chunk(ty, 0, &mut rindex)?;
+                            if self.types.size(ty) > 8 {
+                                self.load_ret_chunk(ty, 8, &mut rindex)?;
+                            }
+                        } else {
+                            // Copy to the return buffer
+                            let local_id = self
+                                .function()
+                                .ret_buf_local
+                                .expect("large aggregate return without hidden return buffer");
+                            let offset = self.function().locals[local_id].offset;
+                            writeln!(self.out, "  mov {offset}(%rbp), %rdi")?;
+                            for i in 0..self.types.size(ty) {
+                                writeln!(self.out, "  mov {i}(%rax), %dl")?;
+                                writeln!(self.out, "  mov %dl, {i}(%rdi)")?;
+                            }
+                            writeln!(self.out, "  mov %rdi, %rax")?;
+                        }
+                    }
                 }
                 writeln!(self.out, "  jmp .L.return.{}", self.function().name.clone())?;
             },
@@ -587,6 +617,10 @@ impl<'a, W: Write> Codegen<'a, W> {
                 writeln!(self.out, "  add ${}, %rax", member.offset)?;
                 Ok(())
             },
+            NodeKind::FuncCall {
+                ret_buf_local: Some(_),
+                ..
+            } => self.gen_expr(node),
             _ => Err(self.source_map.error(node.span, "not an lvalue")),
         }
     }
@@ -712,10 +746,11 @@ impl<'a, W: Write> Codegen<'a, W> {
     /// Generate assembly for the given expression node.
     fn gen_expr(&mut self, node: &Node) -> Result<()> {
         self.gen_loc(node.span)?;
+        let ty = node.expect_ty();
 
         match &node.kind {
             NodeKind::Num(value) => writeln!(self.out, "  mov ${value}, %rax")?,
-            NodeKind::Flonum(value) => match node.expect_ty() {
+            NodeKind::Flonum(value) => match ty {
                 Type::FLOAT => {
                     writeln!(self.out, "  mov ${:#x}, %eax", (*value as f32).to_bits())?;
                     writeln!(self.out, "  movd %eax, %xmm0")?;
@@ -726,8 +761,16 @@ impl<'a, W: Write> Codegen<'a, W> {
                 },
                 _ => unreachable!(),
             },
-            NodeKind::FuncCall { callee, args } => {
+            NodeKind::FuncCall {
+                callee,
+                args,
+                ret_buf_local,
+            } => {
                 let mut rindex = ArgRegIndex::default();
+                if ret_buf_local.is_some() {
+                    rindex.gp += 1;
+                }
+
                 let args_regs = args
                     .iter()
                     .map(|arg| self.arg_regs(arg.expect_ty(), &mut rindex))
@@ -783,12 +826,22 @@ impl<'a, W: Write> Codegen<'a, W> {
                 // will be popped before call later
                 push_args(true)?;
                 push_args(false)?;
+                if let Some(local_id) = ret_buf_local {
+                    let offset = self.function().locals[*local_id].offset;
+                    writeln!(self.out, "  lea {offset}(%rbp), %rax")?;
+                    self.push()?;
+                }
 
                 self.gen_expr(callee)?;
 
                 // Pop register arguments into appropriate registers, also used
                 // to count how many fp registers are used
                 let mut rindex = ArgRegIndex::default();
+                if ret_buf_local.is_some() {
+                    self.pop(GP_ARG_REGS_64[rindex.gp])?;
+                    rindex.gp += 1;
+                }
+
                 for regs in args_regs.iter().flatten() {
                     for is_fp in regs {
                         if *is_fp {
@@ -814,11 +867,24 @@ impl<'a, W: Write> Codegen<'a, W> {
                     self.function_mut().depth -= n_stack_slots;
                 }
 
+                if let Some(local_id) = ret_buf_local {
+                    let offset = self.function().locals[*local_id].offset;
+                    if self.types.size(ty) <= 16 {
+                        let mut rindex = ArgRegIndex::default();
+                        self.store_ret_chunk(ty, 0, offset, &mut rindex)?;
+                        if self.types.size(ty) > 8 {
+                            self.store_ret_chunk(ty, 8, offset + 8, &mut rindex)?;
+                        }
+                    }
+                    writeln!(self.out, "  lea {offset}(%rbp), %rax")?;
+                    return Ok(());
+                }
+
                 // Per x86-64 psABI, for "_Bool", "char", and "short" return
                 // types, only the low 8 or 16 bits of %rax are guaranteed to
                 // hold the correct value across a call; hence we need to
                 // normalize the register to the declared return type here
-                match node.expect_ty() {
+                match ty {
                     Type::BOOL => writeln!(self.out, "  movzx %al, %eax")?,
                     Type::CHAR => writeln!(self.out, "  movsbl %al, %eax")?,
                     Type::UCHAR => writeln!(self.out, "  movzbl %al, %eax")?,
@@ -830,13 +896,12 @@ impl<'a, W: Write> Codegen<'a, W> {
             NodeKind::Addr(expr) => self.gen_addr(expr)?,
             NodeKind::Deref(expr) => {
                 self.gen_expr(expr)?;
-                self.load(node.expect_ty())?;
+                self.load(ty)?;
             },
             NodeKind::Neg(expr) => {
                 self.gen_expr(expr)?;
-                let ty = node.expect_ty();
                 if ty.is_flonum() {
-                    let sz = fp_mnemonic_sz(node.expect_ty());
+                    let sz = fp_mnemonic_sz(ty);
                     writeln!(self.out, "  mov $1, %rax")?;
                     writeln!(self.out, "  shl ${}, %rax", self.types.size(ty) * 8 - 1)?;
                     writeln!(self.out, "  movq %rax, %xmm1")?;
@@ -858,7 +923,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             },
             NodeKind::Entity(_) | NodeKind::Member { .. } => {
                 self.gen_addr(node)?;
-                self.load(node.expect_ty())?;
+                self.load(ty)?;
             },
             NodeKind::Assign { lhs, rhs } => {
                 self.gen_addr(lhs)?;
@@ -964,7 +1029,6 @@ impl<'a, W: Write> Codegen<'a, W> {
                         BinaryOp::Sub => writeln!(self.out, "  sub {rdi}, {acc}")?,
                         BinaryOp::Mul => writeln!(self.out, "  imul {rdi}, {acc}")?,
                         BinaryOp::Div | BinaryOp::Mod => {
-                            let ty = node.expect_ty();
                             if ty.is_unsigned() || self.types.is_ptr(ty) {
                                 writeln!(self.out, "  mov $0, {rdx}")?;
                                 writeln!(self.out, "  div {rdi}")?;
@@ -1045,7 +1109,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             },
             NodeKind::Cast(expr) => {
                 self.gen_expr(expr)?;
-                self.gen_cast(expr.expect_ty(), node.expect_ty())?;
+                self.gen_cast(expr.expect_ty(), ty)?;
             },
             NodeKind::Dummy => unreachable!(),
         }
@@ -1091,6 +1155,72 @@ impl<'a, W: Write> Codegen<'a, W> {
             writeln!(self.out, "  mov {i}(%rax), %r10b")?;
             writeln!(self.out, "  mov %r10b, {i}(%rsp)")?;
         }
+        Ok(())
+    }
+
+    /// Store a small-aggregate return chunk taken from return registers.
+    ///
+    /// `lo` is the byte offset of the 8-byte ABI chunk within `ty`.
+    /// `dst_offset` is the destination stack offset from `%rbp`.
+    fn store_ret_chunk(
+        &mut self,
+        ty: Type,
+        lo: u64,
+        dst_offset: i64,
+        rindex: &mut ArgRegIndex,
+    ) -> Result<()> {
+        let size = (self.types.size(ty) - lo).min(8);
+
+        if self.types.is_fp_chunk(ty, lo, lo + 8, 0) {
+            let sz = fp_mnemonic_sz_from_size(size);
+            writeln!(self.out, "  movs{sz} %xmm{}, {dst_offset}(%rbp)", rindex.fp)?;
+            rindex.fp += 1;
+            return Ok(());
+        }
+
+        // GP return chunks are packed little-endian in %rax then %rdx, so we
+        // peel one byte at a time into the destination object
+        for i in 0..size {
+            writeln!(
+                self.out,
+                "  mov {}, {}(%rbp)",
+                GP_RET_REGS_8[rindex.gp],
+                dst_offset + i as i64,
+            )?;
+            writeln!(self.out, "  shr $8, {}", GP_RET_REGS_64[rindex.gp])?;
+        }
+
+        rindex.gp += 1;
+        Ok(())
+    }
+
+    /// Load a small-aggregate return chunk into return registers.
+    ///
+    /// `lo` is the byte offset of the 8-byte ABI chunk within `ty`.
+    fn load_ret_chunk(&mut self, ty: Type, lo: u64, rindex: &mut ArgRegIndex) -> Result<()> {
+        let size = (self.types.size(ty) - lo).min(8);
+
+        if self.types.is_fp_chunk(ty, lo, lo + 8, 0) {
+            let sz = fp_mnemonic_sz_from_size(size);
+            writeln!(self.out, "  movs{sz} {lo}(%rdi), %xmm{}", rindex.fp)?;
+            rindex.fp += 1;
+            return Ok(());
+        }
+
+        // Build the little-endian integer register value by shifting and or-ing
+        // one byte at a time from the source object
+        writeln!(self.out, "  mov $0, {}", GP_RET_REGS_64[rindex.gp])?;
+        for i in (0..size).rev() {
+            writeln!(self.out, "  shl $8, {}", GP_RET_REGS_64[rindex.gp])?;
+            writeln!(
+                self.out,
+                "  mov {}(%rdi), {}",
+                lo + i,
+                GP_RET_REGS_8[rindex.gp],
+            )?;
+        }
+
+        rindex.gp += 1;
         Ok(())
     }
 
@@ -1178,11 +1308,7 @@ impl<'a, W: Write> Codegen<'a, W> {
         size: u64,
     ) -> Result<()> {
         if is_fp {
-            let sz = match size {
-                4 => "s",
-                8 => "d",
-                _ => unreachable!("invalid floating-point argument chunk size: {size}"),
-            };
+            let sz = fp_mnemonic_sz_from_size(size);
             writeln!(self.out, "  movs{sz} %xmm{}, {offset}(%rbp)", rindex.fp)?;
             rindex.fp += 1;
             return Ok(());
@@ -1357,5 +1483,13 @@ fn fp_mnemonic_sz(ty: Type) -> &'static str {
         Type::FLOAT => "s",
         Type::DOUBLE => "d",
         _ => unreachable!("not a floating-point type"),
+    }
+}
+
+fn fp_mnemonic_sz_from_size(size: u64) -> &'static str {
+    match size {
+        4 => "s",
+        8 => "d",
+        _ => unreachable!("invalid floating-point argument chunk size: {size}"),
     }
 }

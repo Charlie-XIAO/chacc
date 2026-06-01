@@ -28,6 +28,8 @@ pub struct Function {
     pub body: Option<Stmt>,
     /// Parameter local IDs in declaration order.
     pub param_locals: Vec<usize>,
+    /// The hidden local buffer for large aggregate return values.
+    pub ret_buf_local: Option<usize>,
     /// The hidden `__va_area__` local for variadic functions.
     pub va_area_local: Option<usize>,
     /// The local variable table used by the function.
@@ -162,7 +164,15 @@ pub enum NodeKind {
     /// A floating-point numeric literal.
     Flonum(f64),
     /// A function call.
-    FuncCall { callee: Box<Node>, args: Vec<Node> },
+    FuncCall {
+        callee: Box<Node>,
+        args: Vec<Node>,
+        /// The hidden local buffer for large aggregate return values, if any.
+        ///
+        /// This is `None` if the return value can be returned directly in
+        /// registers.
+        ret_buf_local: Option<usize>,
+    },
     /// An address-of expression "&".
     Addr(Box<Node>),
     /// A pointer dereference "*".
@@ -244,6 +254,7 @@ impl Node {
         callee: impl Into<Box<Node>>,
         args: Vec<Node>,
         return_ty: Type,
+        ret_buf_local: Option<usize>,
         span: SourceSpan,
     ) -> Self {
         let callee = callee.into();
@@ -256,7 +267,11 @@ impl Node {
         Self {
             span,
             ty: Some(return_ty),
-            kind: NodeKind::FuncCall { callee, args },
+            kind: NodeKind::FuncCall {
+                callee,
+                args,
+                ret_buf_local,
+            },
         }
     }
 

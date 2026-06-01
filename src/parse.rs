@@ -1297,6 +1297,7 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("expected a function"));
         };
         let is_variadic = func_ty.is_variadic;
+        let return_ty = func_ty.return_ty;
 
         let func_id = self.declare_function(name, declarator.ty, noreturn, declarator.span)?;
         if self.current().is_punct(";") {
@@ -1313,7 +1314,22 @@ impl<'a> Parser<'a> {
         self.locals.clear();
         self.enter_scope();
 
-        let param_locals = self.create_param_locals(declarator.params)?;
+        let mut param_locals = self.create_param_locals(declarator.params)?;
+
+        let ret_buf_local = if self.types.as_struct_or_union(return_ty).is_some()
+            && self.types.size(return_ty) > 16
+        {
+            // For large struct/union return values that do not fit into
+            // registers, prepend a hidden first parameter so that the caller
+            // can allocate space for the return value and we can write the
+            // return value into that space
+            let ty = self.types.ptr(return_ty);
+            let local_id = self.create_local("", ty, None);
+            param_locals.insert(0, local_id);
+            Some(local_id)
+        } else {
+            None
+        };
 
         let va_area_local = if is_variadic {
             let ty = self.types.array(Type::CHAR, Some(VA_AREA_SIZE));
@@ -1348,6 +1364,7 @@ impl<'a> Parser<'a> {
         let function = &mut self.functions[func_id];
         function.body = Some(body);
         function.param_locals = param_locals;
+        function.ret_buf_local = ret_buf_local;
         function.va_area_local = va_area_local;
         function.locals = std::mem::take(&mut self.locals);
         function.is_static = is_static;
@@ -1460,7 +1477,7 @@ impl<'a> Parser<'a> {
             if return_ty == Type::Void {
                 self.warn(expr.span, "return with a value in a void function");
                 self.apply_cast(&mut expr, Type::Void)?;
-            } else {
+            } else if self.types.as_struct_or_union(return_ty).is_none() {
                 self.apply_cast(&mut expr, return_ty)?;
             }
             return Ok(Stmt::return_(Some(expr), span));
@@ -2848,7 +2865,22 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_punct(")")?;
-        Ok(Node::func_call(callee, args, func.return_ty, span))
+
+        // Always allocate a return buffer for struct/union return types, since
+        // we need an addressable object for e.g. "f().x" to work
+        let ret_buf_local = self
+            .types
+            .as_struct_or_union(func.return_ty)
+            .is_some()
+            .then(|| self.create_local("", func.return_ty, None));
+
+        Ok(Node::func_call(
+            callee,
+            args,
+            func.return_ty,
+            ret_buf_local,
+            span,
+        ))
     }
 
     /// ```bnf
@@ -3141,6 +3173,7 @@ impl<'a> Parser<'a> {
             ty,
             body: None,
             param_locals: Default::default(),
+            ret_buf_local: None,
             va_area_local: None,
             locals: Default::default(),
             is_static: false,
@@ -3461,9 +3494,9 @@ impl<'a> Parser<'a> {
     ) -> Result<()> {
         let mut write = |val: ConstValue, size| match size {
             1 => bytes[offset] = val.bits() as _,
-            2 => bytes[offset..offset + 2].copy_from_slice(&(val.bits() as u16).to_ne_bytes()),
-            4 => bytes[offset..offset + 4].copy_from_slice(&(val.bits() as u32).to_ne_bytes()),
-            8 => bytes[offset..offset + 8].copy_from_slice(&val.bits().to_ne_bytes()),
+            2 => bytes[offset..offset + 2].copy_from_slice(&(val.bits() as u16).to_le_bytes()),
+            4 => bytes[offset..offset + 4].copy_from_slice(&(val.bits() as u32).to_le_bytes()),
+            8 => bytes[offset..offset + 8].copy_from_slice(&val.bits().to_le_bytes()),
             _ => unreachable!(),
         };
 
@@ -3616,7 +3649,7 @@ impl<'a> Parser<'a> {
         }
 
         node.ty = Some(match &mut node.kind {
-            NodeKind::FuncCall { callee, args } => {
+            NodeKind::FuncCall { callee, args, .. } => {
                 self.infer_type(callee)?;
                 for arg in args {
                     self.infer_type(arg)?;
@@ -3747,7 +3780,10 @@ impl<'a> Parser<'a> {
                     self.apply_usual_arith_conv(then_expr, else_expr)?
                 }
             },
-            NodeKind::Member { member, .. } => member.ty,
+            NodeKind::Member { parent, member } => {
+                self.infer_type(parent)?;
+                member.ty
+            },
             NodeKind::StmtExpr(body) => {
                 for stmt in body.iter_mut() {
                     self.infer_type_stmt(stmt)?;
@@ -3862,7 +3898,7 @@ impl<'a> Parser<'a> {
                 self.collect_labels(lhs, labels)?;
                 self.collect_labels(rhs, labels)?;
             },
-            NodeKind::FuncCall { callee, args } => {
+            NodeKind::FuncCall { callee, args, .. } => {
                 self.collect_labels(callee, labels)?;
                 for arg in args {
                     self.collect_labels(arg, labels)?;
@@ -3977,7 +4013,7 @@ impl<'a> Parser<'a> {
                 self.resolve_gotos(lhs, labels)?;
                 self.resolve_gotos(rhs, labels)?;
             },
-            NodeKind::FuncCall { callee, args } => {
+            NodeKind::FuncCall { callee, args, .. } => {
                 self.resolve_gotos(callee, labels)?;
                 for arg in args {
                     self.resolve_gotos(arg, labels)?;
