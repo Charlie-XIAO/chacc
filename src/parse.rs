@@ -3254,16 +3254,21 @@ impl<'a> Parser<'a> {
         }
 
         // ptr + num
-        let base_ty = self.types.base(lhs.expect_ty()).unwrap();
-        let base_size = self.types.size(base_ty);
-        let scaled_rhs = Node::binary(
-            BinaryOp::Mul,
-            rhs,
-            Node::num(base_size, Type::LONG, span),
-            span,
-        );
-        let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, span);
-        Ok(node)
+        if let Some(base_ty) = self.types.base(lhs.expect_ty())
+            && rhs.expect_ty().is_integer()
+        {
+            let base_size = self.types.size(base_ty);
+            let scaled_rhs = Node::binary(
+                BinaryOp::Mul,
+                rhs,
+                Node::num(base_size, Type::LONG, span),
+                span,
+            );
+            let node = Node::binary(BinaryOp::Add, lhs, scaled_rhs, span);
+            return Ok(node);
+        }
+
+        Err(self.error(span, "invalid operands"))
     }
 
     /// Build a subtraction node with pointer scaling.
