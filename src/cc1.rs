@@ -29,18 +29,32 @@ impl<'a, W: Write> CC1<'a, W> {
     pub fn run(&mut self, input: &Path) -> Result<()> {
         let mut source_map = SourceMap::default();
         let source = source_map.push(input)?;
-        let tokens = Tokenizer::new(source).tokenize(true)?;
+        let tokens = Tokenizer::new(source).tokenize(true, true)?;
 
         let includes = self.include_paths()?;
 
         if self.cli.preprocess_only {
             let mut sink = PreprocessedWriter::new(self.out);
-            Preprocessor::new(&mut source_map, &includes, tokens, &mut sink).preprocess(true)?;
+            Preprocessor::new(
+                &mut source_map,
+                &includes,
+                &self.cli.defines,
+                tokens,
+                &mut sink,
+            )?
+            .preprocess(true)?;
             return Ok(());
         }
 
         let mut sink = PreprocessedTokens::default();
-        Preprocessor::new(&mut source_map, &includes, tokens, &mut sink).preprocess(true)?;
+        Preprocessor::new(
+            &mut source_map,
+            &includes,
+            &self.cli.defines,
+            tokens,
+            &mut sink,
+        )?
+        .preprocess(true)?;
 
         let tokens = sink.lower(&source_map)?;
         let program = Parser::new(&source_map, tokens, false).parse_program()?;

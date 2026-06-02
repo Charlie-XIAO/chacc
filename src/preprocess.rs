@@ -170,15 +170,9 @@ impl Macro {
     /// Create an object-like macro from the given spelling.
     fn obj(spelling: &str, source_map: &mut SourceMap) -> Self {
         let source = source_map.push_virtual(spelling.into(), Some("<built-in>".into()));
-        let mut body = Tokenizer::new(source)
-            .tokenize(false)
+        let body = Tokenizer::new(source)
+            .tokenize(false, false)
             .expect("built-in macro has invalid spelling");
-
-        debug_assert!(
-            body.last().is_some_and(|tok| tok.is_eof()),
-            "tokenizer did not produce eof",
-        );
-        body.pop();
 
         Self {
             body,
@@ -295,7 +289,7 @@ impl<'a> MacroExpander<'a> {
 
         let source = self.source_map.push_virtual(pasted.clone(), None);
         let source_name = source.name.clone();
-        let tokens = Tokenizer::new(source).tokenize(false).map_err(|_| {
+        let tokens = Tokenizer::new(source).tokenize(false, false).map_err(|_| {
             self.source_map.error(
                 span,
                 format!(
@@ -305,16 +299,15 @@ impl<'a> MacroExpander<'a> {
             )
         })?;
 
-        let [token, eof] = tokens.as_slice() else {
+        if tokens.len() != 1 {
             return Err(self.source_map.error(
                 span,
-                format!("pasting formed an invalid preprocessing token: '{pasted}'"),
+                format!("pasting formed multiple preprocessing tokens: '{pasted}'"),
             ));
-        };
-        debug_assert!(eof.is_eof(), "tokenizer did not produce eof");
+        }
 
         Ok(PreToken::synthetic(
-            token.kind.clone(),
+            tokens[0].kind.clone(),
             lhs.span,
             lhs.at_bol,
             lhs.follows_space,
@@ -610,9 +603,10 @@ where
     pub fn new(
         source_map: &'a mut SourceMap,
         includes: &'a [PathBuf],
+        defines: &'a [SmolStr],
         tokens: Vec<PreToken>,
         sink: &'a mut S,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut macros = FxHashMap::default();
 
         for (name, replacement) in [
@@ -672,14 +666,26 @@ where
             macros.insert(name.into(), Macro::handler(handler));
         }
 
-        Self {
+        let mut input = TokenStream::new(tokens);
+
+        for define in defines.iter().rev() {
+            let (macro_, replacement) = define.split_once('=').unwrap_or((define, "1"));
+            let source = source_map.push_virtual(
+                format_smolstr!("#define {macro_} {replacement}"),
+                Some("<command-line>".into()),
+            );
+            let tokens = Tokenizer::new(source).tokenize(true, false)?;
+            input.prepend(tokens);
+        }
+
+        Ok(Self {
             source_map,
             includes,
-            input: TokenStream::new(tokens),
+            input,
             sink,
             conds: Vec::new(),
             macros,
-        }
+        })
     }
 
     /// Dispatch of [`SourceMap::error`].
@@ -982,7 +988,7 @@ where
         };
 
         let source = self.source_map.push(&path)?;
-        let tokens = Tokenizer::new(source).tokenize(true)?;
+        let tokens = Tokenizer::new(source).tokenize(true, true)?;
 
         let old_input = std::mem::replace(&mut self.input, TokenStream::new(tokens));
         let old_conds = std::mem::take(&mut self.conds);

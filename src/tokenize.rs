@@ -305,8 +305,9 @@ impl<'a> Tokenizer<'a> {
     /// Tokenize the entire source into a flat token list.
     ///
     /// If `allow_comment` is false, comments will be treated as invalid tokens
-    /// instead of being skipped.
-    pub fn tokenize(mut self, allow_comment: bool) -> Result<Vec<PreToken>> {
+    /// instead of being skipped. If `emit_eof` is false, no EOF sentinel will
+    /// be emitted at the end of the token stream.
+    pub fn tokenize(mut self, allow_comment: bool, emit_eof: bool) -> Result<Vec<PreToken>> {
         let content = &self.source.content;
         let bytes = content.as_bytes();
 
@@ -366,7 +367,9 @@ impl<'a> Tokenizer<'a> {
             return Err(self.source.error(self.pos, 1, "invalid token"));
         }
 
-        self.push(PreTokenKind::Eof, self.pos, 0);
+        if emit_eof {
+            self.push(PreTokenKind::Eof, self.pos, 0);
+        }
         Ok(self.tokens)
     }
 

@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use lexopt::Arg;
+use smol_str::SmolStr;
 
 use crate::error::Result;
 
@@ -17,6 +18,7 @@ fn help() {
     println!("Options:");
     println!("  -o <file>           Output file, or \"-\" for stdout only with -E or -S.");
     println!("  -I <dir>            Add a directory to the include search path.");
+    println!("  -D <macro>=<value>  Define <macro> to <value>, or 1 if <value> is omitted.");
     println!("  -E                  Only run the preprocessor.");
     println!("  -S                  Only run preprocess and compile stages.");
     println!("  -c                  Only run preprocess, compile, and assemble stages.");
@@ -55,6 +57,7 @@ pub struct Cli {
     pub inputs: Vec<CliInput>,
     pub output: Option<PathBuf>,
     pub includes: Vec<PathBuf>,
+    pub defines: Vec<SmolStr>,
     pub preprocess_only: bool,
     pub compile_only: bool,
     pub assemble_only: bool,
@@ -128,6 +131,16 @@ impl Cli {
                     let path = std::path::absolute(parser.value()?)
                         .map_err(|e| format!("failed to resolve '-I': {e}"))?;
                     cli.includes.push(path);
+                },
+                Arg::Short('D') => {
+                    let def = parser.value()?;
+                    let def = def
+                        .to_str()
+                        .ok_or_else(|| format!("invalid UTF-8 in macro definition: {def:?}"))?;
+                    if def.contains(['\r', '\n']) {
+                        return Err("macro definition cannot contain newline".into());
+                    }
+                    cli.defines.push(def.into());
                 },
                 Arg::Short('E') => {
                     cli.preprocess_only = true;
