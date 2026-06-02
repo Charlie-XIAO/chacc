@@ -342,6 +342,8 @@ impl<'a, W: Write> Codegen<'a, W> {
             // __va_elem
             writeln!(self.out, "  movl ${}, {offset}(%rbp)", gp * 8)?;
             writeln!(self.out, "  movl ${}, {}(%rbp)", fp * 8 + 48, offset + 4)?;
+            writeln!(self.out, "  movq %rbp, {}(%rbp)", offset + 8)?;
+            writeln!(self.out, "  addq $16, {}(%rbp)", offset + 8)?;
             writeln!(self.out, "  movq %rbp, {}(%rbp)", offset + 16)?;
             writeln!(self.out, "  addq ${}, {}(%rbp)", offset + 24, offset + 16)?;
 
