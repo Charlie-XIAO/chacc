@@ -806,7 +806,14 @@ fn test_function() {
     f.line("int add_all(int n, ...);");
     f.line("int sprintf(char *buf, char *fmt, ...);");
     f.line("int vsprintf(char *buf, char *fmt, va_list ap);");
-    f.line("void fmt(char *buf, char *fmt, ...) { va_list ap; va_start(ap, 0); vsprintf(buf, fmt, ap); }");
+    f.line("void fmt(char *buf, char *fmt, ...) {");
+    f.line("  va_list ap;");
+    f.line("  va_start(ap, fmt);");
+    f.line("  va_list ap2;");
+    f.line("  va_copy(ap2, ap);");
+    f.line("  vsprintf(buf, fmt, ap2);");
+    f.line("  va_end(buf);");
+    f.line("}");
 
     f.line("double add_double(double x, double y);");
     f.line("float add_float(float x, float y);");
