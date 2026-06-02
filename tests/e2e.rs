@@ -1570,6 +1570,10 @@ fn test_macro() {
     f.line("#define paste8 1##2##3");
     f.assert(123, "paste8");
 
+    f.line("#define CONCAT(x,y) x##y");
+    f.assert(5, "({ int f0zz=5; CONCAT(f,0zz); })");
+    f.assert(5, "({ CONCAT(4,.57) + 0.5; })");
+
     f.line("#define M15");
     f.line("#if defined(M15)");
     f.line("m = 3;");
