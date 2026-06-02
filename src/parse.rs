@@ -2534,7 +2534,16 @@ impl<'a> Parser<'a> {
 
         if !self.preprocess && self.current().is_punct("*") {
             self.advance();
-            return Ok(Node::deref(self.parse_cast()?, span));
+
+            // Per C spec, dereferencing a function should not do anything, no
+            // matter how many times we dereference it
+            // https://www.sigbus.info/n1570#6.5.3.2p4
+            let mut node = self.parse_cast()?;
+            self.infer_type(&mut node)?;
+            if self.types.is_func(node.expect_ty()) {
+                return Ok(node);
+            }
+            return Ok(Node::deref(node, span));
         }
 
         if self.current().is_punct("!") {

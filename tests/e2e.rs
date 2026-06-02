@@ -932,6 +932,7 @@ fn test_function() {
 
     f.assert(5, "(add2)(2,3)");
     f.assert(5, "(&add2)(2,3)");
+    f.assert(5, "(***add2)(2,3)");
     f.assert(7, "({ int (*fn)(int,int) = add2; fn(2,5); })");
     f.assert(6, "fnptr(add_all)(3, 1, 2, 3)");
 
