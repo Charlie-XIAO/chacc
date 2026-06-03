@@ -603,7 +603,7 @@ where
     pub fn new(
         source_map: &'a mut SourceMap,
         includes: &'a [PathBuf],
-        defines: &'a [SmolStr],
+        macro_ops: &'a [(SmolStr, bool)],
         tokens: Vec<PreToken>,
         sink: &'a mut S,
     ) -> Result<Self> {
@@ -668,12 +668,14 @@ where
 
         let mut input = TokenStream::new(tokens);
 
-        for define in defines.iter().rev() {
-            let (macro_, replacement) = define.split_once('=').unwrap_or((define, "1"));
-            let source = source_map.push_virtual(
-                format_smolstr!("#define {macro_} {replacement}"),
-                Some("<command-line>".into()),
-            );
+        for (content, is_def) in macro_ops.iter().rev() {
+            let content = if *is_def {
+                let (macro_, replacement) = content.split_once('=').unwrap_or((content, "1"));
+                format_smolstr!("#define {macro_} {replacement}")
+            } else {
+                format_smolstr!("#undef {content}")
+            };
+            let source = source_map.push_virtual(content, Some("<command-line>".into()));
             let tokens = Tokenizer::new(source).tokenize(true, false)?;
             input.prepend(tokens);
         }

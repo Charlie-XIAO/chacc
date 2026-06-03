@@ -19,6 +19,7 @@ fn help() {
     println!("  -o <file>           Output file, or \"-\" for stdout only with -E or -S.");
     println!("  -I <dir>            Add a directory to the include search path.");
     println!("  -D <macro>=<value>  Define <macro> to <value>, or 1 if <value> is omitted.");
+    println!("  -U <macro>          Undefine <macro>.");
     println!("  -E                  Only run the preprocessor.");
     println!("  -S                  Only run preprocess and compile stages.");
     println!("  -c                  Only run preprocess, compile, and assemble stages.");
@@ -57,7 +58,10 @@ pub struct Cli {
     pub inputs: Vec<CliInput>,
     pub output: Option<PathBuf>,
     pub includes: Vec<PathBuf>,
-    pub defines: Vec<SmolStr>,
+    /// Macro definitions and undefinitions in order.
+    ///
+    /// The boolean indicates whether it is a definition or not.
+    pub macro_ops: Vec<(SmolStr, bool)>,
     pub preprocess_only: bool,
     pub compile_only: bool,
     pub assemble_only: bool,
@@ -132,15 +136,16 @@ impl Cli {
                         .map_err(|e| format!("failed to resolve '-I': {e}"))?;
                     cli.includes.push(path);
                 },
-                Arg::Short('D') => {
-                    let def = parser.value()?;
-                    let def = def
-                        .to_str()
-                        .ok_or_else(|| format!("invalid UTF-8 in macro definition: {def:?}"))?;
-                    if def.contains(['\r', '\n']) {
-                        return Err("macro definition cannot contain newline".into());
+                Arg::Short('D') | Arg::Short('U') => {
+                    let is_def = matches!(arg, Arg::Short('D'));
+                    let content = parser.value()?;
+                    let Some(content) = content.to_str() else {
+                        return Err(format!("invalid UTF-8 in '-D' or '-U': {content:?}").into());
+                    };
+                    if content.contains(['\r', '\n']) {
+                        return Err("'-D' or '-U' cannot contain newlines".into());
                     }
-                    cli.defines.push(def.into());
+                    cli.macro_ops.push((content.into(), is_def));
                 },
                 Arg::Short('E') => {
                     cli.preprocess_only = true;

@@ -2182,7 +2182,7 @@ fn test_include_flag() {
 }
 
 #[test]
-fn test_define_flag() {
+fn test_define_undefine_flag() {
     let tmp = tempdir().expect("failed to create temporary directory");
 
     let input = tmp.path().join("main.c");
@@ -2208,6 +2208,17 @@ fn test_define_flag() {
         .run_checked("compiling with -D<macro>=<val> flag", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "baz");
+
+    let output = Command::chacc(tmp.path())
+        .arg("-Dfoo=bar")
+        .arg("-Ufoo")
+        .arg("-E")
+        .arg("-o")
+        .arg("-")
+        .arg(&input)
+        .run_checked("compiling with -U flag", None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "foo");
 
     std::fs::write(&input, "foo(2)").expect("failed to write input");
     let output = Command::chacc(tmp.path())

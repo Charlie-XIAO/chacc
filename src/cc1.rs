@@ -38,7 +38,7 @@ impl<'a, W: Write> CC1<'a, W> {
             Preprocessor::new(
                 &mut source_map,
                 &includes,
-                &self.cli.defines,
+                &self.cli.macro_ops,
                 tokens,
                 &mut sink,
             )?
@@ -50,7 +50,7 @@ impl<'a, W: Write> CC1<'a, W> {
         Preprocessor::new(
             &mut source_map,
             &includes,
-            &self.cli.defines,
+            &self.cli.macro_ops,
             tokens,
             &mut sink,
         )?

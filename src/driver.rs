@@ -162,9 +162,9 @@ impl Driver {
                         command.arg("-I");
                         command.arg(include);
                     }
-                    for define in &self.cli.defines {
-                        command.arg("-D");
-                        command.arg(define);
+                    for (content, is_def) in &self.cli.macro_ops {
+                        command.arg(if *is_def { "-D" } else { "-U" });
+                        command.arg(content);
                     }
                     command.arg("--");
                     command.arg(&compile_job.input);
