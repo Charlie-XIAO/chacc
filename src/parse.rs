@@ -2545,7 +2545,18 @@ impl<'a> Parser<'a> {
 
         if !self.preprocess && self.current().is_punct("&") {
             self.advance();
-            return Ok(Node::addr(self.parse_cast()?, span));
+            let mut node = self.parse_cast()?;
+            self.infer_type(&mut node)?;
+            if let NodeKind::Member {
+                member: Member {
+                    bit_field: Some(_), ..
+                },
+                ..
+            } = node.kind
+            {
+                return Err(self.error(span, "cannot take address of a bit-field"));
+            }
+            return Ok(Node::addr(node, span));
         }
 
         if !self.preprocess && self.current().is_punct("*") {
