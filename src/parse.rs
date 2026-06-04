@@ -3457,12 +3457,10 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("request for member in an incomplete type"));
         }
 
-        let sou = match self.types.as_struct_or_union(node.expect_ty()) {
+        let sou = match self.types.as_struct_or_union(ty) {
             Some(sou) => sou,
             None => {
-                return Err(self.error_current(
-                    "request for member in something that is not a struct or union",
-                ));
+                return Err(self.error_current("member reference type is not a struct or union"));
             },
         };
 
