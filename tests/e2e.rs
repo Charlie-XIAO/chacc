@@ -344,8 +344,11 @@ fn test_bitfield() {
     f.assert(0, "g2.b");
     f.assert(0, "g2.c");
 
-    f.assert(4, "sizeof(struct {int x:1; })");
-    f.assert(8, "sizeof(struct {long x:1; })");
+    f.assert(4, "sizeof(struct { int x:1; })");
+    f.assert(8, "sizeof(struct { long x:1; })");
+    f.assert(4, "sizeof(struct { int a:3; int c:1; int c:5; })");
+    f.assert(8, "sizeof(struct { int a:3; int:0; int c:5; })");
+    f.assert(4, "sizeof(struct { int a:3; int:0; })");
 
     f.line("typedef struct { short a; char b; int c:2; int d:3; int e:3; } T1;");
     f.assert(4, "sizeof(T1)");

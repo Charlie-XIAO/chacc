@@ -1114,17 +1114,18 @@ impl<'a> Parser<'a> {
                     let width = u64::try_from(self.parse_constexpr()?).map_err(|_| {
                         self.error_current("bit-field width is negative or out of range")
                     })?;
+                    if width == 0 && declarator.name.is_some() {
+                        return Err(self.error(declarator.span, "named bit-field has zero width"));
+                    }
                     Some((width, 0)) // union requires 0; struct fills in later
                 } else {
                     None
                 };
 
-                let name = if let Some(name) = declarator.name {
-                    name
-                } else if bit_field.is_some() {
-                    "".into()
-                } else {
-                    return Err(self.error(declarator.span, "missing member name"));
+                let name = match (declarator.name, bit_field) {
+                    (Some(name), _) => name,
+                    (None, Some(_)) => "".into(),
+                    (None, _) => return Err(self.error(declarator.span, "missing member name")),
                 };
 
                 members.push(Member {

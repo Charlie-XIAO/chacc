@@ -385,12 +385,19 @@ impl TypeStore {
                 let member_bits = member_size * 8;
 
                 if let Some((bit_width, bit_offset)) = &mut member.bit_field {
-                    if bits / member_bits != (bits + *bit_width - 1) / member_bits {
+                    if *bit_width == 0 {
+                        // Zero-width bit-field affects only the alignment
                         bits = align_up_to(bits, member_bits);
+                    } else {
+                        if bits / member_bits != (bits + *bit_width - 1) / member_bits {
+                            // Move to the next unit if the bit-field cannot fit
+                            // into the current unit
+                            bits = align_up_to(bits, member_bits);
+                        }
+                        member.offset = align_down_to(bits / 8, member_size) as usize;
+                        *bit_offset = bits % member_bits;
+                        bits += *bit_width;
                     }
-                    member.offset = align_down_to(bits / 8, member_size) as usize;
-                    *bit_offset = bits % member_bits;
-                    bits += *bit_width;
                 } else {
                     bits = align_up_to(bits, member_align * 8);
                     member.offset = (bits / 8) as usize;
