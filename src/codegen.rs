@@ -938,6 +938,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                     // If lhs is a bit-field, we need to read the current value
                     // from memory and merge it with a properly shifted and
                     // masked rhs value
+                    writeln!(self.out, "  mov %rax, %r8")?;
                     writeln!(self.out, "  mov %rax, %rdi")?;
                     writeln!(self.out, "  and ${}, %rdi", (1u128 << bit_width) - 1)?;
                     writeln!(self.out, "  shl ${bit_offset}, %rdi")?;
@@ -947,9 +948,11 @@ impl<'a, W: Write> Codegen<'a, W> {
                     writeln!(self.out, "  mov ${}, %r9", !mask as i64)?;
                     writeln!(self.out, "  and %r9, %rax")?;
                     writeln!(self.out, "  or %rdi, %rax")?;
+                    self.store(lhs.expect_ty())?;
+                    writeln!(self.out, "  mov %r8, %rax")?;
+                } else {
+                    self.store(lhs.expect_ty())?;
                 }
-
-                self.store(lhs.expect_ty())?;
             },
             NodeKind::Comma { lhs, rhs } => {
                 self.gen_expr(lhs)?;

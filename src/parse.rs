@@ -3345,7 +3345,9 @@ impl<'a> Parser<'a> {
     /// Build a compound assignment operation node.
     ///
     /// This is desugared into making a temporary pointer to `lhs`, performing
-    /// the binary operation, and assigning the result back to `lhs`.
+    /// the binary operation, and assigning the result back to `lhs`. Specially
+    /// for bit-fields, we need to operate on `lhs.member` instead because bit-
+    /// fields are not addressable.
     fn new_compound_assign(&mut self, binary: Node, span: SourceSpan) -> Result<Node> {
         let NodeKind::Binary {
             op,
@@ -3358,6 +3360,39 @@ impl<'a> Parser<'a> {
 
         self.infer_type(&mut lhs)?;
         self.infer_type(&mut rhs)?;
+
+        if let NodeKind::Member {
+            parent,
+            member: member @ Member {
+                bit_field: Some(_), ..
+            },
+        } = lhs.kind
+        {
+            // (typeof parent) *tmp;
+            let member_ty = self.types.ptr(parent.expect_ty());
+            let tmp = EntityRef::Local(self.create_local("", member_ty, None));
+
+            // tmp = &parent;
+            let assign1 = Node::assign(Node::entity(tmp, span), Node::addr(parent, span), span);
+
+            // (*tmp).member = (*tmp).member op rhs;
+            let assign2 = Node::assign(
+                Node::member(
+                    Node::deref(Node::entity(tmp, span), span),
+                    member.clone(),
+                    span,
+                ),
+                Node::binary(
+                    op,
+                    Node::member(Node::deref(Node::entity(tmp, span), span), member, span),
+                    rhs,
+                    span,
+                ),
+                span,
+            );
+
+            return Ok(Node::comma(assign1, assign2, span));
+        }
 
         // (typeof lhs) *tmp;
         let lhs_ty = self.types.ptr(lhs.expect_ty());
@@ -3373,7 +3408,6 @@ impl<'a> Parser<'a> {
             span,
         );
 
-        // (tmp = &lhs, *tmp = *tmp op rhs)
         Ok(Node::comma(assign1, assign2, span))
     }
 

@@ -336,18 +336,6 @@ fn test_bitfield() {
     f.line("struct { char a; int b:5; int c:10; } g1 = {1,2,3}, g2 = {};");
     f.main();
 
-    f.assert(4, "sizeof(struct {int x:1; })");
-    f.assert(8, "sizeof(struct {long x:1; })");
-
-    f.line("struct bit1 { short a; char b; int c:2; int d:3; int e:3; };");
-    f.assert(4, "sizeof(struct bit1)");
-    f.assert(1, "({ struct bit1 x; x.a=1; x.b=2; x.c=3; x.d=4; x.e=5; x.a; })");
-    f.assert(1, "({ struct bit1 x={1,2,3,4,5}; x.a; })");
-    f.assert(2, "({ struct bit1 x={1,2,3,4,5}; x.b; })");
-    f.assert(-1, "({ struct bit1 x={1,2,3,4,5}; x.c; })");
-    f.assert(-4, "({ struct bit1 x={1,2,3,4,5}; x.d; })");
-    f.assert(-3, "({ struct bit1 x={1,2,3,4,5}; x.e; })");
-
     f.assert(1, "g1.a");
     f.assert(2, "g1.b");
     f.assert(3, "g1.c");
@@ -355,6 +343,26 @@ fn test_bitfield() {
     f.assert(0, "g2.a");
     f.assert(0, "g2.b");
     f.assert(0, "g2.c");
+
+    f.assert(4, "sizeof(struct {int x:1; })");
+    f.assert(8, "sizeof(struct {long x:1; })");
+
+    f.line("typedef struct { short a; char b; int c:2; int d:3; int e:3; } T1;");
+    f.assert(4, "sizeof(T1)");
+    f.assert(1, "({ T1 x; x.a=1; x.b=2; x.c=3; x.d=4; x.e=5; x.a; })");
+    f.assert(1, "({ T1 x={1,2,3,4,5}; x.a; })");
+    f.assert(2, "({ T1 x={1,2,3,4,5}; x.b; })");
+    f.assert(-1, "({ T1 x={1,2,3,4,5}; x.c; })");
+    f.assert(-4, "({ T1 x={1,2,3,4,5}; x.d; })");
+    f.assert(-3, "({ T1 x={1,2,3,4,5}; x.e; })");
+
+    f.line("typedef struct { int a:10; int b:10; int c:10; } T2;");
+    f.assert(1, "({ T2 x={1,2,3}; x.a++; })");
+    f.assert(2, "({ T2 x={1,2,3}; x.b++; })");
+    f.assert(3, "({ T2 x={1,2,3}; x.c++; })");
+    f.assert(2, "({ T2 x={1,2,3}; ++x.a; })");
+    f.assert(3, "({ T2 x={1,2,3}; ++x.b; })");
+    f.assert(4, "({ T2 x={1,2,3}; ++x.c; })");
 
     f.finish();
     f.run("bitfield");
