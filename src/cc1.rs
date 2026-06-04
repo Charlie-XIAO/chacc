@@ -1,6 +1,5 @@
 //! The chacc compiler proper (cc1).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::cli::Cli;
@@ -14,43 +13,35 @@ use crate::source::SourceMap;
 use crate::tokenize::Tokenizer;
 
 /// The cc1 runner.
-pub struct CC1<'a, W: Write> {
-    cli: &'a Cli,
-    out: &'a mut W,
-}
+pub struct CC1<'a>(pub &'a Cli);
 
-impl<'a, W: Write> CC1<'a, W> {
-    /// Create a new cc1 runner.
-    pub fn new(cli: &'a Cli, out: &'a mut W) -> Self {
-        Self { cli, out }
-    }
-
+impl<'a> CC1<'a> {
     /// Run cc1 on the given input file.
-    pub fn run(&mut self, input: &Path) -> Result<()> {
+    pub fn run(&mut self, input: &Path) -> Result<Vec<u8>> {
         let mut source_map = SourceMap::default();
         let source = source_map.push(input)?;
         let tokens = Tokenizer::new(source).tokenize(true, true)?;
 
         let includes = self.include_paths()?;
 
-        if self.cli.preprocess_only {
-            let mut sink = PreprocessedWriter::new(self.out);
+        if self.0.preprocess_only {
+            let mut sink = PreprocessedWriter::new();
             Preprocessor::new(
                 &mut source_map,
                 &includes,
-                &self.cli.macro_ops,
+                &self.0.macro_ops,
                 tokens,
                 &mut sink,
             )?
             .preprocess(true)?;
-            return Ok(());
+            return Ok(sink.into());
         }
 
         let mut sink = PreprocessedTokens::default();
         Preprocessor::new(
             &mut source_map,
             &includes,
-            &self.cli.macro_ops,
+            &self.0.macro_ops,
             tokens,
             &mut sink,
         )?
@@ -58,9 +49,7 @@ impl<'a, W: Write> CC1<'a, W> {
 
         let tokens = sink.lower(&source_map)?;
         let program = Parser::new(&source_map, tokens, false).parse_program()?;
-        Codegen::new(&source_map, self.out)?.generate(program)?;
-
-        Ok(())
+        Codegen::new(&source_map)?.generate(program)
     }
 
     /// Return the include paths in precedence order.
@@ -83,7 +72,7 @@ impl<'a, W: Write> CC1<'a, W> {
             .map_err(Error::BuiltinHeaders)?;
 
         Ok(self
-            .cli
+            .0
             .includes
             .iter()
             .cloned()

@@ -12,7 +12,7 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -239,15 +239,15 @@ impl Driver {
             .as_ref()
             .expect("cc1 mode guarantees an output");
 
+        let buf = CC1(&self.cli).run(input)?;
+
         if output.as_os_str() == "-" {
-            let out = std::io::stdout();
-            let mut out = BufWriter::new(out.lock());
-            return CC1::new(&self.cli, &mut out).run(input);
+            BufWriter::new(std::io::stdout().lock()).write_all(&buf)?;
+        } else {
+            BufWriter::new(File::create(output)?).write_all(&buf)?;
         }
 
-        let out = File::create(output)?;
-        let mut out = BufWriter::new(out);
-        CC1::new(&self.cli, &mut out).run(input)
+        Ok(())
     }
 
     /// Produce the compilation plan.

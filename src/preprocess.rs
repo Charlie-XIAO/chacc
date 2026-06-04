@@ -1303,19 +1303,22 @@ impl PreprocessedTokens {
 }
 
 /// A preprocessor sink that directly writes out the preprocessed tokens.
-pub struct PreprocessedWriter<'a, W: Write> {
-    out: &'a mut W,
+pub struct PreprocessedWriter {
+    out: Vec<u8>,
     first: bool,
 }
 
-impl<'a, W: Write> PreprocessedWriter<'a, W> {
-    /// Create a new preprocessor writer that writes to the given output.
-    pub fn new(out: &'a mut W) -> Self {
-        Self { out, first: true }
+impl PreprocessedWriter {
+    /// Create a new preprocessor writer.
+    pub fn new() -> Self {
+        Self {
+            out: Vec::new(),
+            first: true,
+        }
     }
 }
 
-impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
+impl PreprocessorSink for PreprocessedWriter {
     fn emit(&mut self, source_map: &SourceMap, token: PreToken) -> Result<()> {
         if !self.first && token.at_bol || token.is_eof() {
             writeln!(self.out)?;
@@ -1327,5 +1330,11 @@ impl<'a, W: Write> PreprocessorSink for PreprocessedWriter<'a, W> {
         write!(self.out, "{}", resolver.spelling(&token))?;
         self.first = false;
         Ok(())
+    }
+}
+
+impl From<PreprocessedWriter> for Vec<u8> {
+    fn from(val: PreprocessedWriter) -> Self {
+        val.out
     }
 }

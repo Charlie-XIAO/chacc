@@ -176,9 +176,9 @@ struct FunctionState {
 }
 
 /// A x86-64 assembly code generator.
-pub struct Codegen<'a, W: Write> {
+pub struct Codegen<'a> {
     source_map: &'a SourceMap,
-    out: &'a mut W,
+    out: Vec<u8>,
     types: TypeStore,
     functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
@@ -187,12 +187,12 @@ pub struct Codegen<'a, W: Write> {
     function: Option<FunctionState>,
 }
 
-impl<'a, W: Write> Codegen<'a, W> {
+impl<'a> Codegen<'a> {
     /// Create a code generator from source.
-    pub fn new(source_map: &'a SourceMap, out: &'a mut W) -> Result<Self> {
+    pub fn new(source_map: &'a SourceMap) -> Result<Self> {
         Ok(Self {
             source_map,
-            out,
+            out: Vec::new(),
             types: TypeStore::default(),
             functions: Vec::new(),
             globals: Vec::new(),
@@ -217,7 +217,7 @@ impl<'a, W: Write> Codegen<'a, W> {
     }
 
     /// Generate assembly for an entire [`Program`].
-    pub fn generate(mut self, program: Program) -> Result<()> {
+    pub fn generate(mut self, program: Program) -> Result<Vec<u8>> {
         let Program {
             types,
             functions,
@@ -239,7 +239,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             self.gen_function(function)?;
         }
 
-        Ok(())
+        Ok(self.out)
     }
 
     /// Generate assembly for global variables.
