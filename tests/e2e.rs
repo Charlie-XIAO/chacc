@@ -188,6 +188,11 @@ fn test_alignof() {
     f.assert(1, "_Alignof(char) << 63 >> 63");
     f.assert(1, "({ char x; _Alignof(x) << 63 >> 63; })");
 
+    f.assert(0, "({ char x[16]; (unsigned long)&x % 16; })");
+    f.assert(0, "({ char x[17]; (unsigned long)&x % 16; })");
+    f.assert(0, "({ char x[100]; (unsigned long)&x % 16; })");
+    f.assert(0, "({ char x[101]; (unsigned long)&x % 16; })");
+
     f.finish();
     f.run("alignof");
 }

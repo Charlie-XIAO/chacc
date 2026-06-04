@@ -245,7 +245,12 @@ impl<'a> Codegen<'a> {
     /// Generate assembly for global variables.
     fn gen_globals(&mut self) -> Result<()> {
         for global in &self.globals {
-            let align = self.types.eff_align(global.align, global.ty);
+            let mut align = self.types.eff_align(global.align, global.ty);
+            if self.types.as_array(global.ty).is_some() && self.types.size(global.ty) >= 16 {
+                // Array of at least 16 bytes must be aligned to at least
+                // 16-byte boundaries per AMD64 System V ABI rules
+                align = align.max(16);
+            }
 
             match &global.storage {
                 GlobalStorage::Decl => {},
@@ -1503,8 +1508,16 @@ impl<'a> Codegen<'a> {
             if local.offset != 0 {
                 continue;
             }
+
+            let mut align = self.types.eff_align(local.align, local.ty);
+            if self.types.as_array(local.ty).is_some() && self.types.size(local.ty) >= 16 {
+                // Array of at least 16 bytes must be aligned to at least
+                // 16-byte boundaries per AMD64 System V ABI rules
+                align = align.max(16);
+            }
+
             bottom += self.types.size(local.ty);
-            bottom = align_up_to(bottom, self.types.eff_align(local.align, local.ty));
+            bottom = align_up_to(bottom, align);
             let offset = i64::try_from(bottom).expect("stack frame too large");
             local.offset = -offset;
         }
