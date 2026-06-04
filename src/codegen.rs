@@ -411,6 +411,12 @@ impl<'a> Codegen<'a> {
         self.gen_stmt(&body)?;
         assert_eq!(self.function().depth, 0);
 
+        if self.function().name == "main" {
+            // Per C spec, reaching the end of the main function is equivalent
+            // to returning 0
+            writeln!(self.out, "  mov $0, %rax")?;
+        }
+
         writeln!(self.out, ".L.return.{}:", self.function().name.clone())?;
         writeln!(self.out, "  mov %rbp, %rsp")?;
         writeln!(self.out, "  pop %rbp")?;
