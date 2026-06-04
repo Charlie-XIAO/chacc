@@ -3521,13 +3521,25 @@ impl<'a> Parser<'a> {
         relocations: &mut Vec<Relocation>,
         offset: usize,
     ) -> Result<()> {
-        let mut write = |val: ConstValue, size| match size {
-            1 => bytes[offset] = val.bits() as _,
-            2 => bytes[offset..offset + 2].copy_from_slice(&(val.bits() as u16).to_le_bytes()),
-            4 => bytes[offset..offset + 4].copy_from_slice(&(val.bits() as u32).to_le_bytes()),
-            8 => bytes[offset..offset + 8].copy_from_slice(&val.bits().to_le_bytes()),
-            _ => unreachable!(),
-        };
+        fn read(bytes: &[u8], offset: usize, size: u64) -> u64 {
+            match size {
+                1 => bytes[offset] as _,
+                2 => u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as _,
+                4 => u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as _,
+                8 => u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()),
+                _ => unreachable!(),
+            }
+        }
+
+        fn write(bytes: &mut [u8], offset: usize, val: u64, size: u64) {
+            match size {
+                1 => bytes[offset] = val as _,
+                2 => bytes[offset..offset + 2].copy_from_slice(&(val as u16).to_le_bytes()),
+                4 => bytes[offset..offset + 4].copy_from_slice(&(val as u32).to_le_bytes()),
+                8 => bytes[offset..offset + 8].copy_from_slice(&val.to_le_bytes()),
+                _ => unreachable!(),
+            }
+        }
 
         match init.kind {
             InitializerKind::Expr(mut rhs) => match self.eval_global_init(&mut rhs)? {
@@ -3535,7 +3547,12 @@ impl<'a> Parser<'a> {
                     let Some(const_ty) = self.types.to_const(init.ty) else {
                         return Err(self.error(rhs.span, "not a compile-time constant"));
                     };
-                    write(val.cast(const_ty), self.types.size(init.ty))
+                    write(
+                        bytes,
+                        offset,
+                        val.cast(const_ty).bits(),
+                        self.types.size(init.ty),
+                    )
                 },
                 GlobalInitValue::Reloc(label, addend) => {
                     if self.types.size(init.ty) != 8 {
@@ -3559,7 +3576,31 @@ impl<'a> Parser<'a> {
                 } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
                     let members = sou.members.clone().unwrap_or_default();
                     for (member, child) in members.iter().zip(children) {
-                        self.new_global_init2(child, bytes, relocations, offset + member.offset)?;
+                        let Some((bit_width, bit_offset)) = member.bit_field else {
+                            self.new_global_init2(
+                                child,
+                                bytes,
+                                relocations,
+                                offset + member.offset,
+                            )?;
+                            continue;
+                        };
+
+                        let InitializerKind::Expr(mut rhs) = child.kind else {
+                            return Err(self.error_current("invalid initializer"));
+                        };
+                        let GlobalInitValue::Num(val) = self.eval_global_init(&mut rhs)? else {
+                            return Err(self.error(rhs.span, "invalid initializer"));
+                        };
+
+                        let offset = offset + member.offset;
+                        let size = self.types.size(member.ty);
+                        let old = read(bytes, offset, size);
+
+                        let val_mask = ((1u128 << bit_width) - 1) as u64;
+                        let field_mask = (((1u128 << bit_width) - 1) << bit_offset) as u64;
+                        let new = (old & !field_mask) | ((val.bits() & val_mask) << bit_offset);
+                        write(bytes, offset, new, size);
                     }
                 }
             },

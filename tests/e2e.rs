@@ -333,6 +333,7 @@ fn test_arith() {
 #[test]
 fn test_bitfield() {
     let mut f = Fixture::new();
+    f.line("struct { char a; int b:5; int c:10; } g1 = {1,2,3}, g2 = {};");
     f.main();
 
     f.assert(4, "sizeof(struct {int x:1; })");
@@ -346,6 +347,14 @@ fn test_bitfield() {
     f.assert(-1, "({ struct bit1 x={1,2,3,4,5}; x.c; })");
     f.assert(-4, "({ struct bit1 x={1,2,3,4,5}; x.d; })");
     f.assert(-3, "({ struct bit1 x={1,2,3,4,5}; x.e; })");
+
+    f.assert(1, "g1.a");
+    f.assert(2, "g1.b");
+    f.assert(3, "g1.c");
+
+    f.assert(0, "g2.a");
+    f.assert(0, "g2.b");
+    f.assert(0, "g2.c");
 
     f.finish();
     f.run("bitfield");
