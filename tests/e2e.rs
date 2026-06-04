@@ -331,6 +331,28 @@ fn test_arith() {
 
 #[rustfmt::skip]
 #[test]
+fn test_bitfield() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(4, "sizeof(struct {int x:1; })");
+    f.assert(8, "sizeof(struct {long x:1; })");
+
+    f.line("struct bit1 { short a; char b; int c:2; int d:3; int e:3; };");
+    f.assert(4, "sizeof(struct bit1)");
+    f.assert(1, "({ struct bit1 x; x.a=1; x.b=2; x.c=3; x.d=4; x.e=5; x.a; })");
+    f.assert(1, "({ struct bit1 x={1,2,3,4,5}; x.a; })");
+    f.assert(2, "({ struct bit1 x={1,2,3,4,5}; x.b; })");
+    f.assert(-1, "({ struct bit1 x={1,2,3,4,5}; x.c; })");
+    f.assert(-4, "({ struct bit1 x={1,2,3,4,5}; x.d; })");
+    f.assert(-3, "({ struct bit1 x={1,2,3,4,5}; x.e; })");
+
+    f.finish();
+    f.run("bitfield");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_cast() {
     let mut f = Fixture::new();
     f.main();

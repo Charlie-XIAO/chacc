@@ -14,7 +14,7 @@ pub const MAX_FP_ARG_REGS: usize = 8;
 pub const VA_AREA_SIZE: usize = 24 + MAX_GP_ARG_REGS * 8 + MAX_FP_ARG_REGS * 8;
 
 /// Round `n` up to the nearest multiple of `align`.
-pub const fn align_to(n: u64, align: u64) -> u64 {
+pub const fn align_up_to(n: u64, align: u64) -> u64 {
     debug_assert!(align > 0, "align must be positive");
 
     if (align & (align - 1)) == 0 {
@@ -24,5 +24,17 @@ pub const fn align_to(n: u64, align: u64) -> u64 {
         (n + align - 1) & !(align - 1)
     } else {
         n.div_ceil(align) * align
+    }
+}
+
+/// Round `n` down to the nearest multiple of `align`.
+pub const fn align_down_to(n: u64, align: u64) -> u64 {
+    debug_assert!(align > 0, "align must be positive");
+
+    if (align & (align - 1)) == 0 {
+        // Fast path when align is power of 2, similar to above
+        n & !(align - 1)
+    } else {
+        n / align * align
     }
 }

@@ -1109,7 +1109,21 @@ impl<'a> Parser<'a> {
                     ));
                 }
 
-                let Some(name) = declarator.name else {
+                let bit_field = if self.current().is_punct(":") {
+                    self.advance();
+                    let width = u64::try_from(self.parse_constexpr()?).map_err(|_| {
+                        self.error_current("bit-field width is negative or out of range")
+                    })?;
+                    Some((width, 0)) // union requires 0; struct fills in later
+                } else {
+                    None
+                };
+
+                let name = if let Some(name) = declarator.name {
+                    name
+                } else if bit_field.is_some() {
+                    "".into()
+                } else {
                     return Err(self.error(declarator.span, "missing member name"));
                 };
 
@@ -1118,6 +1132,7 @@ impl<'a> Parser<'a> {
                     ty: declarator.ty,
                     align: declspec.align,
                     offset: 0, // union requires 0; struct fills in later
+                    bit_field,
                 });
 
                 if self.current().is_punct(",") {

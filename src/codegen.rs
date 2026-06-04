@@ -11,7 +11,7 @@ use crate::ast::{
 use crate::error::Result;
 use crate::source::{SourceMap, SourceSpan};
 use crate::types::{Type, TypeStore};
-use crate::utils::{MAX_FP_ARG_REGS, MAX_GP_ARG_REGS, VA_AREA_SIZE, align_to};
+use crate::utils::{MAX_FP_ARG_REGS, MAX_GP_ARG_REGS, VA_AREA_SIZE, align_up_to};
 
 const GP_ARG_REGS_8: [&str; MAX_GP_ARG_REGS] = ["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 const GP_ARG_REGS_16: [&str; MAX_GP_ARG_REGS] = ["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
@@ -787,7 +787,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                         } else {
                             let ty = arg.expect_ty();
                             if self.types.as_struct_or_union(ty).is_some() {
-                                let size = align_to(self.types.size(ty), 8);
+                                let size = align_up_to(self.types.size(ty), 8);
                                 acc.checked_add((size / 8) as usize)
                             } else {
                                 acc.checked_add(1)
@@ -923,7 +923,7 @@ impl<'a, W: Write> Codegen<'a, W> {
                 self.gen_expr(expr)?;
                 writeln!(self.out, "  not %rax")?;
             },
-            NodeKind::Entity(_) | NodeKind::Member { .. } => {
+            NodeKind::Entity(_) => {
                 self.gen_addr(node)?;
                 self.load(ty)?;
             },
@@ -931,6 +931,24 @@ impl<'a, W: Write> Codegen<'a, W> {
                 self.gen_addr(lhs)?;
                 self.push()?;
                 self.gen_expr(rhs)?;
+
+                if let NodeKind::Member { member, .. } = &lhs.kind
+                    && let Some((bit_width, bit_offset)) = member.bit_field
+                {
+                    // If lhs is a bit-field, we need to read the current value
+                    // from memory and merge it with a properly shifted and
+                    // masked rhs value
+                    writeln!(self.out, "  mov %rax, %rdi")?;
+                    writeln!(self.out, "  and ${}, %rdi", (1u128 << bit_width) - 1)?;
+                    writeln!(self.out, "  shl ${bit_offset}, %rdi")?;
+                    writeln!(self.out, "  mov (%rsp), %rax")?;
+                    self.load(member.ty)?;
+                    let mask = (((1u128 << bit_width) - 1) << bit_offset) as u64;
+                    writeln!(self.out, "  mov ${}, %r9", !mask as i64)?;
+                    writeln!(self.out, "  and %r9, %rax")?;
+                    writeln!(self.out, "  or %rdi, %rax")?;
+                }
+
                 self.store(lhs.expect_ty())?;
             },
             NodeKind::Comma { lhs, rhs } => {
@@ -1104,6 +1122,18 @@ impl<'a, W: Write> Codegen<'a, W> {
                 self.gen_expr(else_expr)?;
                 writeln!(self.out, ".L.end.{label}:")?;
             },
+            NodeKind::Member { member, .. } => {
+                self.gen_addr(node)?;
+                self.load(ty)?;
+                if let Some((bit_width, bit_offset)) = member.bit_field {
+                    writeln!(self.out, "  shl ${}, %rax", 64 - bit_width - bit_offset)?;
+                    if member.ty.is_unsigned() {
+                        writeln!(self.out, "  shr ${}, %rax", 64 - bit_width)?;
+                    } else {
+                        writeln!(self.out, "  sar ${}, %rax", 64 - bit_width)?;
+                    }
+                }
+            },
             NodeKind::StmtExpr(body) => {
                 for stmt in body {
                     self.gen_stmt(stmt)?;
@@ -1148,7 +1178,7 @@ impl<'a, W: Write> Codegen<'a, W> {
     /// Push the struct or union pointer by `%rax` onto the temporary stack.
     fn push_struct_or_union(&mut self, ty: Type) -> Result<()> {
         let size = self.types.size(ty);
-        let aligned = align_to(size, 8);
+        let aligned = align_up_to(size, 8);
 
         writeln!(self.out, "  sub ${aligned}, %rsp")?;
         self.function_mut().depth += (aligned / 8) as usize;
@@ -1460,7 +1490,7 @@ impl<'a, W: Write> Codegen<'a, W> {
             if self.arg_regs(local.ty, &mut rindex).is_some() {
                 continue;
             }
-            top = align_to(top, 8);
+            top = align_up_to(top, 8);
             local.offset = i64::try_from(top).expect("stack frame too large");
             top += self.types.size(local.ty);
         }
@@ -1471,12 +1501,12 @@ impl<'a, W: Write> Codegen<'a, W> {
                 continue;
             }
             bottom += self.types.size(local.ty);
-            bottom = align_to(bottom, self.types.eff_align(local.align, local.ty));
+            bottom = align_up_to(bottom, self.types.eff_align(local.align, local.ty));
             let offset = i64::try_from(bottom).expect("stack frame too large");
             local.offset = -offset;
         }
 
-        align_to(bottom, 16)
+        align_up_to(bottom, 16)
     }
 }
 

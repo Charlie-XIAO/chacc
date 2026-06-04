@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use smol_str::SmolStr;
 
-use crate::utils::align_to;
+use crate::utils::{align_down_to, align_up_to};
 
 /// Arithmetic types.
 ///
@@ -257,6 +257,8 @@ pub struct Member {
     pub align: Option<u64>,
     /// The byte offset of the member in the struct.
     pub offset: usize,
+    /// If this member is a bit-field, its width and offset in bits.
+    pub bit_field: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,9 +348,9 @@ impl TypeStore {
     /// Construct a struct or union type with the given members.
     ///
     /// If `members` is `None`, this represents an incomplete struct or union
-    /// type. Otherwise, for a struct, the member offsets will be assigned here
-    /// so they do not need to be pre-computed. For a union, the member offsets
-    /// must be all 0.
+    /// type. Otherwise, for a struct, the member offsets (and bit offsets) will
+    /// be assigned here so they do not need to be pre-computed; for a union,
+    /// those must be all 0.
     pub fn struct_or_union(&mut self, is_struct: bool, members: Option<Vec<Member>>) -> Type {
         let ty = self.push(
             TypeDataKind::StructOrUnion(StructOrUnionTypeData {
@@ -373,20 +375,33 @@ impl TypeStore {
         mut members: Vec<Member>,
         ty: Type,
     ) {
-        let mut offset = 0;
+        let mut bits = 0;
         let mut align = 1;
 
         if is_struct {
             for member in members.iter_mut() {
+                let member_size = self.size(member.ty);
                 let member_align = self.eff_align(member.align, member.ty);
-                offset = align_to(offset, member_align); // Field alignment
-                member.offset = offset as usize;
-                offset += self.size(member.ty);
+                let member_bits = member_size * 8;
+
+                if let Some((bit_width, bit_offset)) = &mut member.bit_field {
+                    if bits / member_bits != (bits + *bit_width - 1) / member_bits {
+                        bits = align_up_to(bits, member_bits);
+                    }
+                    member.offset = align_down_to(bits / 8, member_size) as usize;
+                    *bit_offset = bits % member_bits;
+                    bits += *bit_width;
+                } else {
+                    bits = align_up_to(bits, member_align * 8);
+                    member.offset = (bits / 8) as usize;
+                    bits += member_bits;
+                }
+
                 align = align.max(member_align);
             }
         } else {
             for member in members.iter() {
-                offset = offset.max(self.size(member.ty));
+                bits = bits.max(self.size(member.ty) * 8);
                 align = align.max(self.eff_align(member.align, member.ty));
             }
         }
@@ -402,7 +417,7 @@ impl TypeStore {
         );
 
         sou.members = Some(members.into());
-        data.size = align_to(offset, align); // Trailing padding
+        data.size = align_up_to(bits, align * 8) / 8; // Trailing padding
         data.align = align;
     }
 

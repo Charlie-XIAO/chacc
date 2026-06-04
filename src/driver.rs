@@ -212,7 +212,8 @@ impl Driver {
 
             if let Some(args) = &self.cli.auto_run {
                 self.run_subprocess("autorun", true, {
-                    let mut command = Command::new(output);
+                    let exe = std::env::current_dir()?.join(output);
+                    let mut command = Command::new(exe);
                     command.args(args);
                     command
                 })?;
