@@ -2005,6 +2005,24 @@ fn test_typedef() {
 
 #[rustfmt::skip]
 #[test]
+fn test_unicode() {
+    let mut f = Fixture::new();
+    f.main();
+
+    f.assert(4, "sizeof(L'\\0')");
+    f.assert(97, "L'a'");
+
+    f.assert(0, r#"strcmp("αβγ", "\u03b1\u03b2\u03b3")"#);
+    f.assert(0, r#"strcmp("中文", "\u4e2d\u6587")"#);
+    f.assert(0, r#"strcmp("中文", "\U00004e2d\U00006587")"#);
+    f.assert(0, r#"strcmp("🦀", "\U0001f980")"#);
+
+    f.finish();
+    f.run("unicode");
+}
+
+#[rustfmt::skip]
+#[test]
 fn test_union() {
     let mut f = Fixture::new();
     f.main();

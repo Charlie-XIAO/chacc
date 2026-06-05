@@ -724,9 +724,7 @@ impl<'a> PreTokenResolver<'a> {
                         return Err(self.0.error(token.span_at(i, 1), "invalid escape sequence"));
                     }
                     i += 1;
-                    let (escaped, len) = self.decode_escape_seq(token, bytes, i, len)?;
-                    content.push(escaped);
-                    i += len;
+                    i += self.decode_escape_seq(token, bytes, i, len, &mut content)?;
                 },
                 byte => {
                     content.push(byte);
@@ -751,15 +749,16 @@ impl<'a> PreTokenResolver<'a> {
     /// Decode an escape sequence in a string or character literal.
     ///
     /// The `bytes` must correspond to the spelling of the given token. This
-    /// will decode `bytes[start..end]` and return the decoded byte and the
-    /// number of bytes consumed.
+    /// will decode `bytes[start..end]`, push the decoded bytes into `buf`, and
+    /// return the number of bytes consumed from `bytes`.
     fn decode_escape_seq(
         &self,
         token: &PreToken,
         bytes: &[u8],
         start: usize,
         end: usize,
-    ) -> Result<(u8, usize)> {
+        buf: &mut Vec<u8>,
+    ) -> Result<usize> {
         let first = bytes[start];
 
         // Octal escape sequence (up to three octal digits)
@@ -776,7 +775,8 @@ impl<'a> PreTokenResolver<'a> {
                     }
                 }
             }
-            return Ok((octal_value, len));
+            buf.push(octal_value);
+            return Ok(len);
         }
 
         // Hexadecimal escape sequence
@@ -809,7 +809,42 @@ impl<'a> PreTokenResolver<'a> {
                 pos += 1;
             }
 
-            return Ok((hex_value, pos - start));
+            buf.push(hex_value);
+            return Ok(pos - start);
+        }
+
+        // Universal character name
+        if first == b'u' || first == b'U' {
+            let hex_len = if first == b'u' { 4 } else { 8 };
+            let mut code = 0;
+            let mut bytes_processed = 0;
+
+            for &byte in bytes.iter().skip(start + 1).take(hex_len) {
+                let Some(digit) = (byte as char).to_digit(16) else {
+                    break; // Not a hex digit
+                };
+                code = (code << 4) | digit;
+                bytes_processed += 1;
+            }
+
+            if bytes_processed != hex_len {
+                return Err(self.0.error(
+                    token.span_at(start, bytes_processed + 1),
+                    "incomplete universal character name",
+                ));
+            }
+
+            let Some(ch) = char::from_u32(code) else {
+                return Err(self.0.error(
+                    token.span_at(start, hex_len + 1),
+                    "invalid universal character name",
+                ));
+            };
+
+            let mut encoded_buf = [0; 4];
+            let encoded = ch.encode_utf8(&mut encoded_buf).as_bytes();
+            buf.extend_from_slice(encoded);
+            return Ok(hex_len + 1);
         }
 
         // Standard single-character escapes
@@ -829,7 +864,8 @@ impl<'a> PreTokenResolver<'a> {
                 first
             },
         };
-        Ok((decoded, 1))
+        buf.push(decoded);
+        Ok(1)
     }
 }
 
