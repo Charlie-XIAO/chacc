@@ -62,6 +62,14 @@ pub enum Keyword {
     Alignas,
 }
 
+/// A decoded escape sequence.
+#[derive(Debug, Clone, Copy)]
+enum EscapeSeq {
+    Byte(u8),
+    Num(u32),
+    Codepoint(char),
+}
+
 /// Preprocessor token kinds for [`PreToken`].
 #[derive(Clone, Debug)]
 pub enum PreTokenKind {
@@ -340,18 +348,17 @@ impl<'a> Tokenizer<'a> {
             }
 
             if cur == b'"' {
-                self.read_string_char_literal(false)?;
+                self.read_string_char_literal(false, 0)?;
                 continue;
             }
 
             if cur == b'\'' {
-                self.read_string_char_literal(true)?;
+                self.read_string_char_literal(true, 0)?;
                 continue;
             }
 
             if cur == b'L' && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'') {
-                self.pos += 1;
-                self.read_string_char_literal(true)?;
+                self.read_string_char_literal(true, 1)?;
                 continue;
             }
 
@@ -430,9 +437,9 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Read a string or char literal token.
-    fn read_string_char_literal(&mut self, is_char: bool) -> Result<()> {
+    fn read_string_char_literal(&mut self, is_char: bool, prefix_len: usize) -> Result<()> {
         let bytes = self.source.content.as_bytes();
-        let mut i = self.pos + 1; // Skip opening quote
+        let mut i = self.pos + prefix_len + 1; // Skip prefix and opening quote
 
         while i < bytes.len() {
             match bytes[i] {
@@ -555,8 +562,8 @@ impl<'a> PreTokenResolver<'a> {
                     "string literal is not valid in preprocessor expressions",
                 ));
             },
-            PreTokenKind::StrLit => self.lower_string_char_literal(&token, false)?,
-            PreTokenKind::CharLit => self.lower_string_char_literal(&token, true)?,
+            PreTokenKind::StrLit => self.lower_string_literal(&token)?,
+            PreTokenKind::CharLit => self.lower_char_literal(&token)?,
             PreTokenKind::Eof => TokenKind::Eof,
         };
 
@@ -696,15 +703,12 @@ impl<'a> PreTokenResolver<'a> {
         Ok(TokenKind::Num(val, ty))
     }
 
-    /// Lower a string or character literal.
-    fn lower_string_char_literal(&self, token: &PreToken, is_char: bool) -> Result<TokenKind> {
+    /// Lower a string literal.
+    fn lower_string_literal(&self, token: &PreToken) -> Result<TokenKind> {
         let spelling = self.spelling(token);
         let bytes = spelling.as_bytes();
 
-        if is_char && !matches!(bytes, [b'\'', .., b'\'']) {
-            return Err(self.0.error(token.span, "invalid char literal"));
-        }
-        if !is_char && !matches!(bytes, [b'"', .., b'"']) {
+        if !matches!(bytes, [b'"', .., b'"']) {
             return Err(self.0.error(token.span, "invalid string literal"));
         }
 
@@ -724,7 +728,17 @@ impl<'a> PreTokenResolver<'a> {
                         return Err(self.0.error(token.span_at(i, 1), "invalid escape sequence"));
                     }
                     i += 1;
-                    i += self.decode_escape_seq(token, bytes, i, len, &mut content)?;
+                    let (escape, len) = self.decode_escape_seq(token, bytes, i, len, true)?;
+                    match escape {
+                        EscapeSeq::Byte(byte) => content.push(byte),
+                        EscapeSeq::Num(val) => content.push(val as u8),
+                        EscapeSeq::Codepoint(ch) => {
+                            let mut buf = [0; 4];
+                            let encoded = ch.encode_utf8(&mut buf);
+                            content.extend_from_slice(encoded.as_bytes());
+                        },
+                    }
+                    i += len;
                 },
                 byte => {
                     content.push(byte);
@@ -733,50 +747,106 @@ impl<'a> PreTokenResolver<'a> {
             }
         }
 
-        if is_char {
-            let [ch] = content.as_slice() else {
-                return Err(self.0.error(token.span, "multi-character char constant"));
-            };
-            // Interpret one-byte character constant using signed-char semantics,
-            // e.g., '\x80' becomes -128 (wrapped around)
-            return Ok(TokenKind::Num(*ch as i8 as _, Type::INT));
-        }
-
         content.push(b'\0');
         Ok(TokenKind::Str(content.into()))
+    }
+
+    /// Lower a character literal.
+    fn lower_char_literal(&self, token: &PreToken) -> Result<TokenKind> {
+        let spelling = self.spelling(token);
+        let bytes = spelling.as_bytes();
+
+        let (is_wide, start) = match bytes {
+            [b'\'', .., b'\''] => (false, 1),
+            [b'L', b'\'', .., b'\''] => (true, 2),
+            _ => return Err(self.0.error(token.span, "invalid char literal")),
+        };
+
+        let end = bytes.len() - 1; // Exclude closing quote
+        if start >= end {
+            return Err(self.0.error(token.span, "empty char constant"));
+        }
+
+        let val = if bytes[start] == b'\\' {
+            let (escape, len) = self.decode_escape_seq(token, bytes, start + 1, end, !is_wide)?;
+            if start + 1 + len < end {
+                return Err(self.0.error(token.span, "multi-character char constant"));
+            }
+            match escape {
+                EscapeSeq::Byte(byte) => byte as _,
+                EscapeSeq::Num(val) => val,
+                EscapeSeq::Codepoint(ch) => ch.into(),
+            }
+        } else {
+            if !is_wide && start + 1 != end {
+                return Err(self.0.error(token.span, "multi-character char constant"));
+            }
+            let Ok(spelling) = std::str::from_utf8(&bytes[start..end]) else {
+                return Err(self
+                    .0
+                    .error(token.span_at(start, 1), "invalid UTF-8 sequence"));
+            };
+            let mut chars = spelling.chars();
+            let Some(ch) = chars.next() else {
+                return Err(self.0.error(token.span, "empty char constant"));
+            };
+            if chars.next().is_some() {
+                return Err(self.0.error(token.span, "multi-character char constant"));
+            }
+            ch as u32
+        };
+
+        let val = if is_wide {
+            val as u64
+        } else {
+            // Interpret one-byte character constant using signed-char
+            // semantics, e.g., '\x80' becomes -128 (wrapped around)
+            val as u8 as i8 as u64
+        };
+        Ok(TokenKind::Num(val, Type::INT))
     }
 
     /// Decode an escape sequence in a string or character literal.
     ///
     /// The `bytes` must correspond to the spelling of the given token. This
-    /// will decode `bytes[start..end]`, push the decoded bytes into `buf`, and
-    /// return the number of bytes consumed from `bytes`.
+    /// will decode `bytes[start..end]` and return the escape sequence together
+    /// with the number of bytes consumed from `bytes`.
+    ///
+    /// If `check_byte_range` is true, this emits a warning if the octal or hex
+    /// escape sequence goes out of the one-byte range.
     fn decode_escape_seq(
         &self,
         token: &PreToken,
         bytes: &[u8],
         start: usize,
         end: usize,
-        buf: &mut Vec<u8>,
-    ) -> Result<usize> {
+        check_byte_range: bool,
+    ) -> Result<(EscapeSeq, usize)> {
         let first = bytes[start];
 
         // Octal escape sequence (up to three octal digits)
         if (first as char).is_digit(8) {
-            let mut octal_value = first - b'0';
+            let mut octal_value = (first - b'0') as u32;
             let mut len = 1;
+
             if let Some(seq) = bytes.get(start + 1..end.min(start + 3)) {
                 for &byte in seq {
                     if (byte as char).is_digit(8) {
-                        octal_value = octal_value.wrapping_shl(3).wrapping_add(byte - b'0');
+                        octal_value = (octal_value << 3) + (byte - b'0') as u32;
                         len += 1;
                     } else {
                         break;
                     }
                 }
             }
-            buf.push(octal_value);
-            return Ok(len);
+
+            if check_byte_range && octal_value > u8::MAX as _ {
+                self.0.warn(
+                    token.span_at(start, len),
+                    "octal escape sequence out of range",
+                );
+            }
+            return Ok((EscapeSeq::Num(octal_value), len));
         }
 
         // Hexadecimal escape sequence
@@ -788,29 +858,23 @@ impl<'a> PreTokenResolver<'a> {
                     .error(token.span_at(pos, 1), "invalid hex escape sequence"));
             }
 
-            let mut hex_value = 0u8;
-            let mut has_warned_overflow = false;
-
-            while pos < end && bytes[pos].is_ascii_hexdigit() {
-                let digit = (bytes[pos] as char).to_digit(16).unwrap() as u8;
-                if !has_warned_overflow {
-                    if let Some(next) = hex_value.checked_mul(16).and_then(|v| v.checked_add(digit))
-                    {
-                        hex_value = next;
-                    } else {
-                        has_warned_overflow = true;
-                        self.0
-                            .warn(token.span_at(pos, 1), "hex escape sequence out of range");
-                        hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
-                    }
-                } else {
-                    hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
-                }
+            let mut hex_value = 0;
+            let mut overflowed = false;
+            while pos < end
+                && let Some(digit) = (bytes[pos] as char).to_digit(16)
+            {
+                overflowed |= hex_value > (u8::MAX as u32).saturating_sub(digit) / 16;
+                hex_value = hex_value.wrapping_mul(16).wrapping_add(digit);
                 pos += 1;
             }
 
-            buf.push(hex_value);
-            return Ok(pos - start);
+            if check_byte_range && overflowed {
+                self.0.warn(
+                    token.span_at(start, pos - start),
+                    "hex escape sequence out of range",
+                );
+            }
+            return Ok((EscapeSeq::Num(hex_value), pos - start));
         }
 
         // Universal character name
@@ -840,11 +904,7 @@ impl<'a> PreTokenResolver<'a> {
                     "invalid universal character name",
                 ));
             };
-
-            let mut encoded_buf = [0; 4];
-            let encoded = ch.encode_utf8(&mut encoded_buf).as_bytes();
-            buf.extend_from_slice(encoded);
-            return Ok(hex_len + 1);
+            return Ok((EscapeSeq::Codepoint(ch), hex_len + 1));
         }
 
         // Standard single-character escapes
@@ -864,8 +924,7 @@ impl<'a> PreTokenResolver<'a> {
                 first
             },
         };
-        buf.push(decoded);
-        Ok(1)
+        Ok((EscapeSeq::Byte(decoded), 1))
     }
 }
 

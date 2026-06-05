@@ -2017,6 +2017,11 @@ fn test_unicode() {
     f.assert(0, r#"strcmp("中文", "\U00004e2d\U00006587")"#);
     f.assert(0, r#"strcmp("🦀", "\U0001f980")"#);
 
+    f.assert(-1, "L'\\xffffffff'>>31");
+    f.assert(946, "L'β'");
+    f.assert(29497, "L'猹'");
+    f.assert(129408, "L'🦀'");
+
     f.finish();
     f.run("unicode");
 }
