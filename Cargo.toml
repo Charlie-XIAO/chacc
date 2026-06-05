@@ -13,6 +13,7 @@ smol_str = "0.3"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
 tempfile = "3"
+unicode-width = "0.2"
 which = "8"
 
 [build-dependencies]

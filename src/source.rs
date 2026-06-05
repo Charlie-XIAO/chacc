@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use line_index::{LineCol, LineIndex, TextSize};
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
@@ -183,7 +184,15 @@ impl Source {
         let line_start = usize::from(range.start());
         let line_end = usize::from(range.end());
         let line = self.original[line_start..line_end].trim_end_matches(['\r', '\n']);
-        let span_len = len.min(line.len().saturating_sub(col_no));
+
+        let span_start = col_no.min(line.len());
+        let col_no = line[..span_start].width();
+
+        let mut span_end = (span_start + len).min(line.len());
+        while span_end < line.len() && !line.is_char_boundary(span_end) {
+            span_end += 1; // Expand to valid UTF-8 char boundary
+        }
+        let span_len = line[span_start..span_end].width().max(1);
 
         Diagnostic {
             level,
