@@ -320,68 +320,31 @@ impl<'a> Tokenizer<'a> {
         let bytes = content.as_bytes();
 
         while self.pos < content.len() {
-            let cur = bytes[self.pos];
-
             if allow_comment && self.read_comment()? {
                 self.follows_space = true;
                 continue;
             }
 
-            if cur == b'\n' {
-                self.pos += 1;
-                self.at_bol = true;
-                self.follows_space = false;
-                continue;
+            match &bytes[self.pos..] {
+                [b'\n', ..] => {
+                    self.pos += 1;
+                    self.at_bol = true;
+                    self.follows_space = false;
+                },
+                [b, ..] if b.is_ascii_whitespace() => {
+                    self.pos += 1;
+                    self.follows_space = true;
+                },
+                [b, ..] if b.is_ascii_digit() => self.read_numeric_literal(),
+                [b'.', next, ..] if next.is_ascii_digit() => self.read_numeric_literal(),
+                [b'"', ..] => self.read_string_char_literal(false, 0)?,
+                [b'u', b'8', b'"', ..] => self.read_string_char_literal(false, 2)?,
+                [b'\'', ..] => self.read_string_char_literal(true, 0)?,
+                [b'u' | b'U' | b'L', b'\'', ..] => self.read_string_char_literal(true, 1)?,
+                [b, ..] if is_ident_start(b) => self.read_ident(),
+                _ if self.read_punct() => {},
+                _ => return Err(self.source.error(self.pos, 1, "invalid token")),
             }
-
-            if cur.is_ascii_whitespace() {
-                self.pos += 1;
-                self.follows_space = true;
-                continue;
-            }
-
-            if cur.is_ascii_digit()
-                || (cur == b'.' && bytes.get(self.pos + 1).is_some_and(u8::is_ascii_digit))
-            {
-                self.read_numeric_literal();
-                continue;
-            }
-
-            if cur == b'"' {
-                self.read_string_char_literal(false, 0)?;
-                continue;
-            }
-
-            if cur == b'u'
-                && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'8')
-                && bytes.get(self.pos + 2).is_some_and(|&byte| byte == b'"')
-            {
-                self.read_string_char_literal(false, 2)?;
-                continue;
-            }
-
-            if cur == b'\'' {
-                self.read_string_char_literal(true, 0)?;
-                continue;
-            }
-
-            if matches!(cur, b'u' | b'U' | b'L')
-                && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'')
-            {
-                self.read_string_char_literal(true, 1)?;
-                continue;
-            }
-
-            if is_ident_start(&cur) {
-                self.read_ident();
-                continue;
-            }
-
-            if self.read_punct() {
-                continue;
-            }
-
-            return Err(self.source.error(self.pos, 1, "invalid token"));
         }
 
         if emit_eof {
