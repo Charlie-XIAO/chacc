@@ -58,37 +58,64 @@ impl Source {
         let mut i = 0;
         let mut start = 0;
         let mut cum_shift = 0;
+        let mut edited = false;
+
+        enum Edit {
+            ReplaceCrLf,
+            ReplaceCr,
+            Remove(usize),
+        }
 
         while i < bytes.len() {
-            let removed_len = match &bytes[i..] {
-                [b'\\', b'\n', ..] => 2,
-                [b'\\', b'\r', b'\n', ..] => 3,
+            let edit = match &bytes[i..] {
+                [b'\\', b'\n', ..] => Edit::Remove(2),
+                [b'\\', b'\r', b'\n', ..] => Edit::Remove(3),
+                [b'\\', b'\r', ..] => Edit::Remove(2),
+                [b'\r', b'\n', ..] => Edit::ReplaceCrLf,
+                [b'\r', ..] => Edit::ReplaceCr,
                 _ => {
                     i += 1;
                     continue;
                 },
             };
 
-            if content.is_empty() {
+            if !edited {
                 content.reserve(original.len());
             }
+            edited = true;
             content.push_str(&original[start..i]);
-            cum_shift += removed_len;
 
-            let logical_offset = content.len();
-            if let Some((offset, shift)) = shifts.last_mut()
-                && *offset == logical_offset
-            {
-                *shift = cum_shift;
-            } else {
-                shifts.push((logical_offset, cum_shift));
+            match edit {
+                Edit::ReplaceCrLf => {
+                    content.push('\n');
+                    cum_shift += 1;
+                    i += 2;
+                },
+                Edit::ReplaceCr => {
+                    content.push('\n');
+                    i += 1;
+                },
+                Edit::Remove(removed_len) => {
+                    cum_shift += removed_len;
+                    i += removed_len;
+                },
             }
 
-            i += removed_len;
+            if cum_shift != 0 {
+                let logical_offset = content.len();
+                if let Some((offset, shift)) = shifts.last_mut()
+                    && *offset == logical_offset
+                {
+                    *shift = cum_shift;
+                } else {
+                    shifts.push((logical_offset, cum_shift));
+                }
+            }
+
             start = i;
         }
 
-        let content = if shifts.is_empty() {
+        let content = if !edited {
             original.clone()
         } else {
             content.push_str(&original[start..]);
