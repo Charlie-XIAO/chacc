@@ -352,6 +352,14 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
+            if cur == b'u'
+                && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'8')
+                && bytes.get(self.pos + 2).is_some_and(|&byte| byte == b'"')
+            {
+                self.read_string_char_literal(false, 2)?;
+                continue;
+            }
+
             if cur == b'\'' {
                 self.read_string_char_literal(true, 0)?;
                 continue;
@@ -710,11 +718,12 @@ impl<'a> PreTokenResolver<'a> {
         let spelling = self.spelling(token);
         let bytes = spelling.as_bytes();
 
-        if !matches!(bytes, [b'"', .., b'"']) {
-            return Err(self.0.error(token.span, "invalid string literal"));
-        }
+        let mut i = match bytes {
+            [b'"', .., b'"'] => 1,
+            [b'u', b'8', b'"', .., b'"'] => 3,
+            _ => return Err(self.0.error(token.span, "invalid string literal")),
+        };
 
-        let mut i = 1; // Skip opening quote
         let len = bytes.len() - 1; // Exclude closing quote
         let mut content = Vec::new();
 

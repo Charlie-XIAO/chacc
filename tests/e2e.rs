@@ -2037,6 +2037,9 @@ fn test_unicode() {
     f.assert(29497, "L'猹'");
     f.assert(129408, "L'🦀'");
 
+    f.assert(4, r#"sizeof(u8"abc")"#);
+    f.assert(0, r#"strcmp(u8"abc", "abc")"#);
+
     f.finish();
     f.run("unicode");
 }
