@@ -357,7 +357,7 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if matches!(cur, b'L' | b'u')
+            if matches!(cur, b'u' | b'U' | b'L')
                 && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'')
             {
                 self.read_string_char_literal(true, 1)?;
@@ -761,12 +761,14 @@ impl<'a> PreTokenResolver<'a> {
         enum CharLitKind {
             Normal,
             Utf16,
+            Utf32,
             Wide,
         }
 
         let (kind, start) = match bytes {
             [b'\'', .., b'\''] => (CharLitKind::Normal, 1),
             [b'u', b'\'', .., b'\''] => (CharLitKind::Utf16, 2),
+            [b'U', b'\'', .., b'\''] => (CharLitKind::Utf32, 2),
             [b'L', b'\'', .., b'\''] => (CharLitKind::Wide, 2),
             _ => return Err(self.0.error(token.span, "invalid char literal")),
         };
@@ -815,8 +817,8 @@ impl<'a> PreTokenResolver<'a> {
             // Normal one-byte character constants are interpreted using signed-
             // char semantics, e.g., '\x80' becomes -128 (wrapped around)
             CharLitKind::Normal => (val as u8 as i8 as u64, Type::INT),
-            // UTF-16 takes low 16 bits and is always unsigned
             CharLitKind::Utf16 => ((val & 0xffff) as u64, Type::USHORT),
+            CharLitKind::Utf32 => (val as u64, Type::UINT),
             CharLitKind::Wide => (val as u64, Type::INT),
         };
         Ok(TokenKind::Num(val, ty))
