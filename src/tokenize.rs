@@ -357,7 +357,9 @@ impl<'a> Tokenizer<'a> {
                 continue;
             }
 
-            if cur == b'L' && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'') {
+            if matches!(cur, b'L' | b'u')
+                && bytes.get(self.pos + 1).is_some_and(|&byte| byte == b'\'')
+            {
                 self.read_string_char_literal(true, 1)?;
                 continue;
             }
@@ -756,9 +758,16 @@ impl<'a> PreTokenResolver<'a> {
         let spelling = self.spelling(token);
         let bytes = spelling.as_bytes();
 
-        let (is_wide, start) = match bytes {
-            [b'\'', .., b'\''] => (false, 1),
-            [b'L', b'\'', .., b'\''] => (true, 2),
+        enum CharLitKind {
+            Normal,
+            Utf16,
+            Wide,
+        }
+
+        let (kind, start) = match bytes {
+            [b'\'', .., b'\''] => (CharLitKind::Normal, 1),
+            [b'u', b'\'', .., b'\''] => (CharLitKind::Utf16, 2),
+            [b'L', b'\'', .., b'\''] => (CharLitKind::Wide, 2),
             _ => return Err(self.0.error(token.span, "invalid char literal")),
         };
 
@@ -768,7 +777,13 @@ impl<'a> PreTokenResolver<'a> {
         }
 
         let val = if bytes[start] == b'\\' {
-            let (escape, len) = self.decode_escape_seq(token, bytes, start + 1, end, !is_wide)?;
+            let (escape, len) = self.decode_escape_seq(
+                token,
+                bytes,
+                start + 1,
+                end,
+                matches!(kind, CharLitKind::Normal),
+            )?;
             if start + 1 + len < end {
                 return Err(self.0.error(token.span, "multi-character char constant"));
             }
@@ -778,7 +793,7 @@ impl<'a> PreTokenResolver<'a> {
                 EscapeSeq::Codepoint(ch) => ch.into(),
             }
         } else {
-            if !is_wide && start + 1 != end {
+            if matches!(kind, CharLitKind::Normal) && start + 1 != end {
                 return Err(self.0.error(token.span, "multi-character char constant"));
             }
             let Ok(spelling) = std::str::from_utf8(&bytes[start..end]) else {
@@ -796,14 +811,15 @@ impl<'a> PreTokenResolver<'a> {
             ch as u32
         };
 
-        let val = if is_wide {
-            val as u64
-        } else {
-            // Interpret one-byte character constant using signed-char
-            // semantics, e.g., '\x80' becomes -128 (wrapped around)
-            val as u8 as i8 as u64
+        let (val, ty) = match kind {
+            // Normal one-byte character constants are interpreted using signed-
+            // char semantics, e.g., '\x80' becomes -128 (wrapped around)
+            CharLitKind::Normal => (val as u8 as i8 as u64, Type::INT),
+            // UTF-16 takes low 16 bits and is always unsigned
+            CharLitKind::Utf16 => ((val & 0xffff) as u64, Type::USHORT),
+            CharLitKind::Wide => (val as u64, Type::INT),
         };
-        Ok(TokenKind::Num(val, Type::INT))
+        Ok(TokenKind::Num(val, ty))
     }
 
     /// Decode an escape sequence in a string or character literal.

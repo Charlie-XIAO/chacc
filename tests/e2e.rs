@@ -2009,18 +2009,26 @@ fn test_unicode() {
     let mut f = Fixture::new();
     f.main();
 
-    f.assert(4, "sizeof(L'\\0')");
-    f.assert(97, "L'a'");
+    f.line("#define STR(x) #x");
 
     f.assert(0, r#"strcmp("αβγ", "\u03b1\u03b2\u03b3")"#);
     f.assert(0, r#"strcmp("中文", "\u4e2d\u6587")"#);
     f.assert(0, r#"strcmp("中文", "\U00004e2d\U00006587")"#);
     f.assert(0, r#"strcmp("🦀", "\U0001f980")"#);
 
+    f.assert(4, "sizeof(L'\\0')");
     f.assert(-1, "L'\\xffffffff'>>31");
+    f.assert(97, "L'a'");
     f.assert(946, "L'β'");
     f.assert(29497, "L'猹'");
     f.assert(129408, "L'🦀'");
+
+    f.assert(2, "sizeof(u'\\0')");
+    f.assert(1, "u'\\xffff'>>15");
+    f.assert(97, "u'a'");
+    f.assert(946, "u'β'");
+    f.assert(29497, "u'猹'");
+    f.assert(63872, "u'🦀'");
 
     f.finish();
     f.run("unicode");
