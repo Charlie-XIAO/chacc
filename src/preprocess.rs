@@ -109,16 +109,18 @@ struct IncludeFilename {
 enum MacroHandler {
     File,
     Line,
+    Counter,
 }
 
 impl MacroHandler {
     /// Call this macro handler on the given token.
-    fn call(self, token: &PreToken, source_map: &SourceMap) -> Vec<PreToken> {
+    fn call(self, token: &PreToken, source_map: &SourceMap, counter: &mut u64) -> Vec<PreToken> {
+        let span = token.origin.unwrap_or(token.span);
+
         match self {
             Self::File => {
                 let mut filename = String::new();
                 filename.push('"');
-                let span = token.origin.unwrap_or(token.span);
                 for ch in source_map.get(span.id).name.chars() {
                     match ch {
                         '\\' => filename.push_str("\\\\"),
@@ -136,7 +138,6 @@ impl MacroHandler {
                 )]
             },
             Self::Line => {
-                let span = token.origin.unwrap_or(token.span);
                 let (_, line, _) = source_map.file_line_col(span);
                 vec![PreToken::synthetic(
                     PreTokenKind::NumLit,
@@ -144,6 +145,17 @@ impl MacroHandler {
                     token.at_bol,
                     token.follows_space,
                     format_smolstr!("{line}"),
+                )]
+            },
+            Self::Counter => {
+                let count = *counter;
+                *counter += 1;
+                vec![PreToken::synthetic(
+                    PreTokenKind::NumLit,
+                    span,
+                    token.at_bol,
+                    token.follows_space,
+                    format_smolstr!("{count}"),
                 )]
             },
         }
@@ -198,12 +210,21 @@ impl Macro {
 struct MacroExpander<'a> {
     source_map: &'a mut SourceMap,
     macros: &'a FxHashMap<SmolStr, Macro>,
+    counter: &'a mut u64,
 }
 
 impl<'a> MacroExpander<'a> {
     /// Create a new macro expander.
-    fn new(source_map: &'a mut SourceMap, macros: &'a FxHashMap<SmolStr, Macro>) -> Self {
-        Self { source_map, macros }
+    fn new(
+        source_map: &'a mut SourceMap,
+        macros: &'a FxHashMap<SmolStr, Macro>,
+        counter: &'a mut u64,
+    ) -> Self {
+        Self {
+            source_map,
+            macros,
+            counter,
+        }
     }
 
     /// Read an argument of a function-like macro call.
@@ -465,7 +486,7 @@ impl<'a> MacroExpander<'a> {
         };
 
         if let Some(handler) = handler {
-            let expanded = handler.call(token, self.source_map);
+            let expanded = handler.call(token, self.source_map, self.counter);
             input.prepend(expanded);
             return Ok(true);
         }
@@ -594,6 +615,7 @@ pub struct Preprocessor<'a, S: PreprocessorSink> {
     sink: &'a mut S,
     conds: Vec<CondFrame>,
     macros: FxHashMap<SmolStr, Macro>,
+    counter: u64,
 }
 
 impl<'a, S> Preprocessor<'a, S>
@@ -667,6 +689,7 @@ where
         for (name, handler) in [
             ("__FILE__", MacroHandler::File),
             ("__LINE__", MacroHandler::Line),
+            ("__COUNTER__", MacroHandler::Counter),
         ] {
             macros.insert(name.into(), Macro::handler(handler));
         }
@@ -692,6 +715,7 @@ where
             sink,
             conds: Vec::new(),
             macros,
+            counter: 0,
         })
     }
 
@@ -855,7 +879,7 @@ where
                 break;
             }
 
-            let mut expander = MacroExpander::new(self.source_map, &self.macros);
+            let mut expander = MacroExpander::new(self.source_map, &self.macros, &mut self.counter);
             if expander.try_expand_in(&token, &mut self.input)? {
                 continue;
             }
@@ -955,7 +979,7 @@ where
 
         if expand {
             tokens.push_front(first);
-            let mut expander = MacroExpander::new(self.source_map, &self.macros);
+            let mut expander = MacroExpander::new(self.source_map, &self.macros, &mut self.counter);
             let tokens = expander.expand_all(tokens)?;
             return self.process_include_filename(span, tokens, false);
         }
@@ -1128,7 +1152,7 @@ where
             ));
         }
 
-        let mut expander = MacroExpander::new(self.source_map, &self.macros);
+        let mut expander = MacroExpander::new(self.source_map, &self.macros, &mut self.counter);
         let tokens = expander.expand_all(line)?;
         if tokens.is_empty() {
             return Ok(None);

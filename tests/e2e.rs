@@ -1701,6 +1701,10 @@ fn test_macro() {
     f.assert(11, "strlen(__DATE__)");
     f.assert(8, "strlen(__TIME__)");
 
+    f.assert(0, "__COUNTER__");
+    f.assert(1, "__COUNTER__");
+    f.assert(2, "__COUNTER__");
+
     f.finish();
     f.run("macro");
 }
