@@ -38,3 +38,30 @@ pub const fn align_down_to(n: u64, align: u64) -> u64 {
         n / align * align
     }
 }
+
+/// Get the current date and time representation.
+///
+/// This never panics, but if [`libc::localtime_r`] fails, this could produce
+/// invalid/useless date and time (Jan 0 1900, 00:00:00).
+pub fn datetime() -> (String, String) {
+    let tm = unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm = std::mem::MaybeUninit::zeroed();
+        libc::localtime_r(&now, tm.as_mut_ptr());
+        tm.assume_init()
+    };
+
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    (
+        format!(
+            "{} {:>2} {:04}",
+            MONTHS[tm.tm_mon as usize],
+            tm.tm_mday,
+            tm.tm_year + 1900,
+        ),
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec),
+    )
+}

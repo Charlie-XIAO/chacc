@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{PreToken, PreTokenKind, PreTokenResolver, Token, TokenKind, Tokenizer};
+use crate::utils::datetime;
 
 /// A consumable and prependable stream of tokens.
 #[derive(Debug)]
@@ -607,6 +608,8 @@ where
         tokens: Vec<PreToken>,
         sink: &'a mut S,
     ) -> Result<Self> {
+        let (now_date, now_time) = datetime();
+
         let mut macros = FxHashMap::default();
 
         for (name, replacement) in [
@@ -655,6 +658,8 @@ where
             ("__volatile__", "volatile"),
             ("__x86_64", "1"),
             ("__x86_64__", "1"),
+            ("__DATE__", &format!("\"{now_date}\"")),
+            ("__TIME__", &format!("\"{now_time}\"")),
         ] {
             macros.insert(name.into(), Macro::obj(replacement, source_map));
         }

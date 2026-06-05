@@ -87,6 +87,7 @@ impl Fixture {
         f.line("int assert(int expected, int actual, char *code);");
         f.line("int strcmp(char *lhs, char *rhs);");
         f.line("int memcmp(char *lhs, char *rhs, int n);");
+        f.line("long strlen(char *s);");
         f.line("void exit(int code);");
         f
     }
@@ -1675,8 +1676,8 @@ fn test_macro() {
     f.assert(1, "__chacc__");
 
     f.assert(0, &format!("strcmp(main_filename1, \"{}\")", f.tmp.path().join("macro.c").display()));
-    f.assert(6, "main_line1");
-    f.assert(8, "main_line2");
+    f.assert(7, "main_line1");
+    f.assert(9, "main_line2");
     f.assert(0, &format!("strcmp(include1_filename, \"{}\")", f.tmp.path().join("include1.h").display()));
     f.assert(3, "include1_line");
 
@@ -1696,6 +1697,9 @@ fn test_macro() {
     f.assert(21, "M26(3,4,5)");
     f.line("#define M26(x, ...) add6(1,2,x,__VA_ARGS__,6)");
     f.assert(21, "M26(3,4,5)");
+
+    f.assert(11, "strlen(__DATE__)");
+    f.assert(8, "strlen(__TIME__)");
 
     f.finish();
     f.run("macro");
