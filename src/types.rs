@@ -252,7 +252,11 @@ pub struct FuncTypeData {
 #[derive(Debug, Clone)]
 pub struct Member {
     pub ty: Type,
-    pub name: SmolStr,
+    /// Optional name for member.
+    ///
+    /// This is `None` for anonymous struct/union members and unnamed bit-
+    /// fields.
+    pub name: Option<SmolStr>,
     /// Optional alignment override via "_Alignas".
     pub align: Option<u64>,
     /// The byte offset of the member in the struct.

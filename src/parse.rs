@@ -1091,6 +1091,22 @@ impl<'a> Parser<'a> {
                 return Err(self.error(span, "flexible array member not at end of struct"));
             }
 
+            if self.types.as_struct_or_union(declspec.ty).is_some() && self.current().is_punct(";")
+            {
+                if self.types.is_incomplete(declspec.ty) {
+                    return Err(self.error_current("field has incomplete type"));
+                }
+                members.push(Member {
+                    name: None,
+                    ty: declspec.ty,
+                    align: declspec.align,
+                    offset: 0, // union requires 0; struct fills in later
+                    bit_field: None,
+                });
+                self.advance();
+                continue;
+            }
+
             if self.current().is_punct(";") {
                 self.warn_current("declaration does not declare anything");
                 self.advance();
@@ -1122,14 +1138,12 @@ impl<'a> Parser<'a> {
                     None
                 };
 
-                let name = match (declarator.name, bit_field) {
-                    (Some(name), _) => name,
-                    (None, Some(_)) => "".into(),
-                    (None, _) => return Err(self.error(declarator.span, "missing member name")),
-                };
+                if declarator.name.is_none() && bit_field.is_none() {
+                    return Err(self.error(declarator.span, "missing member name"));
+                }
 
                 members.push(Member {
-                    name,
+                    name: declarator.name,
                     ty: declarator.ty,
                     align: declspec.align,
                     offset: 0, // union requires 0; struct fills in later
@@ -3453,34 +3467,51 @@ impl<'a> Parser<'a> {
     fn new_member_access(&mut self, mut node: Node) -> Result<Node> {
         self.infer_type(&mut node)?;
         let ty = node.expect_ty();
-        if self.types.is_incomplete(ty) {
-            return Err(self.error_current("request for member in an incomplete type"));
+
+        let Some(sou) = self.types.as_struct_or_union(ty) else {
+            return Err(self.error_current("member reference type is not a struct or union"));
+        };
+        let Some(members) = &sou.members else {
+            return Err(self.error_current("member reference type is incomplete"));
+        };
+
+        let Some(ident) = self.current().as_ident() else {
+            return Err(self.error_current("not an ident"));
+        };
+
+        let Some(path) = self.find_member_access_path(members, &ident) else {
+            return Err(self.error_current("no such member"));
+        };
+
+        let span = self.current().span;
+        for member in path.into_iter().rev() {
+            node = Node::member(node, member, span);
+        }
+        Ok(node)
+    }
+
+    /// Find the path for a member access.
+    ///
+    /// This would recursively look into anonymous struct/union members. If no
+    /// such member (given by `ident`), this returns `None`. Otherwise, this
+    /// returns the access path in **reverse** order.
+    fn find_member_access_path(&self, members: &[Member], ident: &str) -> Option<Vec<Member>> {
+        for member in members {
+            if member.name.as_deref() == Some(ident) {
+                return Some(vec![member.clone()]);
+            }
+
+            if member.name.is_none()
+                && let Some(sou) = self.types.as_struct_or_union(member.ty)
+                && let Some(members) = &sou.members
+                && let Some(mut path) = self.find_member_access_path(members, ident)
+            {
+                path.push(member.clone());
+                return Some(path);
+            }
         }
 
-        let sou = match self.types.as_struct_or_union(ty) {
-            Some(sou) => sou,
-            None => {
-                return Err(self.error_current("member reference type is not a struct or union"));
-            },
-        };
-
-        let ident = match self.current().as_ident() {
-            Some(ident) => ident,
-            None => return Err(self.error_current("not an ident")),
-        };
-
-        let member = match sou
-            .members
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|member| member.name == ident)
-        {
-            Some(member) => member.clone(),
-            None => return Err(self.error_current("no such member")),
-        };
-
-        Ok(Node::member(node, member, self.current().span))
+        None
     }
 
     /// Lower a local variable initializer.

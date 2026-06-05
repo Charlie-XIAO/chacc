@@ -2010,6 +2010,14 @@ fn test_union() {
     f.assert(3, "({ union {int a,b;} x,y; x.a=3; y.a=5; y=x; y.a; })");
     f.assert(3, "({ union {struct {int a,b;} c;} x,y; x.c.b=3; y.c.b=5; y=x; y.c.b; })");
 
+    f.assert(0xef, "({ union { struct { unsigned char a,b,c,d; }; long e; } x; x.e=0xdeadbeef; x.a; })");
+    f.assert(0xbe, "({ union { struct { unsigned char a,b,c,d; }; long e; } x; x.e=0xdeadbeef; x.b; })");
+    f.assert(0xad, "({ union { struct { unsigned char a,b,c,d; }; long e; } x; x.e=0xdeadbeef; x.c; })");
+    f.assert(0xde, "({ union { struct { unsigned char a,b,c,d; }; long e; } x; x.e=0xdeadbeef; x.d; })");
+
+    f.assert(3, "({ struct { union { int a,b; }; union { int c,d; }; } x; x.a=3; x.b; })");
+    f.assert(5, "({ struct { union { int a,b; }; union { int c,d; }; } x; x.d=5; x.c; })");
+
     f.finish();
     f.run("union");
 }
