@@ -462,7 +462,8 @@ impl<'a> Tokenizer<'a> {
         fn is_ident_start(code: u32) -> bool {
             matches!(
                 code,
-                0x5F // _
+                0x24 // $ (GNU extension)
+                    | 0x5F // _
                     | 0x61..=0x7A // a-z
                     | 0x41..=0x5A // A-Z
                     | 0x00A8 // https://www.sigbus.info/n1570#D.1

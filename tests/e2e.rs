@@ -2094,6 +2094,7 @@ fn test_unicode() {
 
     f.assert(3, "π");
     f.assert(3, "({ int 猹β0¾=3; 猹β0¾; })");
+    f.assert(5, "({ int $$$=5; $$$; })");
 
     f.finish();
     f.run("unicode");
