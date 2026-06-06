@@ -2007,6 +2007,7 @@ fn test_typedef() {
 #[test]
 fn test_unicode() {
     let mut f = Fixture::new();
+    f.line("int π = 3;");
     f.main();
 
     f.line("#define STR(x) #x");
@@ -2090,6 +2091,9 @@ fn test_unicode() {
     f.assert("L'🤔'", r#"({ wchar_t x[] = L"🤔x"; x[0]; })"#);
     f.assert("L'x'", r#"({ wchar_t x[] = L"🤔x"; x[1]; })"#);
     f.assert("12", r#"({ wchar_t x[] = L"🤔x"; sizeof(x); })"#);
+
+    f.assert(3, "π");
+    f.assert(3, "({ int 猹β0¾=3; 猹β0¾; })");
 
     f.finish();
     f.run("unicode");
