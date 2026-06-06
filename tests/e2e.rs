@@ -2064,6 +2064,18 @@ fn test_unicode() {
     f.assert(1, r#"U"\xffffffff"[0]>>31"#);
     f.assert(0, r#"strcmp(STR(U"a"), "U\"a\"")"#);
 
+    f.assert(4, r#"sizeof(L"")"#);
+    f.assert(20, r#"sizeof(L"\xffzzz")"#);
+    f.assert(0, r#"memcmp(L"", "\0\0\0\0", 4)"#);
+    f.assert(0, r#"memcmp(L"abc", "a\0\0\0b\0\0\0c\0\0\0\0\0\0\0", 16)"#);
+    f.assert(0, r#"memcmp(L"中文", "\55N\0\0\207e\0\0\0\0\0\0", 12)"#);
+    f.assert(0, r#"memcmp(L"🦀", "\200\371\001\0\0\0\0\0", 8)"#);
+    f.assert("L'β'", r#"L"βb"[0]"#);
+    f.assert("L'b'", r#"L"βb"[1]"#);
+    f.assert(0, r#"L"βb"[2]"#);
+    f.assert(-1, r#"L"\xffffffff"[0]>>31"#);
+    f.assert(0, r#"strcmp(STR(L"a"), "L\"a\"")"#);
+
     f.finish();
     f.run("unicode");
 }
