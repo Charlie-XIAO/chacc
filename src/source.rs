@@ -35,9 +35,9 @@ pub struct Source {
     pub id: usize,
     pub path: PathBuf,
     pub name: SmolStr,
-    /// The normalized source content for tokenization.
+    /// The normalized (logical) source content for tokenization.
     pub content: SmolStr,
-    /// The original source text.
+    /// The original (physical) source text.
     original: SmolStr,
     /// The line index on the original source.
     line_index: LineIndex,
@@ -65,6 +65,16 @@ impl Source {
             ReplaceCrLf,
             ReplaceCr,
             Remove(usize),
+        }
+
+        // Skip UTF-8 BOM
+        if original.starts_with('\u{feff}') {
+            content.reserve(original.len());
+            edited = true;
+            i += 3;
+            start = i;
+            cum_shift += 3;
+            shifts.push((0, cum_shift));
         }
 
         while i < bytes.len() {
