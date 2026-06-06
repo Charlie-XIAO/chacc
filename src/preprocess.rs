@@ -12,7 +12,9 @@ use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::parse::Parser;
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{PreToken, PreTokenKind, PreTokenResolver, Token, TokenKind, Tokenizer};
+use crate::tokenize::{
+    PreToken, PreTokenKind, PreTokenResolver, StrLitKind, Token, TokenKind, Tokenizer,
+};
 use crate::utils::datetime;
 
 /// A consumable and prependable stream of tokens.
@@ -1163,7 +1165,7 @@ where
         let resolver = PreTokenResolver::new(self.source_map);
         let tokens = tokens
             .into_iter()
-            .map(|tok| resolver.lower(tok, true))
+            .map(|tok| resolver.lower(&tok, true))
             .collect::<Result<_>>()?;
 
         let val = Parser::new(self.source_map, tokens, true).parse_constexpr()?;
@@ -1307,27 +1309,49 @@ impl PreprocessedTokens {
     pub fn lower(self, source_map: &SourceMap) -> Result<Vec<Token>> {
         let resolver = PreTokenResolver::new(source_map);
         let mut tokens: Vec<Token> = Vec::with_capacity(self.0.len());
+        let mut pre_tokens = self.0.into_iter().peekable();
 
-        for token in self.0 {
-            let token = resolver.lower(token, false)?;
-
-            // Fold adjacent string literals into one.
-            if let TokenKind::Str(current, _) = &token.kind
-                && let Some(Token {
-                    kind: TokenKind::Str(next, _),
-                    ..
-                }) = tokens.last_mut()
-            {
-                // TODO: Handle string literals with different types
-                debug_assert_eq!(next.last(), Some(&0));
-                let mut content = Vec::with_capacity(next.len() + current.len() - 1);
-                content.extend_from_slice(&next[..next.len() - 1]);
-                content.extend_from_slice(current);
-                *next = content.into();
+        while let Some(current) = pre_tokens.next() {
+            if !matches!(current.kind, PreTokenKind::StrLit) {
+                tokens.push(resolver.lower(&current, false)?);
                 continue;
             }
 
-            tokens.push(token);
+            let span = current.span;
+            let (mut kind, _) = resolver.infer_string_literal_kind(&current)?;
+            let mut literals = vec![current];
+
+            while let Some(next) =
+                pre_tokens.next_if(|tok| matches!(tok.kind, PreTokenKind::StrLit))
+            {
+                let (next_kind, _) = resolver.infer_string_literal_kind(&next)?;
+                if kind == StrLitKind::Normal {
+                    kind = next_kind;
+                } else if next_kind != StrLitKind::Normal && next_kind != kind {
+                    return Err(source_map.error(
+                        next.span,
+                        "unsupported non-standard concatenation of string literals",
+                    ));
+                }
+                literals.push(next);
+            }
+
+            let mut content = Vec::new();
+            for literal in literals {
+                let TokenKind::Str(piece, _) =
+                    resolver.lower_string_literal(&literal, Some(kind))?
+                else {
+                    unreachable!();
+                };
+                debug_assert_eq!(piece.last(), Some(&0));
+                content.extend(&piece[..piece.len() - 1]);
+            }
+            content.push(0);
+
+            tokens.push(Token {
+                kind: TokenKind::Str(content.into(), kind),
+                span,
+            });
         }
 
         Ok(tokens)

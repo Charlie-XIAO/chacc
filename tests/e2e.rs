@@ -1920,6 +1920,32 @@ fn test_string() {
     f.assert(0, r#"!strcmp("abc" "d", "abcd\nefgh")"#);
     f.assert(0, r#"strcmp("\x9" "0", "\t0")"#);
 
+    f.assert(16, r#"sizeof(L"abc" "")"#);
+
+    f.assert(28, r#"sizeof(L"abc" "def")"#);
+    f.assert(28, r#"sizeof(L"abc" L"def")"#);
+    f.assert(14, r#"sizeof(u"abc" "def")"#);
+    f.assert(14, r#"sizeof(u"abc" u"def")"#);
+
+    f.assert("L'a'", r#"(L"abc" "def")[0]"#);
+    f.assert("L'd'", r#"(L"abc" "def")[3]"#);
+    f.assert("L'\\0'", r#"(L"abc" "def")[6]"#);
+
+    f.assert("u'a'", r#"(u"abc" "def")[0]"#);
+    f.assert("u'd'", r#"(u"abc" "def")[3]"#);
+    f.assert("u'\\0'", r#"(u"abc" "def")[6]"#);
+
+    f.assert("L'猹'", r#"("猹" L"")[0]"#);
+    f.assert("0343", r#"("\343\201\202" L"")[0]"#);
+    f.assert("0201", r#"("\343\201\202" L"")[1]"#);
+    f.assert("0202", r#"("\343\201\202" L"")[2]"#);
+    f.assert(0, r#"("\343\201\202" L"")[3]"#);
+
+    f.assert("L'a'", r#"("a" "b" L"c")[0]"#);
+    f.assert("L'b'", r#"("a" "b" L"c")[1]"#);
+    f.assert("L'c'", r#"("a" "b" L"c")[2]"#);
+    f.assert(0, r#"("a" "b" L"c")[3]"#);
+
     f.finish();
     f.run("string");
 }

@@ -71,7 +71,7 @@ enum EscapeSeq {
 }
 
 /// Preprocessor token kinds for [`PreToken`].
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub enum PreTokenKind {
     Ident(SmolStr),
     Punct(SmolStr),
@@ -85,7 +85,7 @@ pub enum PreTokenKind {
 ///
 /// This is the direct output of tokenization consumed by the preprocessor,
 /// which needs to be lowered into [`Token`] before C level parsing.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct PreToken {
     pub kind: PreTokenKind,
     pub span: SourceSpan,
@@ -161,8 +161,30 @@ impl PreToken {
     }
 }
 
+/// String literal kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrLitKind {
+    Normal,
+    Utf8,
+    Utf16,
+    Utf32,
+    Wide,
+}
+
+impl StrLitKind {
+    /// Return the base element type of this kind of string literal.
+    pub fn base_ty(self) -> Type {
+        match self {
+            StrLitKind::Normal | StrLitKind::Utf8 => Type::CHAR,
+            StrLitKind::Utf16 => Type::USHORT,
+            StrLitKind::Utf32 => Type::UINT,
+            StrLitKind::Wide => Type::INT,
+        }
+    }
+}
+
 /// Token kinds for [`Token`].
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub enum TokenKind {
     Ident(SmolStr),
     Keyword(Keyword),
@@ -172,13 +194,13 @@ pub enum TokenKind {
     /// A string literal.
     ///
     /// The first element is the string content, with null terminator preserved.
-    /// The second element is the base element type of the literal.
-    Str(Rc<[u32]>, Type),
+    /// The second element is the kind of this literal.
+    Str(Rc<[u32]>, StrLitKind),
     Eof,
 }
 
 /// A token.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: SourceSpan,
@@ -265,9 +287,9 @@ impl Token {
     }
 
     /// Return the content if this is a string literal token.
-    pub fn as_str(&self) -> Option<(Rc<[u32]>, Type)> {
+    pub fn as_str(&self) -> Option<(Rc<[u32]>, StrLitKind)> {
         match self.kind {
-            TokenKind::Str(ref content, base_ty) => Some((content.clone(), base_ty)),
+            TokenKind::Str(ref content, kind) => Some((content.clone(), kind)),
             _ => None,
         }
     }
@@ -609,23 +631,23 @@ impl<'a> PreTokenResolver<'a> {
     /// - All identifiers are treated as 0;
     /// - String literals are rejected;
     /// - Floating-point literals are rejected.
-    pub fn lower(&self, token: PreToken, for_pp_expr: bool) -> Result<Token> {
-        let kind = match token.kind {
+    pub fn lower(&self, token: &PreToken, for_pp_expr: bool) -> Result<Token> {
+        let kind = match &token.kind {
             PreTokenKind::Ident(_) if for_pp_expr => TokenKind::Num(0, Type::INT),
             PreTokenKind::Ident(ident) if let Ok(keyword) = Keyword::try_from(ident.as_str()) => {
                 TokenKind::Keyword(keyword)
             },
-            PreTokenKind::Ident(ident) => TokenKind::Ident(ident),
-            PreTokenKind::Punct(punct) => TokenKind::Punct(punct),
-            PreTokenKind::NumLit => self.lower_numeric_literal(&token, for_pp_expr)?,
+            PreTokenKind::Ident(ident) => TokenKind::Ident(ident.clone()),
+            PreTokenKind::Punct(punct) => TokenKind::Punct(punct.clone()),
+            PreTokenKind::NumLit => self.lower_numeric_literal(token, for_pp_expr)?,
             PreTokenKind::StrLit if for_pp_expr => {
                 return Err(self.0.error(
                     token.span,
                     "string literal is not valid in preprocessor expressions",
                 ));
             },
-            PreTokenKind::StrLit => self.lower_string_literal(&token)?,
-            PreTokenKind::CharLit => self.lower_char_literal(&token)?,
+            PreTokenKind::StrLit => self.lower_string_literal(token, None)?,
+            PreTokenKind::CharLit => self.lower_char_literal(token)?,
             PreTokenKind::Eof => TokenKind::Eof,
         };
 
@@ -765,27 +787,39 @@ impl<'a> PreTokenResolver<'a> {
         Ok(TokenKind::Num(val, ty))
     }
 
-    /// Lower a string literal.
-    fn lower_string_literal(&self, token: &PreToken) -> Result<TokenKind> {
+    /// Infer the kind of a string literal.
+    ///
+    /// This returns the inferred literal kind and the length of the prefix.
+    pub fn infer_string_literal_kind(&self, token: &PreToken) -> Result<(StrLitKind, usize)> {
         let spelling = self.spelling(token);
         let bytes = spelling.as_bytes();
 
-        enum StrLitKind {
-            Utf8,
-            Utf16,
-            Utf32,
-            Wide,
+        match bytes {
+            [b'"', .., b'"'] => Ok((StrLitKind::Normal, 0)),
+            [b'u', b'8', b'"', .., b'"'] => Ok((StrLitKind::Utf8, 2)),
+            [b'u', b'"', .., b'"'] => Ok((StrLitKind::Utf16, 1)),
+            [b'U', b'"', .., b'"'] => Ok((StrLitKind::Utf32, 1)),
+            [b'L', b'"', .., b'"'] => Ok((StrLitKind::Wide, 1)),
+            _ => Err(self.0.error(token.span, "invalid string literal")),
         }
+    }
 
-        let (kind, mut i) = match bytes {
-            [b'"', .., b'"'] => (StrLitKind::Utf8, 1),
-            [b'u', b'8', b'"', .., b'"'] => (StrLitKind::Utf8, 3),
-            [b'u', b'"', .., b'"'] => (StrLitKind::Utf16, 2),
-            [b'U', b'"', .., b'"'] => (StrLitKind::Utf32, 2),
-            [b'L', b'"', .., b'"'] => (StrLitKind::Wide, 2),
-            _ => return Err(self.0.error(token.span, "invalid string literal")),
-        };
+    /// Lower a string literal.
+    ///
+    /// If `kind` is provided, it overrides the kind inferred from the literal
+    /// prefix, and the literal content will be interpreted accordingly.
+    pub fn lower_string_literal(
+        &self,
+        token: &PreToken,
+        kind: Option<StrLitKind>,
+    ) -> Result<TokenKind> {
+        let (inferred_kind, prefix_len) = self.infer_string_literal_kind(token)?;
+        let kind = kind.unwrap_or(inferred_kind);
 
+        let spelling = self.spelling(token);
+        let bytes = spelling.as_bytes();
+
+        let mut i = prefix_len + 1; // Skip prefix and opening quote
         let len = bytes.len() - 1; // Exclude closing quote
         let mut content = Vec::new();
 
@@ -818,24 +852,24 @@ impl<'a> PreTokenResolver<'a> {
                         bytes,
                         i,
                         len,
-                        matches!(kind, StrLitKind::Utf8),
+                        matches!(kind, StrLitKind::Normal | StrLitKind::Utf8),
                     )?;
                     match escape {
                         EscapeSeq::Byte(byte) => content.push(byte as _),
                         EscapeSeq::Num(val) => match kind {
-                            StrLitKind::Utf8 => content.push(val as u8 as _),
+                            StrLitKind::Normal | StrLitKind::Utf8 => content.push(val as u8 as _),
                             StrLitKind::Utf16 => content.push(val as u16 as _),
                             StrLitKind::Utf32 | StrLitKind::Wide => content.push(val),
                         },
                         EscapeSeq::Codepoint(ch) => match kind {
-                            StrLitKind::Utf8 => push_utf8(&mut content, ch),
+                            StrLitKind::Normal | StrLitKind::Utf8 => push_utf8(&mut content, ch),
                             StrLitKind::Utf16 => push_utf16(&mut content, ch),
                             StrLitKind::Utf32 | StrLitKind::Wide => content.push(ch as _),
                         },
                     }
                     i += len;
                 },
-                byte if matches!(kind, StrLitKind::Utf8) => {
+                byte if matches!(kind, StrLitKind::Normal | StrLitKind::Utf8) => {
                     content.push(byte as _);
                     i += 1;
                 },
@@ -845,7 +879,7 @@ impl<'a> PreTokenResolver<'a> {
                         .next()
                         .expect("non-empty string literal tail");
                     match kind {
-                        StrLitKind::Utf8 => unreachable!(),
+                        StrLitKind::Normal | StrLitKind::Utf8 => unreachable!(),
                         StrLitKind::Utf16 => push_utf16(&mut content, ch),
                         StrLitKind::Utf32 | StrLitKind::Wide => content.push(ch as _),
                     }
@@ -855,16 +889,7 @@ impl<'a> PreTokenResolver<'a> {
         }
 
         content.push(0);
-
-        Ok(TokenKind::Str(
-            content.into(),
-            match kind {
-                StrLitKind::Utf8 => Type::CHAR,
-                StrLitKind::Utf16 => Type::USHORT,
-                StrLitKind::Utf32 => Type::UINT,
-                StrLitKind::Wide => Type::INT,
-            },
-        ))
+        Ok(TokenKind::Str(content.into(), kind))
     }
 
     /// Lower a character literal.

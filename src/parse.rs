@@ -14,7 +14,7 @@ use crate::ast::{
 use crate::constexpr::ConstValue;
 use crate::error::{Error, Result};
 use crate::source::{SourceMap, SourceSpan};
-use crate::tokenize::{Keyword, Token, TokenKind};
+use crate::tokenize::{Keyword, StrLitKind, Token, TokenKind};
 use crate::types::{ArrayTypeData, ConstType, Member, StructOrUnionTypeData, Type, TypeStore};
 use crate::utils::VA_AREA_SIZE;
 
@@ -1376,7 +1376,7 @@ impl<'a> Parser<'a> {
                 .collect::<Vec<_>>();
             name.push(0);
 
-            let id = self.create_string_literal(name.into(), Type::CHAR);
+            let id = self.create_string_literal(name.into(), StrLitKind::Normal);
             let ident = OrdinaryIdent::Global(id, true);
             self.push_scope_ident("__func__".into(), ident);
             self.push_scope_ident("__FUNCTION__".into(), ident);
@@ -1932,8 +1932,8 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
         if let Some(array) = self.types.as_array(ty).cloned() {
-            let elements = if let Some((content, base_ty)) = self.current().as_str()
-                && array.base == base_ty
+            let elements = if let Some((content, kind)) = self.current().as_str()
+                && array.base == kind.base_ty()
             {
                 self.parse_string_initializer(content, &array)
             } else {
@@ -2842,12 +2842,12 @@ impl<'a> Parser<'a> {
             return Ok(node);
         }
 
-        if let Some((content, base_ty)) = self.current().as_str() {
+        if let Some((content, kind)) = self.current().as_str() {
             debug_assert!(
                 !self.preprocess,
                 "string literals should not leak here in preprocessing mode",
             );
-            let global_id = self.create_string_literal(content, base_ty);
+            let global_id = self.create_string_literal(content, kind);
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), span));
         }
@@ -3196,18 +3196,19 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new string literal as an anonymous global variable.
-    fn create_string_literal(&mut self, content: Rc<[u32]>, base_ty: Type) -> usize {
-        let ty = self.types.array(base_ty, Some(content.len()));
+    fn create_string_literal(&mut self, content: Rc<[u32]>, kind: StrLitKind) -> usize {
+        let ty = self.types.array(kind.base_ty(), Some(content.len()));
         let label = self.unique_label();
 
-        let bytes = match base_ty {
-            Type::CHAR => content.iter().map(|&x| x as u8).collect(),
-            Type::USHORT => content
+        let bytes = match kind {
+            StrLitKind::Normal | StrLitKind::Utf8 => content.iter().map(|&x| x as u8).collect(),
+            StrLitKind::Utf16 => content
                 .iter()
                 .flat_map(|&x| (x as u16).to_le_bytes())
                 .collect(),
-            Type::UINT | Type::INT => content.iter().flat_map(|&x| x.to_le_bytes()).collect(),
-            _ => unreachable!(),
+            StrLitKind::Utf32 | StrLitKind::Wide => {
+                content.iter().flat_map(|&x| x.to_le_bytes()).collect()
+            },
         };
 
         self.create_global(
