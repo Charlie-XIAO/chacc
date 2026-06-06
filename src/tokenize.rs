@@ -341,7 +341,7 @@ impl<'a> Tokenizer<'a> {
                 [b, ..] if b.is_ascii_digit() => self.read_numeric_literal(),
                 [b'.', next, ..] if next.is_ascii_digit() => self.read_numeric_literal(),
                 [b'"', ..] => self.read_string_char_literal(false, 0)?,
-                [b'u', b'"', ..] => self.read_string_char_literal(false, 1)?,
+                [b'u' | b'U', b'"', ..] => self.read_string_char_literal(false, 1)?,
                 [b'u', b'8', b'"', ..] => self.read_string_char_literal(false, 2)?,
                 [b'\'', ..] => self.read_string_char_literal(true, 0)?,
                 [b'u' | b'U' | b'L', b'\'', ..] => self.read_string_char_literal(true, 1)?,
@@ -688,12 +688,14 @@ impl<'a> PreTokenResolver<'a> {
         enum StrLitKind {
             Utf8,
             Utf16,
+            Utf32,
         }
 
         let (kind, mut i) = match bytes {
             [b'"', .., b'"'] => (StrLitKind::Utf8, 1),
             [b'u', b'8', b'"', .., b'"'] => (StrLitKind::Utf8, 3),
             [b'u', b'"', .., b'"'] => (StrLitKind::Utf16, 2),
+            [b'U', b'"', .., b'"'] => (StrLitKind::Utf32, 2),
             _ => return Err(self.0.error(token.span, "invalid string literal")),
         };
 
@@ -729,34 +731,38 @@ impl<'a> PreTokenResolver<'a> {
                         bytes,
                         i,
                         len,
-                        !matches!(kind, StrLitKind::Utf16),
+                        matches!(kind, StrLitKind::Utf8),
                     )?;
                     match escape {
                         EscapeSeq::Byte(byte) => content.push(byte as _),
                         EscapeSeq::Num(val) => match kind {
                             StrLitKind::Utf8 => content.push(val as u8 as _),
                             StrLitKind::Utf16 => content.push(val as u16 as _),
+                            StrLitKind::Utf32 => content.push(val),
                         },
                         EscapeSeq::Codepoint(ch) => match kind {
                             StrLitKind::Utf8 => push_utf8(&mut content, ch),
                             StrLitKind::Utf16 => push_utf16(&mut content, ch),
+                            StrLitKind::Utf32 => content.push(ch as _),
                         },
                     }
                     i += len;
                 },
-                byte => match kind {
-                    StrLitKind::Utf8 => {
-                        content.push(byte as _);
-                        i += 1;
-                    },
-                    StrLitKind::Utf16 => {
-                        let ch = spelling[i..len]
-                            .chars()
-                            .next()
-                            .expect("non-empty string literal tail");
-                        push_utf16(&mut content, ch);
-                        i += ch.len_utf8();
-                    },
+                byte if matches!(kind, StrLitKind::Utf8) => {
+                    content.push(byte as _);
+                    i += 1;
+                },
+                _ => {
+                    let ch = spelling[i..len]
+                        .chars()
+                        .next()
+                        .expect("non-empty string literal tail");
+                    match kind {
+                        StrLitKind::Utf8 => unreachable!(),
+                        StrLitKind::Utf16 => push_utf16(&mut content, ch),
+                        StrLitKind::Utf32 => content.push(ch as _),
+                    }
+                    i += ch.len_utf8();
                 },
             }
         }
@@ -768,6 +774,7 @@ impl<'a> PreTokenResolver<'a> {
             match kind {
                 StrLitKind::Utf8 => Type::CHAR,
                 StrLitKind::Utf16 => Type::USHORT,
+                StrLitKind::Utf32 => Type::UINT,
             },
         ))
     }

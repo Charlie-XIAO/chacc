@@ -3206,6 +3206,7 @@ impl<'a> Parser<'a> {
                 .iter()
                 .flat_map(|&x| (x as u16).to_le_bytes())
                 .collect(),
+            Type::UINT => content.iter().flat_map(|&x| x.to_le_bytes()).collect(),
             _ => unreachable!(),
         };
 
