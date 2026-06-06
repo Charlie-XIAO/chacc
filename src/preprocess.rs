@@ -1310,13 +1310,14 @@ impl PreprocessedTokens {
             let token = resolver.lower(token, false)?;
 
             // Fold adjacent string literals into one.
-            if let TokenKind::Str(current) = &token.kind
+            if let TokenKind::Str(current, _) = &token.kind
                 && let Some(Token {
-                    kind: TokenKind::Str(next),
+                    kind: TokenKind::Str(next, _),
                     ..
                 }) = tokens.last_mut()
             {
-                debug_assert_eq!(next.last(), Some(&b'\0'));
+                // TODO: Handle string literals with different types
+                debug_assert_eq!(next.last(), Some(&0));
                 let mut content = Vec::with_capacity(next.len() + current.len() - 1);
                 content.extend_from_slice(&next[..next.len() - 1]);
                 content.extend_from_slice(current);

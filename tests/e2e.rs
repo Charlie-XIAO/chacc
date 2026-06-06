@@ -2040,6 +2040,16 @@ fn test_unicode() {
     f.assert(4, r#"sizeof(u8"abc")"#);
     f.assert(0, r#"strcmp(u8"abc", "abc")"#);
 
+    f.assert(2, r#"sizeof(u"")"#);
+    f.assert(10, r#"sizeof(u"\xffzzz")"#);
+    f.assert(0, r#"memcmp(u"", "\0\0", 2)"#);
+    f.assert(0, r#"memcmp(u"abc", "a\0b\0c\0\0\0", 8)"#);
+    f.assert(0, r#"memcmp(u"中文", "\55N\207e\0\0", 6)"#);
+    f.assert(0, r#"memcmp(u"🦀", ">\330\200\335\0\0", 6)"#);
+    f.assert("u'β'", r#"u"βb"[0]"#);
+    f.assert("u'b'", r#"u"βb"[1]"#);
+    f.assert(0, r#"u"βb"[2]"#);
+
     f.finish();
     f.run("unicode");
 }

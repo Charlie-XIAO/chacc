@@ -1369,12 +1369,14 @@ impl<'a> Parser<'a> {
         };
 
         {
-            let name = self.functions[func_id].name.as_bytes();
-            let mut bytes = Vec::with_capacity(name.len() + 1);
-            bytes.extend(name);
-            bytes.push(0);
+            let mut name = self.functions[func_id]
+                .name
+                .bytes()
+                .map(|b| b as u32)
+                .collect::<Vec<_>>();
+            name.push(0);
 
-            let id = self.create_string_literal(bytes.into());
+            let id = self.create_string_literal(name.into(), Type::CHAR);
             let ident = OrdinaryIdent::Global(id, true);
             self.push_scope_ident("__func__".into(), ident);
             self.push_scope_ident("__FUNCTION__".into(), ident);
@@ -1930,8 +1932,8 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_initializer(&mut self, mut ty: Type) -> Result<Initializer> {
         if let Some(array) = self.types.as_array(ty).cloned() {
-            let elements = if array.base == Type::CHAR
-                && let Some(content) = self.current().as_str()
+            let elements = if let Some((content, base_ty)) = self.current().as_str()
+                && array.base == base_ty
             {
                 self.parse_string_initializer(content, &array)
             } else {
@@ -2027,7 +2029,7 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_string_initializer(
         &mut self,
-        content: Rc<[u8]>,
+        content: Rc<[u32]>,
         array: &ArrayTypeData,
     ) -> Vec<Initializer> {
         let span = self.current().span;
@@ -2036,16 +2038,16 @@ impl<'a> Parser<'a> {
         if content.len() > len + 1 {
             // The terminating null character is automatically not
             // included (allowed per C spec) if there is no room for it,
-            // so we warn only if the content is at least 2 bytes longer
+            // so we warn only if the content is at least 2 elements longer
             self.warn_current("initializer string is too long");
         }
 
         let elements = content
             .iter()
             .take(len)
-            .map(|&byte| Initializer {
-                ty: Type::CHAR,
-                kind: InitializerKind::Expr(Node::num(byte as i8 as _, Type::INT, span)),
+            .map(|&unit| Initializer {
+                ty: array.base,
+                kind: InitializerKind::Expr(Node::num(unit as _, Type::INT, span)),
             })
             .collect();
 
@@ -2840,12 +2842,12 @@ impl<'a> Parser<'a> {
             return Ok(node);
         }
 
-        if let Some(content) = self.current().as_str() {
+        if let Some((content, base_ty)) = self.current().as_str() {
             debug_assert!(
                 !self.preprocess,
                 "string literals should not leak here in preprocessing mode",
             );
-            let global_id = self.create_string_literal(content);
+            let global_id = self.create_string_literal(content, base_ty);
             self.advance();
             return Ok(Node::entity(EntityRef::Global(global_id), span));
         }
@@ -3194,16 +3196,25 @@ impl<'a> Parser<'a> {
     }
 
     /// Create a new string literal as an anonymous global variable.
-    fn create_string_literal(&mut self, content: Rc<[u8]>) -> usize {
-        let ty = self.types.array(Type::CHAR, Some(content.len()));
+    fn create_string_literal(&mut self, content: Rc<[u32]>, base_ty: Type) -> usize {
+        let ty = self.types.array(base_ty, Some(content.len()));
         let label = self.unique_label();
+
+        let bytes = match base_ty {
+            Type::CHAR => content.iter().map(|&x| x as u8).collect(),
+            Type::USHORT => content
+                .iter()
+                .flat_map(|&x| (x as u16).to_le_bytes())
+                .collect(),
+            _ => unreachable!(),
+        };
 
         self.create_global(
             label,
             ty,
             None,
             GlobalStorage::Data(GlobalInitData {
-                bytes: content,
+                bytes,
                 relocations: Default::default(),
             }),
             true,

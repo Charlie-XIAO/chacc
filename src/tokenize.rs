@@ -169,8 +169,11 @@ pub enum TokenKind {
     Punct(SmolStr),
     Num(u64, Type),
     Flonum(f64, Type),
-    /// The bytes of a string literal, with null terminator preserved.
-    Str(Rc<[u8]>),
+    /// A string literal.
+    ///
+    /// The first element is the string content, with null terminator preserved.
+    /// The second element is the base element type of the literal.
+    Str(Rc<[u32]>, Type),
     Eof,
 }
 
@@ -262,9 +265,9 @@ impl Token {
     }
 
     /// Return the content if this is a string literal token.
-    pub fn as_str(&self) -> Option<Rc<[u8]>> {
+    pub fn as_str(&self) -> Option<(Rc<[u32]>, Type)> {
         match self.kind {
-            TokenKind::Str(ref content) => Some(content.clone()),
+            TokenKind::Str(ref content, base_ty) => Some((content.clone(), base_ty)),
             _ => None,
         }
     }
@@ -338,6 +341,7 @@ impl<'a> Tokenizer<'a> {
                 [b, ..] if b.is_ascii_digit() => self.read_numeric_literal(),
                 [b'.', next, ..] if next.is_ascii_digit() => self.read_numeric_literal(),
                 [b'"', ..] => self.read_string_char_literal(false, 0)?,
+                [b'u', b'"', ..] => self.read_string_char_literal(false, 1)?,
                 [b'u', b'8', b'"', ..] => self.read_string_char_literal(false, 2)?,
                 [b'\'', ..] => self.read_string_char_literal(true, 0)?,
                 [b'u' | b'U' | b'L', b'\'', ..] => self.read_string_char_literal(true, 1)?,
@@ -681,14 +685,32 @@ impl<'a> PreTokenResolver<'a> {
         let spelling = self.spelling(token);
         let bytes = spelling.as_bytes();
 
-        let mut i = match bytes {
-            [b'"', .., b'"'] => 1,
-            [b'u', b'8', b'"', .., b'"'] => 3,
+        enum StrLitKind {
+            Utf8,
+            Utf16,
+        }
+
+        let (kind, mut i) = match bytes {
+            [b'"', .., b'"'] => (StrLitKind::Utf8, 1),
+            [b'u', b'8', b'"', .., b'"'] => (StrLitKind::Utf8, 3),
+            [b'u', b'"', .., b'"'] => (StrLitKind::Utf16, 2),
             _ => return Err(self.0.error(token.span, "invalid string literal")),
         };
 
         let len = bytes.len() - 1; // Exclude closing quote
         let mut content = Vec::new();
+
+        fn push_utf8(content: &mut Vec<u32>, ch: char) {
+            let mut buf = [0; 4];
+            let buf = ch.encode_utf8(&mut buf).bytes();
+            content.extend(buf.map(|b| b as u32));
+        }
+
+        fn push_utf16(content: &mut Vec<u32>, ch: char) {
+            let mut buf = [0; 2];
+            let buf = ch.encode_utf16(&mut buf);
+            content.extend(buf.iter().map(|&b| b as u32));
+        }
 
         while i < len {
             match bytes[i] {
@@ -702,27 +724,52 @@ impl<'a> PreTokenResolver<'a> {
                         return Err(self.0.error(token.span_at(i, 1), "invalid escape sequence"));
                     }
                     i += 1;
-                    let (escape, len) = self.decode_escape_seq(token, bytes, i, len, true)?;
+                    let (escape, len) = self.decode_escape_seq(
+                        token,
+                        bytes,
+                        i,
+                        len,
+                        !matches!(kind, StrLitKind::Utf16),
+                    )?;
                     match escape {
-                        EscapeSeq::Byte(byte) => content.push(byte),
-                        EscapeSeq::Num(val) => content.push(val as u8),
-                        EscapeSeq::Codepoint(ch) => {
-                            let mut buf = [0; 4];
-                            let encoded = ch.encode_utf8(&mut buf);
-                            content.extend_from_slice(encoded.as_bytes());
+                        EscapeSeq::Byte(byte) => content.push(byte as _),
+                        EscapeSeq::Num(val) => match kind {
+                            StrLitKind::Utf8 => content.push(val as u8 as _),
+                            StrLitKind::Utf16 => content.push(val as u16 as _),
+                        },
+                        EscapeSeq::Codepoint(ch) => match kind {
+                            StrLitKind::Utf8 => push_utf8(&mut content, ch),
+                            StrLitKind::Utf16 => push_utf16(&mut content, ch),
                         },
                     }
                     i += len;
                 },
-                byte => {
-                    content.push(byte);
-                    i += 1;
+                byte => match kind {
+                    StrLitKind::Utf8 => {
+                        content.push(byte as _);
+                        i += 1;
+                    },
+                    StrLitKind::Utf16 => {
+                        let ch = spelling[i..len]
+                            .chars()
+                            .next()
+                            .expect("non-empty string literal tail");
+                        push_utf16(&mut content, ch);
+                        i += ch.len_utf8();
+                    },
                 },
             }
         }
 
-        content.push(b'\0');
-        Ok(TokenKind::Str(content.into()))
+        content.push(0);
+
+        Ok(TokenKind::Str(
+            content.into(),
+            match kind {
+                StrLitKind::Utf8 => Type::CHAR,
+                StrLitKind::Utf16 => Type::USHORT,
+            },
+        ))
     }
 
     /// Lower a character literal.
@@ -770,12 +817,7 @@ impl<'a> PreTokenResolver<'a> {
             if matches!(kind, CharLitKind::Normal) && start + 1 != end {
                 return Err(self.0.error(token.span, "multi-character char constant"));
             }
-            let Ok(spelling) = std::str::from_utf8(&bytes[start..end]) else {
-                return Err(self
-                    .0
-                    .error(token.span_at(start, 1), "invalid UTF-8 sequence"));
-            };
-            let mut chars = spelling.chars();
+            let mut chars = spelling[start..end].chars();
             let Some(ch) = chars.next() else {
                 return Err(self.0.error(token.span, "empty char constant"));
             };
