@@ -2010,6 +2010,9 @@ fn test_unicode() {
     f.main();
 
     f.line("#define STR(x) #x");
+    f.line("typedef unsigned short char16_t;");
+    f.line("typedef unsigned int char32_t;");
+    f.line("typedef int wchar_t;");
 
     f.assert(0, r#"strcmp("αβγ", "\u03b1\u03b2\u03b3")"#);
     f.assert(0, r#"strcmp("中文", "\u4e2d\u6587")"#);
@@ -2075,6 +2078,18 @@ fn test_unicode() {
     f.assert(0, r#"L"βb"[2]"#);
     f.assert(-1, r#"L"\xffffffff"[0]>>31"#);
     f.assert(0, r#"strcmp(STR(L"a"), "L\"a\"")"#);
+
+    f.assert("u'α'", r#"({ char16_t x[] = u"αβ"; x[0]; })"#);
+    f.assert("u'β'", r#"({ char16_t x[] = u"αβ"; x[1]; })"#);
+    f.assert("6", r#"({ char16_t x[] = u"αβ"; sizeof(x); })"#);
+
+    f.assert("U'🤔'", r#"({ char32_t x[] = U"🤔x"; x[0]; })"#);
+    f.assert("U'x'", r#"({ char32_t x[] = U"🤔x"; x[1]; })"#);
+    f.assert("12", r#"({ char32_t x[] = U"🤔x"; sizeof(x); })"#);
+
+    f.assert("L'🤔'", r#"({ wchar_t x[] = L"🤔x"; x[0]; })"#);
+    f.assert("L'x'", r#"({ wchar_t x[] = L"🤔x"; x[1]; })"#);
+    f.assert("12", r#"({ wchar_t x[] = L"🤔x"; sizeof(x); })"#);
 
     f.finish();
     f.run("unicode");
