@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use rustc_hash::FxHashMap;
-use tempfile::{TempDir, tempdir};
+use temp_dir::TempDir;
 
 fn tests_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -82,7 +82,7 @@ impl Fixture {
         let mut f = Self {
             source: String::new(),
             includes: FxHashMap::default(),
-            tmp: tempdir().expect("failed to create temporary directory"),
+            tmp: TempDir::new().expect("failed to create temporary directory"),
         };
         f.line("int assert(int expected, int actual, char *code);");
         f.line("int strcmp(char *lhs, char *rhs);");
@@ -2314,7 +2314,7 @@ fn test_help_flag() {
 
 #[test]
 fn test_output_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
     let exe = tmp.path().join("app.exe");
@@ -2340,7 +2340,7 @@ fn test_output_flag() {
 
 #[test]
 fn test_include_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let dir1 = tmp.path().join("dir1");
     let dir2 = tmp.path().join("dir2");
@@ -2369,7 +2369,7 @@ fn test_include_flag() {
 
 #[test]
 fn test_define_undefine_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let input = tmp.path().join("main.c");
     std::fs::write(&input, "foo").expect("failed to write input");
@@ -2420,7 +2420,7 @@ fn test_define_undefine_flag() {
 
 #[test]
 fn test_preprocess_only_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
     let output = Command::chacc(tmp.path())
@@ -2460,7 +2460,7 @@ fn test_preprocess_only_flag() {
 
 #[test]
 fn test_assemble_only_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
     let output = Command::chacc(tmp.path())
@@ -2497,7 +2497,7 @@ fn test_assemble_only_flag() {
 
 #[test]
 fn test_compile_only_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let input = create_c(tmp.path()).expect("failed to create input");
     let obj = input.with_extension("o");
@@ -2534,7 +2534,7 @@ fn test_compile_only_flag() {
 
 #[test]
 fn test_save_temps_flag() {
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
     let output_dir = tmp.path().join("output");
     std::fs::create_dir(&output_dir).expect("failed to create output directory");
 
@@ -2570,7 +2570,7 @@ fn test_save_temps_flag() {
         assert!(path.with_extension("s").is_file());
     }
 
-    let tmp = tempdir().expect("failed to create temporary directory");
+    let tmp = TempDir::new().expect("failed to create temporary directory");
 
     let inputs = create_multi_c(tmp.path()).expect("failed to create inputs");
     let mut command = Command::chacc(tmp.path());

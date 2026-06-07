@@ -12,7 +12,7 @@ rustc-hash = "2"
 smol_str = "0.3"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
-tempfile = "3"
+temp-dir = "0.2"
 unicode-width = "0.2"
 which = "8"
 

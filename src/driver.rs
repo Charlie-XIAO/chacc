@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use rustc_hash::{FxHashMap, FxHasher};
-use tempfile::TempDir;
+use temp_dir::TempDir;
 
 use crate::cc1::CC1;
 use crate::cli::{Cli, CliInput, CliInputKind};
