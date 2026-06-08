@@ -1244,6 +1244,8 @@ fn test_initializer() {
 
     f.assert(7, "((int[10]){[3]=7})[3]");
     f.assert(0, "((int[10]){[3]=7})[4]");
+    f.assert(7, "((int[10]){ [3]7 })[3]");
+    f.assert(0, "((int[10]){ [3]7 })[4]");
 
     f.assert(10, "({ char x[]={[10-3]=1,2,3}; sizeof(x); })");
     f.assert(20, "({ char x[][2]={[8][1]=1,2}; sizeof(x); })");

@@ -2083,7 +2083,7 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <array-designation> ::=
-    ///   "[" <constexpr> "]" (<array-designation> | "=" <initializer>)
+    ///   "[" <constexpr> "]" (<array-designation> | "="? <initializer>)
     /// ```
     fn parse_array_designation(
         &mut self,
@@ -2115,7 +2115,9 @@ impl<'a> Parser<'a> {
                 kind: InitializerKind::Aggregate(children),
             }
         } else {
-            self.skip_punct("=")?;
+            if self.current().is_punct("=") {
+                self.advance();
+            }
             self.parse_initializer(array.base)?
         };
 
