@@ -1940,7 +1940,7 @@ impl<'a> Parser<'a> {
             {
                 self.parse_string_initializer(content, &array)
             } else {
-                self.parse_array_initializer(&array)?
+                self.parse_array_initializer(ty, &array)?
             };
 
             if array.len.is_none() {
@@ -1985,7 +1985,7 @@ impl<'a> Parser<'a> {
             }
 
             let elements = if sou.is_struct {
-                self.parse_struct_initializer(&sou)?
+                self.parse_struct_initializer(ty, &sou)?
             } else {
                 self.parse_union_initializer(&sou)?
             };
@@ -2082,47 +2082,98 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-designation> ::=
-    ///   "[" <constexpr> "]" (<array-designation> | "="? <initializer>)
+    /// <designation> ::=
+    ///   ("[" <constexpr> "]" | "." <ident>) (<designation> | "="? <initializer>)
     /// ```
-    fn parse_array_designation(
+    fn parse_designation(
         &mut self,
-        array: &ArrayTypeData,
+        ty: Type,
         elements: &mut Vec<(usize, Initializer)>,
     ) -> Result<usize> {
-        let span = self.current().span;
-
-        self.skip_punct("[")?;
-        let Ok(index) = usize::try_from(self.parse_constexpr()?) else {
-            return Err(self.error(span, "array designator index is negative or out of range"));
-        };
-        self.skip_punct("]")?;
-
-        if let Some(len) = array.len
-            && index >= len
-        {
-            return Err(self.error(span, "array designator index exceeds array bounds"));
+        enum DesignationKind {
+            Array(ArrayTypeData),
+            Struct(Rc<[Member]>),
         }
 
-        let init = if self.current().is_punct("[") {
-            let Some(base_array) = self.types.as_array(array.base).cloned() else {
+        let (index, child_ty, kind) = if self.current().is_punct("[") {
+            let Some(array) = self.types.as_array(ty).cloned() else {
                 return Err(self.error_current("array index in non-array initializer"));
             };
-            let mut children = Vec::new();
-            self.parse_array_designation(&base_array, &mut children)?;
+
+            self.advance();
+            let Ok(index) = usize::try_from(self.parse_constexpr()?) else {
+                return Err(
+                    self.error_current("array designator index is negative or out of range")
+                );
+            };
+            if array.len.is_some_and(|len| index >= len) {
+                return Err(self.error_current("array designator index exceeds array bounds"));
+            }
+            self.skip_punct("]")?;
+
+            (index, array.base, DesignationKind::Array(array))
+        } else if self.current().is_punct(".") {
+            let Some(sou) = self.types.as_struct_or_union(ty).cloned() else {
+                return Err(self.error_current("field name not in struct or union initializer"));
+            };
+            if !sou.is_struct {
+                return Err(self.error_current("field name not in struct or union initializer"));
+            }
+            let Some(members) = sou.members else {
+                return Err(self.error_current("member reference type is incomplete"));
+            };
+
+            self.advance();
+            let Some(name) = self.current().as_ident() else {
+                return Err(self.error_current("expected a field designator"));
+            };
+            let Some(index) = members
+                .iter()
+                .position(|member| member.name.as_deref() == Some(&name))
+            else {
+                return Err(self.error_current("struct has no such member"));
+            };
+            self.advance();
+
+            (index, members[index].ty, DesignationKind::Struct(members))
+        } else {
+            return Err(self.error_current("expected a designator"));
+        };
+
+        let init = if self.current().is_punct("[") || self.current().is_punct(".") {
+            let mut elements = Vec::new();
+            self.parse_designation(child_ty, &mut elements)?;
             Initializer {
-                ty: array.base,
-                kind: InitializerKind::Aggregate(children),
+                ty: child_ty,
+                kind: InitializerKind::Aggregate(elements),
             }
         } else {
             if self.current().is_punct("=") {
                 self.advance();
             }
-            self.parse_initializer(array.base)?
+            self.parse_initializer(child_ty)?
         };
 
+        if matches!(init.kind, InitializerKind::Aggregate(_)) {
+            // A nested designator supersedes a previous whole-object
+            // initializer for the same child; for instance, in an array of
+            // structs, writing `[0].a = x` not only changes field `a`, but also
+            // zeroes out all other fields, so we basically need to remove any
+            // previous initializer for index 0 in this case
+            elements.retain(|(i, init)| {
+                *i != index || matches!(init.kind, InitializerKind::Aggregate(_))
+            });
+        }
         elements.push((index, init));
-        self.parse_array_initializer_elems(array, elements, false, index + 1)
+
+        match kind {
+            DesignationKind::Array(array) => {
+                self.parse_array_initializer_elems(ty, &array, elements, false, index + 1)
+            },
+            DesignationKind::Struct(members) => {
+                self.parse_struct_initializer_elems(ty, &members, elements, false, index + 1)
+            },
+        }
     }
 
     /// ```bnf
@@ -2131,6 +2182,7 @@ impl<'a> Parser<'a> {
     /// ```
     fn parse_array_initializer(
         &mut self,
+        ty: Type,
         array: &ArrayTypeData,
     ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
@@ -2138,22 +2190,21 @@ impl<'a> Parser<'a> {
             self.advance();
         }
         let mut elements = Vec::with_capacity(array.len.unwrap_or(0));
-        self.parse_array_initializer_elems(array, &mut elements, braced, 0)?;
+        self.parse_array_initializer_elems(ty, array, &mut elements, braced, 0)?;
         Ok(elements)
     }
 
     /// ```bnf
     /// <array-initializer-elems> ::=
-    ///   (<array-designation> | <initializer>)
-    ///   ("," (<array-designation> | <initializer>))*
+    ///   (<designation> | <initializer>) ("," (<designation> | <initializer>))*
     /// ```
     ///
     /// This parses elements belonging to one array level, starting at cursor
     /// `i`. If `braced` is false, it stops before a designator or before the
-    /// array is full so the caller can handle the token at the proper nesting
-    /// level. Otherwise, it keeps parsing until the closing braces.
+    /// array is full. Otherwise, it keeps parsing until the closing braces.
     fn parse_array_initializer_elems(
         &mut self,
+        ty: Type,
         array: &ArrayTypeData,
         elements: &mut Vec<(usize, Initializer)>,
         braced: bool,
@@ -2174,12 +2225,12 @@ impl<'a> Parser<'a> {
             if i > 0 {
                 self.skip_punct(",")?;
             }
-            if self.current().is_punct("[") {
+            if self.current().is_punct("[") || self.current().is_punct(".") {
                 if !braced {
                     self.pos = start;
                     break;
                 }
-                i = self.parse_array_designation(array, elements)?;
+                i = self.parse_designation(ty, elements)?;
                 continue;
             }
 
@@ -2197,11 +2248,15 @@ impl<'a> Parser<'a> {
 
     /// ```bnf
     /// <struct-initializer> ::=
-    ///   "{" <initializer> ("," <initializer>)* ","? "}"
-    ///   | <initializer> ("," <initializer>)*
+    ///   "{" <struct-initializer-elems>? ","? "}" | <struct-initializer-elems>
     /// ```
+    ///
+    /// This parses elements belonging to one struct level, starting at cursor
+    /// `i`. If `braced` is false, it stops before a designator or before the
+    /// struct is full. Otherwise, it keeps parsing until the closing braces.
     fn parse_struct_initializer(
         &mut self,
+        ty: Type,
         sou: &StructOrUnionTypeData,
     ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
@@ -2211,7 +2266,22 @@ impl<'a> Parser<'a> {
 
         let members = sou.members.clone().unwrap_or_default();
         let mut elements = Vec::with_capacity(members.len());
-        let mut i = 0;
+        self.parse_struct_initializer_elems(ty, &members, &mut elements, braced, 0)?;
+        Ok(elements)
+    }
+
+    /// ```bnf
+    /// <struct-initializer-elems> ::=
+    ///   (<designation> | <initializer>) ("," (<designation> | <initializer>))*
+    /// ```
+    fn parse_struct_initializer_elems(
+        &mut self,
+        ty: Type,
+        members: &[Member],
+        elements: &mut Vec<(usize, Initializer)>,
+        braced: bool,
+        mut i: usize,
+    ) -> Result<usize> {
         loop {
             if self.maybe_skip_list_end(braced) {
                 break;
@@ -2222,8 +2292,17 @@ impl<'a> Parser<'a> {
                 // struct/union, so we have to break rather than keep consuming
                 break;
             }
+            let start = self.pos;
             if i > 0 {
                 self.skip_punct(",")?;
+            }
+            if self.current().is_punct("[") || self.current().is_punct(".") {
+                if !braced {
+                    self.pos = start;
+                    break;
+                }
+                i = self.parse_designation(ty, elements)?;
+                continue;
             }
 
             if i < members.len() {
@@ -2239,7 +2318,7 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        Ok(elements)
+        Ok(i)
     }
 
     /// ```bnf
