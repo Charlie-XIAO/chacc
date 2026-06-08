@@ -1061,9 +1061,9 @@ fn test_initializer() {
     f.line("struct {char a; int b;} g11[2] = {{1, 2}, {3, 4}};");
     f.line("struct {int a[2];} g12[2] = {{{1, 2}}};");
     f.line("union { int a; char b[8]; } g13[2] = {0x01020304, 0x05060708};");
-    f.line(r#"char g17[] = "foobar";"#);
-    f.line(r#"char g18[10] = "foobar";"#);
-    f.line(r#"char g19[3] = "foobar";"#);
+    f.line("char g17[] = \"foobar\";");
+    f.line("char g18[10] = \"foobar\";");
+    f.line("char g19[3] = \"foobar\";");
     f.line("char *g20 = g17+0;");
     f.line("char *g21 = g17+3;");
     f.line("char *g22 = g17-3;");
@@ -1079,7 +1079,13 @@ fn test_initializer() {
     f.line("struct {int a[2];} g40[2] = {{1, 2}, 3, 4};");
     f.line("struct {int a[2];} g41[2] = {1, 2, 3, 4};");
     f.line("char g43[][4] = {'f', 'o', 'o', 0, 'b', 'a', 'r', 0};");
-    f.line(r#"char *g44 = {"foo"};"#);
+    f.line("char *g44 = {\"foo\"};");
+    f.line("typedef char T60[];");
+    f.line("T60 g60 = {1, 2, 3};");
+    f.line("T60 g61 = {1, 2, 3, 4, 5, 6};");
+    f.line("typedef struct { char a, b[]; } T65;");
+    f.line("T65 g65 = {'f', 'o', 'o', 0};");
+    f.line("T65 g66 = {'f', 'o', 'o', 'b', 'a', 'r', 0};");
     f.main();
 
     f.assert(1, "({ int x[3]={1,2,3}; x[0]; })");
@@ -1238,6 +1244,17 @@ fn test_initializer() {
 
     f.assert(7, "((int[10]){[3]=7})[3]");
     f.assert(0, "((int[10]){[3]=7})[4]");
+
+    f.assert(10, "({ char x[]={[10-3]=1,2,3}; sizeof(x); })");
+    f.assert(20, "({ char x[][2]={[8][1]=1,2}; sizeof(x); })");
+
+    f.assert(3, "sizeof(g60)");
+    f.assert(6, "sizeof(g61)");
+
+    f.assert(4, "sizeof(g65)");
+    f.assert(7, "sizeof(g66)");
+    f.assert(0, "strcmp(g65.b, \"oo\")");
+    f.assert(0, "strcmp(g66.b, \"oobar\")");
 
     f.finish();
     f.run("initializer");

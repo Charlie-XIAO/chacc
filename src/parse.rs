@@ -1990,6 +1990,20 @@ impl<'a> Parser<'a> {
                 self.parse_union_initializer(&sou)?
             };
 
+            if sou.is_struct
+                && let Some(members) = &sou.members
+                && let Some(member) = members.last()
+                && self.types.is_incomplete(member.ty)
+                && let Some((_, init)) = elements.iter().find(|(i, _)| *i == members.len() - 1)
+            {
+                // If flexible array member was initialized, complete this
+                // object with the inferred array length; note that we must not
+                // mutate the original struct type here
+                let mut members = members.to_vec();
+                members.last_mut().unwrap().ty = init.ty;
+                ty = self.types.struct_or_union(true, Some(members));
+            }
+
             return Ok(Initializer {
                 ty,
                 kind: InitializerKind::Aggregate(elements),
@@ -2212,11 +2226,7 @@ impl<'a> Parser<'a> {
 
             if i < members.len() {
                 let ty = members[i].ty;
-                if self.types.is_incomplete(ty) {
-                    debug_assert!(
-                        self.types.as_array(ty).is_some(),
-                        "incomplete types other than flexible array member leaked",
-                    );
+                if self.types.is_incomplete(ty) && self.types.as_array(ty).is_none() {
                     return Err(self.error_current("cannot initialize a flexible array member"));
                 }
                 elements.push((i, self.parse_initializer(ty)?));
