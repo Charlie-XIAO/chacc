@@ -1987,7 +1987,7 @@ impl<'a> Parser<'a> {
             let elements = if sou.is_struct {
                 self.parse_struct_initializer(ty, &sou)?
             } else {
-                self.parse_union_initializer(&sou)?
+                self.parse_union_initializer(ty, &sou)?
             };
 
             if sou.is_struct
@@ -2093,6 +2093,7 @@ impl<'a> Parser<'a> {
         enum DesignationKind {
             Array(ArrayTypeData),
             Struct(Rc<[Member]>),
+            Union,
         }
 
         let (index, child_ty, kind) = if self.current().is_punct("[") {
@@ -2116,9 +2117,6 @@ impl<'a> Parser<'a> {
             let Some(sou) = self.types.as_struct_or_union(ty).cloned() else {
                 return Err(self.error_current("field name not in struct or union initializer"));
             };
-            if !sou.is_struct {
-                return Err(self.error_current("field name not in struct or union initializer"));
-            }
             let Some(members) = sou.members else {
                 return Err(self.error_current("member reference type is incomplete"));
             };
@@ -2135,7 +2133,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
 
-            (index, members[index].ty, DesignationKind::Struct(members))
+            let kind = if sou.is_struct {
+                DesignationKind::Struct(members.clone())
+            } else {
+                DesignationKind::Union
+            };
+            (index, members[index].ty, kind)
         } else {
             return Err(self.error_current("expected a designator"));
         };
@@ -2173,6 +2176,7 @@ impl<'a> Parser<'a> {
             DesignationKind::Struct(members) => {
                 self.parse_struct_initializer_elems(ty, &members, elements, false, index + 1)
             },
+            DesignationKind::Union => Ok(index + 1),
         }
     }
 
@@ -2322,10 +2326,12 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <union-initializer> ::= "{" <initializer> ","? "}" | <initializer>
+    /// <union-initializer> ::=
+    ///   "{" (<designation> | <initializer>)? ","? "}" | <initializer>
     /// ```
     fn parse_union_initializer(
         &mut self,
+        ty: Type,
         sou: &StructOrUnionTypeData,
     ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
@@ -2334,8 +2340,17 @@ impl<'a> Parser<'a> {
         }
 
         let mut elements = Vec::new();
+        if self.maybe_skip_list_end(braced) {
+            return Ok(elements);
+        }
+        if braced && self.current().is_punct(".") {
+            self.parse_designation(ty, &mut elements)?;
+            self.skip_list_end()?;
+            return Ok(elements);
+        }
+
         // Union initializer takes only one initializer and initializes the
-        // first union member
+        // first union member by default
         if let Some(member) = sou.members.as_ref().and_then(|members| members.first()) {
             elements.push((0, self.parse_initializer(member.ty)?));
         }

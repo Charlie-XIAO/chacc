@@ -1080,6 +1080,8 @@ fn test_initializer() {
     f.line("struct {int a[2];} g41[2] = {1, 2, 3, 4};");
     f.line("char g43[][4] = {'f', 'o', 'o', 0, 'b', 'a', 'r', 0};");
     f.line("char *g44 = {\"foo\"};");
+    f.line("union { int a; char b[4]; } g50 = {.b[2]=0x12};");
+    f.line("union { int a; } g51[2] = {};");
     f.line("typedef char T60[];");
     f.line("T60 g60 = {1, 2, 3};");
     f.line("T60 g61 = {1, 2, 3, 4, 5, 6};");
@@ -1249,6 +1251,13 @@ fn test_initializer() {
 
     f.assert(10, "({ char x[]={[10-3]=1,2,3}; sizeof(x); })");
     f.assert(20, "({ char x[][2]={[8][1]=1,2}; sizeof(x); })");
+
+    f.assert(0x00ff, "({ union { unsigned short a; char b[2]; } x={.b[0]=0xff}; x.a; })");
+    f.assert(0xff00, "({ union { unsigned short a; char b[2]; } x={.b[1]=0xff}; x.a; })");
+
+    f.assert(0x00120000, "g50.a");
+    f.assert(0, "g51[0].a");
+    f.assert(0, "g51[1].a");
 
     f.assert(3, "sizeof(g60)");
     f.assert(6, "sizeof(g61)");
