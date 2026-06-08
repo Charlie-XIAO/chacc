@@ -61,8 +61,11 @@ enum GlobalInitValue {
 enum InitializerKind {
     /// The initialization expression for non-aggregate types.
     Expr(Node),
-    /// Nested initializers for aggregate types, e.g., array, struct.
-    Aggregate(Vec<Initializer>),
+    /// Child initializer for aggregate types (array/struct/union).
+    ///
+    /// The index of each child initializer is the array element index if parent
+    /// is array or the member index if parent is struct/union.
+    Aggregate(Vec<(usize, Initializer)>),
 }
 
 /// A storage class specifier.
@@ -1945,7 +1948,12 @@ impl<'a> Parser<'a> {
                 // initializer; note that we have to create new type instead of
                 // completing the original, because e.g., "typedef int T[];",
                 // then "T a1 = {1};" and "T a2 = {1,2};" have different types
-                ty = self.types.array(array.base, Some(elements.len()));
+                let len = elements
+                    .iter()
+                    .map(|(i, _)| i + 1)
+                    .max()
+                    .unwrap_or_default();
+                ty = self.types.array(array.base, Some(len));
             }
 
             return Ok(Initializer {
@@ -2031,7 +2039,7 @@ impl<'a> Parser<'a> {
         &mut self,
         content: Rc<[u32]>,
         array: &ArrayTypeData,
-    ) -> Vec<Initializer> {
+    ) -> Vec<(usize, Initializer)> {
         let span = self.current().span;
         let len = array.len.unwrap_or(content.len());
 
@@ -2045,9 +2053,13 @@ impl<'a> Parser<'a> {
         let elements = content
             .iter()
             .take(len)
-            .map(|&unit| Initializer {
-                ty: array.base,
-                kind: InitializerKind::Expr(Node::num(unit as _, Type::INT, span)),
+            .enumerate()
+            .map(|(i, &unit)| {
+                let initializer = Initializer {
+                    ty: array.base,
+                    kind: InitializerKind::Expr(Node::num(unit as _, Type::INT, span)),
+                };
+                (i, initializer)
             })
             .collect();
 
@@ -2056,35 +2068,107 @@ impl<'a> Parser<'a> {
     }
 
     /// ```bnf
-    /// <array-initializer> ::=
-    ///   "{" <initializer> ("," <initializer>)* ","? "}"
-    ///   | <initializer> ("," <initializer>)*
+    /// <array-designation> ::=
+    ///   "[" <constexpr> "]" (<array-designation> | "=" <initializer>)
     /// ```
-    fn parse_array_initializer(&mut self, array: &ArrayTypeData) -> Result<Vec<Initializer>> {
+    fn parse_array_designation(
+        &mut self,
+        array: &ArrayTypeData,
+        elements: &mut Vec<(usize, Initializer)>,
+    ) -> Result<usize> {
+        let span = self.current().span;
+
+        self.skip_punct("[")?;
+        let Ok(index) = usize::try_from(self.parse_constexpr()?) else {
+            return Err(self.error(span, "array designator index is negative or out of range"));
+        };
+        self.skip_punct("]")?;
+
+        if let Some(len) = array.len
+            && index >= len
+        {
+            return Err(self.error(span, "array designator index exceeds array bounds"));
+        }
+
+        let init = if self.current().is_punct("[") {
+            let Some(base_array) = self.types.as_array(array.base).cloned() else {
+                return Err(self.error_current("array index in non-array initializer"));
+            };
+            let mut children = Vec::new();
+            self.parse_array_designation(&base_array, &mut children)?;
+            Initializer {
+                ty: array.base,
+                kind: InitializerKind::Aggregate(children),
+            }
+        } else {
+            self.skip_punct("=")?;
+            self.parse_initializer(array.base)?
+        };
+
+        elements.push((index, init));
+        self.parse_array_initializer_elems(array, elements, false, index + 1)
+    }
+
+    /// ```bnf
+    /// <array-initializer> ::=
+    ///   "{" <array-initializer-elems>? ","? "}" | <array-initializer-elems>
+    /// ```
+    fn parse_array_initializer(
+        &mut self,
+        array: &ArrayTypeData,
+    ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
         }
-
         let mut elements = Vec::with_capacity(array.len.unwrap_or(0));
-        let mut i = 0;
+        self.parse_array_initializer_elems(array, &mut elements, braced, 0)?;
+        Ok(elements)
+    }
+
+    /// ```bnf
+    /// <array-initializer-elems> ::=
+    ///   (<array-designation> | <initializer>)
+    ///   ("," (<array-designation> | <initializer>))*
+    /// ```
+    ///
+    /// This parses elements belonging to one array level, starting at cursor
+    /// `i`. If `braced` is false, it stops before a designator or before the
+    /// array is full so the caller can handle the token at the proper nesting
+    /// level. Otherwise, it keeps parsing until the closing braces.
+    fn parse_array_initializer_elems(
+        &mut self,
+        array: &ArrayTypeData,
+        elements: &mut Vec<(usize, Initializer)>,
+        braced: bool,
+        mut i: usize,
+    ) -> Result<usize> {
         loop {
             if self.maybe_skip_list_end(braced) {
                 break;
             }
-            let has_space = array.len.is_none_or(|len| i < len);
-            if !braced && !has_space {
+            if !braced && array.len.is_some_and(|len| i >= len) {
                 // In flattened form, once the array is full, the remaining
                 // tokens are no longer considered excess elements of this
                 // array, so we have to break rather than keep consuming
                 break;
             }
+
+            let start = self.pos;
             if i > 0 {
                 self.skip_punct(",")?;
             }
+            if self.current().is_punct("[") {
+                if !braced {
+                    self.pos = start;
+                    break;
+                }
+                i = self.parse_array_designation(array, elements)?;
+                continue;
+            }
 
-            if has_space {
-                elements.push(self.parse_initializer(array.base)?);
+            if array.len.is_none_or(|len| i < len) {
+                elements.push((i, self.parse_initializer(array.base)?));
             } else {
                 self.warn_current("excess elements in array initializer");
                 self.skip_initializer()?;
@@ -2092,7 +2176,7 @@ impl<'a> Parser<'a> {
             i += 1;
         }
 
-        Ok(elements)
+        Ok(i)
     }
 
     /// ```bnf
@@ -2103,7 +2187,7 @@ impl<'a> Parser<'a> {
     fn parse_struct_initializer(
         &mut self,
         sou: &StructOrUnionTypeData,
-    ) -> Result<Vec<Initializer>> {
+    ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
@@ -2135,7 +2219,7 @@ impl<'a> Parser<'a> {
                     );
                     return Err(self.error_current("cannot initialize a flexible array member"));
                 }
-                elements.push(self.parse_initializer(ty)?);
+                elements.push((i, self.parse_initializer(ty)?));
             } else {
                 self.warn_current("excess elements in struct initializer");
                 self.skip_initializer()?;
@@ -2149,7 +2233,10 @@ impl<'a> Parser<'a> {
     /// ```bnf
     /// <union-initializer> ::= "{" <initializer> ","? "}" | <initializer>
     /// ```
-    fn parse_union_initializer(&mut self, sou: &StructOrUnionTypeData) -> Result<Vec<Initializer>> {
+    fn parse_union_initializer(
+        &mut self,
+        sou: &StructOrUnionTypeData,
+    ) -> Result<Vec<(usize, Initializer)>> {
         let braced = self.current().is_punct("{");
         if braced {
             self.advance();
@@ -2159,7 +2246,7 @@ impl<'a> Parser<'a> {
         // Union initializer takes only one initializer and initializes the
         // first union member
         if let Some(member) = sou.members.as_ref().and_then(|members| members.first()) {
-            elements.push(self.parse_initializer(member.ty)?);
+            elements.push((0, self.parse_initializer(member.ty)?));
         }
 
         if braced {
@@ -3571,15 +3658,15 @@ impl<'a> Parser<'a> {
             },
             InitializerKind::Aggregate(children) => {
                 if self.types.as_array(init.ty).is_some() {
-                    for (i, child) in children.into_iter().enumerate() {
+                    for (i, child) in children {
                         path.push(InitializerStep::Index(i));
                         self.new_local_init2(local_id, child, path, stmts)?;
                         path.pop();
                     }
                 } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
-                    for (member, child) in
-                        sou.members.clone().unwrap_or_default().iter().zip(children)
-                    {
+                    let members = sou.members.clone().unwrap_or_default();
+                    for (i, child) in children {
+                        let member = members.get(i).expect("initializer index out of range");
                         path.push(InitializerStep::Member(member.clone()));
                         self.new_local_init2(local_id, child, path, stmts)?;
                         path.pop();
@@ -3629,18 +3716,20 @@ impl<'a> Parser<'a> {
             }
         }
 
+        let mut clear_overlapping_relocations = |size: usize| {
+            let end = offset + size;
+            relocations.retain(|reloc| reloc.offset + 8 <= offset || end <= reloc.offset);
+        };
+
         match init.kind {
             InitializerKind::Expr(mut rhs) => match self.eval_global_init(&mut rhs)? {
                 GlobalInitValue::Num(val) => {
                     let Some(const_ty) = self.types.to_const(init.ty) else {
                         return Err(self.error(rhs.span, "not a compile-time constant"));
                     };
-                    write(
-                        bytes,
-                        offset,
-                        val.cast(const_ty).bits(),
-                        self.types.size(init.ty),
-                    )
+                    let size = self.types.size(init.ty);
+                    clear_overlapping_relocations(size as _);
+                    write(bytes, offset, val.cast(const_ty).bits(), size)
                 },
                 GlobalInitValue::Reloc(label, addend) => {
                     if self.types.size(init.ty) != 8 {
@@ -3648,6 +3737,7 @@ impl<'a> Parser<'a> {
                         // occpy one pointer-sized slot
                         return Err(self.error(rhs.span, "invalid initializer"));
                     }
+                    clear_overlapping_relocations(8);
                     relocations.push(Relocation {
                         offset,
                         label,
@@ -3658,12 +3748,13 @@ impl<'a> Parser<'a> {
             InitializerKind::Aggregate(children) => {
                 if let Some(array) = self.types.as_array(init.ty) {
                     let stride = self.types.size(array.base) as usize;
-                    for (i, child) in children.into_iter().enumerate() {
+                    for (i, child) in children {
                         self.new_global_init2(child, bytes, relocations, offset + i * stride)?;
                     }
                 } else if let Some(sou) = self.types.as_struct_or_union(init.ty) {
                     let members = sou.members.clone().unwrap_or_default();
-                    for (member, child) in members.iter().zip(children) {
+                    for (i, child) in children {
+                        let member = members.get(i).expect("initializer index out of range");
                         let Some((bit_width, bit_offset)) = member.bit_field else {
                             self.new_global_init2(
                                 child,
