@@ -500,6 +500,30 @@ impl TypeStore {
         }
     }
 
+    /// Find the path to a member.
+    ///
+    /// This would recursively look into anonymous struct/union members. If no
+    /// such member (given by `ident`), this returns `None`. Otherwise, this
+    /// returns the access path in **reverse** order, i.e., inner to outer.
+    pub fn rev_member_path(&self, members: &[Member], ident: &str) -> Option<Vec<(usize, Member)>> {
+        for (i, member) in members.iter().enumerate() {
+            if member.name.as_deref() == Some(ident) {
+                return Some(vec![(i, member.clone())]);
+            }
+
+            if member.name.is_none()
+                && let Some(sou) = self.as_struct_or_union(member.ty)
+                && let Some(members) = &sou.members
+                && let Some(mut path) = self.rev_member_path(members, ident)
+            {
+                path.push((i, member.clone()));
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
     /// Return whether the type is a pointer.
     pub fn is_ptr(&self, ty: Type) -> bool {
         self.get(ty)

@@ -2090,13 +2090,20 @@ impl<'a> Parser<'a> {
         ty: Type,
         elements: &mut Vec<(usize, Initializer)>,
     ) -> Result<usize> {
-        enum DesignationKind {
+        enum DesignatedTarget {
             Array(ArrayTypeData),
             Struct(Rc<[Member]>),
             Union,
         }
 
-        let (index, child_ty, kind) = if self.current().is_punct("[") {
+        struct Designation {
+            index: usize,
+            init_ty: Type,
+            member_path: Option<Vec<(usize, Member)>>,
+            target: DesignatedTarget,
+        }
+
+        let designation = if self.current().is_punct("[") {
             let Some(array) = self.types.as_array(ty).cloned() else {
                 return Err(self.error_current("array index in non-array initializer"));
             };
@@ -2112,7 +2119,12 @@ impl<'a> Parser<'a> {
             }
             self.skip_punct("]")?;
 
-            (index, array.base, DesignationKind::Array(array))
+            Designation {
+                index,
+                init_ty: array.base,
+                member_path: None,
+                target: DesignatedTarget::Array(array),
+            }
         } else if self.current().is_punct(".") {
             let Some(sou) = self.types.as_struct_or_union(ty).cloned() else {
                 return Err(self.error_current("field name not in struct or union initializer"));
@@ -2125,37 +2137,50 @@ impl<'a> Parser<'a> {
             let Some(name) = self.current().as_ident() else {
                 return Err(self.error_current("expected a field designator"));
             };
-            let Some(index) = members
-                .iter()
-                .position(|member| member.name.as_deref() == Some(&name))
-            else {
+            let Some(path) = self.types.rev_member_path(&members, &name) else {
                 return Err(self.error_current("struct has no such member"));
             };
             self.advance();
 
-            let kind = if sou.is_struct {
-                DesignationKind::Struct(members.clone())
-            } else {
-                DesignationKind::Union
-            };
-            (index, members[index].ty, kind)
+            // The initializer is to be inserted into the current aggregate
+            // level so the designator index must be the outermost member index,
+            // yet the type is still the innermost actual member type
+            Designation {
+                index: path.last().unwrap().0,
+                init_ty: path.first().unwrap().1.ty,
+                member_path: Some(path),
+                target: if sou.is_struct {
+                    DesignatedTarget::Struct(members.clone())
+                } else {
+                    DesignatedTarget::Union
+                },
+            }
         } else {
             return Err(self.error_current("expected a designator"));
         };
 
-        let init = if self.current().is_punct("[") || self.current().is_punct(".") {
-            let mut elements = Vec::new();
-            self.parse_designation(child_ty, &mut elements)?;
+        let mut init = if self.current().is_punct("[") || self.current().is_punct(".") {
+            let mut nested = Vec::new();
+            self.parse_designation(designation.init_ty, &mut nested)?;
             Initializer {
-                ty: child_ty,
-                kind: InitializerKind::Aggregate(elements),
+                ty: designation.init_ty,
+                kind: InitializerKind::Aggregate(nested),
             }
         } else {
             if self.current().is_punct("=") {
                 self.advance();
             }
-            self.parse_initializer(child_ty)?
+            self.parse_initializer(designation.init_ty)?
         };
+
+        if let Some(path) = designation.member_path {
+            for i in 0..path.len() - 1 {
+                init = Initializer {
+                    ty: path[i + 1].1.ty,
+                    kind: InitializerKind::Aggregate(vec![(path[i].0, init)]),
+                };
+            }
+        }
 
         if matches!(init.kind, InitializerKind::Aggregate(_)) {
             // A nested designator supersedes a previous whole-object
@@ -2164,19 +2189,27 @@ impl<'a> Parser<'a> {
             // zeroes out all other fields, so we basically need to remove any
             // previous initializer for index 0 in this case
             elements.retain(|(i, init)| {
-                *i != index || matches!(init.kind, InitializerKind::Aggregate(_))
+                *i != designation.index || matches!(init.kind, InitializerKind::Aggregate(_))
             });
         }
-        elements.push((index, init));
+        elements.push((designation.index, init));
 
-        match kind {
-            DesignationKind::Array(array) => {
-                self.parse_array_initializer_elems(ty, &array, elements, false, index + 1)
-            },
-            DesignationKind::Struct(members) => {
-                self.parse_struct_initializer_elems(ty, &members, elements, false, index + 1)
-            },
-            DesignationKind::Union => Ok(index + 1),
+        match designation.target {
+            DesignatedTarget::Array(array) => self.parse_array_initializer_elems(
+                ty,
+                &array,
+                elements,
+                false,
+                designation.index + 1,
+            ),
+            DesignatedTarget::Struct(members) => self.parse_struct_initializer_elems(
+                ty,
+                &members,
+                elements,
+                false,
+                designation.index + 1,
+            ),
+            DesignatedTarget::Union => Ok(designation.index + 1),
         }
     }
 
@@ -3685,39 +3718,15 @@ impl<'a> Parser<'a> {
             return Err(self.error_current("not an ident"));
         };
 
-        let Some(path) = self.find_member_access_path(members, &ident) else {
+        let Some(path) = self.types.rev_member_path(members, &ident) else {
             return Err(self.error_current("no such member"));
         };
 
         let span = self.current().span;
-        for member in path.into_iter().rev() {
+        for (_, member) in path.into_iter().rev() {
             node = Node::member(node, member, span);
         }
         Ok(node)
-    }
-
-    /// Find the path for a member access.
-    ///
-    /// This would recursively look into anonymous struct/union members. If no
-    /// such member (given by `ident`), this returns `None`. Otherwise, this
-    /// returns the access path in **reverse** order.
-    fn find_member_access_path(&self, members: &[Member], ident: &str) -> Option<Vec<Member>> {
-        for member in members {
-            if member.name.as_deref() == Some(ident) {
-                return Some(vec![member.clone()]);
-            }
-
-            if member.name.is_none()
-                && let Some(sou) = self.types.as_struct_or_union(member.ty)
-                && let Some(members) = &sou.members
-                && let Some(mut path) = self.find_member_access_path(members, ident)
-            {
-                path.push(member.clone());
-                return Some(path);
-            }
-        }
-
-        None
     }
 
     /// Lower a local variable initializer.

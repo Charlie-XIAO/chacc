@@ -1297,6 +1297,10 @@ fn test_initializer() {
     f.assert(5, "((struct { int a,b,c; }){ .c=5 }).c");
     f.assert(0, "((struct { int a,b,c; }){ .c=5 }).a");
 
+    f.assert(1, "({ struct { struct { int a; struct { int b; }; }; int c; } x={1,2,3,.b=4,5}; x.a; })");
+    f.assert(4, "({ struct { struct { int a; struct { int b; }; }; int c; } x={1,2,3,.b=4,5}; x.b; })");
+    f.assert(5, "({ struct { struct { int a; struct { int b; }; }; int c; } x={1,2,3,.b=4,5}; x.c; })");
+
     f.finish();
     f.run("initializer");
 }
