@@ -16,7 +16,7 @@ use crate::tokenize::{
     PreToken, PreTokenKind, PreTokenResolver, StrLitKind, Token, TokenKind, Tokenizer,
 };
 use crate::types::Type;
-use crate::utils::datetime;
+use crate::utils::{datetime, format_timestamp};
 
 /// A consumable and prependable stream of tokens.
 #[derive(Debug)]
@@ -120,6 +120,7 @@ enum MacroHandler {
     File,
     Line,
     Counter,
+    Timestamp,
 }
 
 impl MacroHandler {
@@ -159,6 +160,20 @@ impl MacroHandler {
                     token.at_bol,
                     token.follows_space,
                     format_smolstr!("{count}"),
+                )]
+            },
+            Self::Timestamp => {
+                let timestamp = source_map
+                    .get(span.id)
+                    .mtime()
+                    .and_then(format_timestamp)
+                    .unwrap_or_else(|| "??? ??? ?? ??:??:?? ????".into());
+                vec![PreToken::synthetic(
+                    PreTokenKind::StrLit,
+                    span,
+                    token.at_bol,
+                    token.follows_space,
+                    format_smolstr!("\"{timestamp}\""),
                 )]
             },
         }
@@ -687,6 +702,7 @@ where
             ("__FILE__", MacroHandler::File),
             ("__LINE__", MacroHandler::Line),
             ("__COUNTER__", MacroHandler::Counter),
+            ("__TIMESTAMP__", MacroHandler::Timestamp),
         ] {
             macros.insert(name.into(), Macro::handler(handler));
         }

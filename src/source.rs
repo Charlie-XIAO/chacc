@@ -1,6 +1,8 @@
 //! Program source definition.
 
+use std::fs::File;
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -83,10 +85,12 @@ struct SourceBuffer {
     /// same range `[offset, next_offset)` share the same cumulative shift. The
     /// vector is sorted by logical offsets.
     shifts: Vec<(usize, usize)>,
+    /// The last modification time in Unix seconds, if available.
+    mtime: Option<i64>,
 }
 
 impl SourceBuffer {
-    fn new(original: SmolStr) -> Self {
+    fn new(original: SmolStr, mtime: Option<i64>) -> Self {
         let bytes = original.as_bytes();
         let mut content = String::new();
         let mut shifts: Vec<(usize, usize)> = Vec::new();
@@ -175,6 +179,7 @@ impl SourceBuffer {
             content,
             line_index,
             shifts,
+            mtime,
         }
     }
 
@@ -249,6 +254,11 @@ impl Source {
     /// Return the normalized (logical) source content for tokenization.
     pub fn content(&self) -> &str {
         &self.buffer.content
+    }
+
+    /// Return the last modification time in Unix seconds, if available.
+    pub fn mtime(&self) -> Option<i64> {
+        self.buffer.mtime
     }
 
     /// Return the [`LineCol`] in original source of the given logical offset.
@@ -351,7 +361,7 @@ impl SourceMap {
             let mut content = String::new();
             std::io::stdin().read_to_string(&mut content)?;
             (
-                Rc::new(SourceBuffer::new(content.into())),
+                Rc::new(SourceBuffer::new(content.into(), None)),
                 None,
                 "<stdin>".to_smolstr(),
             )
@@ -360,9 +370,12 @@ impl SourceMap {
             let buffer = if let Some(cached) = self.buffer_cache.get(&key) {
                 cached.clone()
             } else {
-                let content = std::fs::read_to_string(&path)
+                let mut file = File::open(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
+                let mtime = file.metadata().ok().map(|meta| meta.mtime());
+                let mut content = String::new();
+                file.read_to_string(&mut content)
                     .map_err(|e| Error::IoWithPath(path.clone(), e))?;
-                let buffer = Rc::new(SourceBuffer::new(content.into()));
+                let buffer = Rc::new(SourceBuffer::new(content.into(), mtime));
                 self.buffer_cache.insert(key, buffer.clone());
                 buffer
             };
@@ -387,7 +400,7 @@ impl SourceMap {
     pub fn push_virtual(&mut self, content: SmolStr, name: Option<SmolStr>) -> &Source {
         let id = SourceId(self.sources.len());
         let name = name.unwrap_or_else(|| format_smolstr!("<virtual:{}>", id.0));
-        let buffer = Rc::new(SourceBuffer::new(content));
+        let buffer = Rc::new(SourceBuffer::new(content, None));
         self.sources.push(Source {
             id,
             path: None,

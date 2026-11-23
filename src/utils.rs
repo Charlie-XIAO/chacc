@@ -39,22 +39,28 @@ pub const fn align_down_to(n: u64, align: u64) -> u64 {
     }
 }
 
+const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Convert a Unix timestamp to local broken-down time.
+fn localtime(secs: libc::time_t) -> Option<libc::tm> {
+    let mut tm = std::mem::MaybeUninit::zeroed();
+    let res = unsafe { libc::localtime_r(&secs, tm.as_mut_ptr()) };
+    if res.is_null() {
+        return None;
+    }
+    Some(unsafe { tm.assume_init() })
+}
+
 /// Get the current date and time representation.
 ///
 /// This never panics, but if [`libc::localtime_r`] fails, this could produce
 /// invalid/useless date and time (Jan 0 1900, 00:00:00).
 pub fn datetime() -> (String, String) {
-    let tm = unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm = std::mem::MaybeUninit::zeroed();
-        libc::localtime_r(&now, tm.as_mut_ptr());
-        tm.assume_init()
-    };
-
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let tm = localtime(now).unwrap_or_else(|| unsafe { std::mem::zeroed() });
     (
         format!(
             "{} {:>2} {:04}",
@@ -64,4 +70,19 @@ pub fn datetime() -> (String, String) {
         ),
         format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec),
     )
+}
+
+/// Format a Unix timestamp as an asctime string.
+pub fn format_timestamp(secs: i64) -> Option<String> {
+    let tm = localtime(secs)?;
+    let day = DAYS.get(usize::try_from(tm.tm_wday).ok()?)?;
+    let month = MONTHS.get(usize::try_from(tm.tm_mon).ok()?)?;
+    Some(format!(
+        "{day} {month} {:>2} {:02}:{:02}:{:02} {:04}",
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        tm.tm_year + 1900,
+    ))
 }

@@ -1803,6 +1803,8 @@ fn test_macro() {
     f.assert(1, "__COUNTER__");
     f.assert(2, "__COUNTER__");
 
+    f.assert(24, "strlen(__TIMESTAMP__)");
+
     f.finish();
     f.run("macro");
 }
