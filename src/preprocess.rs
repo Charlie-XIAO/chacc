@@ -15,6 +15,7 @@ use crate::source::{SourceMap, SourceSpan};
 use crate::tokenize::{
     PreToken, PreTokenKind, PreTokenResolver, StrLitKind, Token, TokenKind, Tokenizer,
 };
+use crate::types::Type;
 use crate::utils::datetime;
 
 /// A consumable and prependable stream of tokens.
@@ -892,6 +893,7 @@ where
 
             match directive.as_ident().as_deref() {
                 Some("include") => self.process_include(token.span)?,
+                Some("line") => self.process_line(token.span)?,
                 Some("define") => self.process_define(token.span)?,
                 Some("undef") => self.process_undef(token.span)?,
                 Some("if") => self.process_if(token.span)?,
@@ -1025,6 +1027,43 @@ where
         self.input = old_input;
         self.conds = old_conds;
         result
+    }
+
+    /// Process a "#line" directive.
+    fn process_line(&mut self, span: SourceSpan) -> Result<()> {
+        let line = self.line();
+        let directive_end = line.last().map_or(span, PreToken::effective_span);
+        let mut expander = MacroExpander::new(self.source_map, &self.macros, &mut self.counter);
+        let mut tokens = expander.expand_all(line)?.into_iter();
+
+        let Some(line_tok) = tokens.next() else {
+            return Err(self.error(span, "bare #line without a line marker"));
+        };
+
+        let resolver = PreTokenResolver::new(self.source_map);
+        let Some((line_no, Type::INT)) = resolver.lower(&line_tok, false)?.as_num() else {
+            return Err(self.error(line_tok.span, "expected a line number"));
+        };
+        if line_no == 0 {
+            self.warn(line_tok.span, "line number should be positive");
+        }
+
+        let filename = if let Some(name_tok) = tokens.next() {
+            let Some(name) = resolver.lower(&name_tok, false)?.as_normal_str() else {
+                return Err(self.error(name_tok.span, "expected a filename"));
+            };
+            Some(name)
+        } else {
+            None
+        };
+
+        if let Some(extra) = tokens.next() {
+            self.warn(extra.span, "extra tokens after #line");
+        }
+
+        self.source_map
+            .add_line_marker(directive_end, line_no as u32, filename);
+        Ok(())
     }
 
     /// Process a macro token.

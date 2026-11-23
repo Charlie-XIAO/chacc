@@ -294,6 +294,19 @@ impl Token {
             _ => None,
         }
     }
+
+    /// Return the decoded text if this is a normal string literal token.
+    pub fn as_normal_str(&self) -> Option<SmolStr> {
+        let TokenKind::Str(ref content, StrLitKind::Normal) = self.kind else {
+            return None;
+        };
+        let bytes: Vec<u8> = content
+            .iter()
+            .take_while(|&&unit| unit != 0)
+            .map(|&unit| unit as u8)
+            .collect();
+        Some(String::from_utf8_lossy(&bytes).into())
+    }
 }
 
 /// Tokenizer for C source code.

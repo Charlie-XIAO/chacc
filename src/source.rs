@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
 /// An identifier for a [`Source`] in a [`SourceMap`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SourceId(usize);
 
 impl SourceId {
@@ -274,11 +274,70 @@ impl Source {
     }
 }
 
+/// A `#line` override entry within a [`Source`].
+#[derive(Debug)]
+struct LineEntry {
+    /// 0-based physical line where this override takes effect.
+    effective_line: u32,
+    /// 1-based logical line number at [`LineEntry::effective_line`].
+    logical_line: u32,
+    /// The logical filename from [`LineEntry::effective_line`] onward.
+    filename: SmolStr,
+}
+
+/// Logical line overrides keyed by [`SourceId`].
+#[derive(Debug, Default)]
+struct LineTable(FxHashMap<SourceId, Vec<LineEntry>>);
+
+impl LineTable {
+    /// Resolve the logical filename and 1-based line number.
+    fn resolve<'a>(&'a self, source: &'a Source, physical_line: u32) -> (&'a str, u32) {
+        let Some(entries) = self.0.get(&source.id) else {
+            return (&source.name, physical_line + 1);
+        };
+        let idx = entries.partition_point(|e| e.effective_line <= physical_line);
+        let Some(entry) = idx.checked_sub(1).map(|i| &entries[i]) else {
+            return (&source.name, physical_line + 1);
+        };
+        let logical_line = entry
+            .logical_line
+            .saturating_add(physical_line - entry.effective_line);
+        (&entry.filename, logical_line)
+    }
+
+    /// Record a `#line` override at `effective_line`.
+    fn add(
+        &mut self,
+        source: &Source,
+        effective_line: u32,
+        logical_line: u32,
+        filename: Option<SmolStr>,
+    ) {
+        let entries = self.0.entry(source.id).or_default();
+        let idx = entries.partition_point(|e| e.effective_line <= effective_line);
+        let filename = filename.unwrap_or_else(|| {
+            idx.checked_sub(1)
+                .map_or_else(|| source.name.clone(), |i| entries[i].filename.clone())
+        });
+        let entry = LineEntry {
+            effective_line,
+            logical_line,
+            filename,
+        };
+        if idx > 0 && entries[idx - 1].effective_line == effective_line {
+            entries[idx - 1] = entry;
+        } else {
+            entries.insert(idx, entry);
+        }
+    }
+}
+
 /// The collection of sources known to the compiler.
 #[derive(Debug, Default)]
 pub struct SourceMap {
     sources: Vec<Source>,
     buffer_cache: FxHashMap<PathBuf, Rc<SourceBuffer>>,
+    line_table: LineTable,
 }
 
 impl SourceMap {
@@ -360,11 +419,32 @@ impl SourceMap {
     }
 
     fn loc_at<'a>(&'a self, source: &'a Source, line_col: LineCol) -> SourceLoc<'a> {
+        let (file, line) = self.line_table.resolve(source, line_col.line);
         SourceLoc {
-            file: &source.name,
-            line: line_col.line + 1,
+            file,
+            line,
             col: line_col.col + 1,
         }
+    }
+
+    /// Add a `#line` marker taking effect after `directive_end`.
+    pub fn add_line_marker(
+        &mut self,
+        directive_end: SourceSpan,
+        logical_line: u32,
+        filename: Option<SmolStr>,
+    ) {
+        debug_assert!(
+            directive_end.id != SourceId::FAKE,
+            "fake source id leaked here"
+        );
+        let source = self
+            .sources
+            .get(directive_end.id.0)
+            .expect("invalid source id");
+        let effective_line = source.physical_line_col(directive_end.end().offset).line + 1;
+        self.line_table
+            .add(source, effective_line, logical_line, filename);
     }
 
     /// Emit an error at the given span and return an error.

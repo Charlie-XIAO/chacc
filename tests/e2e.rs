@@ -1433,6 +1433,17 @@ fn test_macro() {
     f.line("int add6(int a, int b, int c, int d, int e, int f) { return a+b+c+d+e+f; }");
     f.main();
 
+    f.line("#line 500 \"foo\"");
+    f.assert(500, "__LINE__");
+    f.assert(0, "strcmp(__FILE__, \"foo\")");
+
+    f.line("#line 800 \"bar\"");
+    f.assert(800, "__LINE__");
+    f.assert(0, "strcmp(__FILE__, \"bar\")");
+
+    f.line("#line 1");
+    f.assert(1, "__LINE__");
+
     f.assert(5, "include1");
     f.assert(7, "include2");
 
