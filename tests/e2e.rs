@@ -1444,6 +1444,10 @@ fn test_macro() {
     f.line("#line 1");
     f.assert(1, "__LINE__");
 
+    f.line("# 200 \"xyz\" 2 3");
+    f.assert(200, "__LINE__");
+    f.assert(0, "strcmp(__FILE__, \"xyz\")");
+
     f.assert(5, "include1");
     f.assert(7, "include2");
 

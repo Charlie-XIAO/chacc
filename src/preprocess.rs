@@ -891,9 +891,15 @@ where
                 continue;
             };
 
+            if matches!(directive.kind, PreTokenKind::NumLit) {
+                self.input.0.push_front(directive);
+                self.process_line_marker(token.span, false)?;
+                continue;
+            }
+
             match directive.as_ident().as_deref() {
                 Some("include") => self.process_include(token.span)?,
-                Some("line") => self.process_line(token.span)?,
+                Some("line") => self.process_line_marker(token.span, true)?,
                 Some("define") => self.process_define(token.span)?,
                 Some("undef") => self.process_undef(token.span)?,
                 Some("if") => self.process_if(token.span)?,
@@ -1029,8 +1035,8 @@ where
         result
     }
 
-    /// Process a "#line" directive.
-    fn process_line(&mut self, span: SourceSpan) -> Result<()> {
+    /// Process a "#line" directive or GNU line marker.
+    fn process_line_marker(&mut self, span: SourceSpan, is_line_directive: bool) -> Result<()> {
         let line = self.line();
         let directive_end = line.last().map_or(span, PreToken::effective_span);
         let mut expander = MacroExpander::new(self.source_map, &self.macros, &mut self.counter);
@@ -1044,7 +1050,7 @@ where
         let Some((line_no, Type::INT)) = resolver.lower(&line_tok, false)?.as_num() else {
             return Err(self.error(line_tok.span, "expected a line number"));
         };
-        if line_no == 0 {
+        if is_line_directive && line_no == 0 {
             self.warn(line_tok.span, "line number should be positive");
         }
 
@@ -1057,7 +1063,7 @@ where
             None
         };
 
-        if let Some(extra) = tokens.next() {
+        if is_line_directive && let Some(extra) = tokens.next() {
             self.warn(extra.span, "extra tokens after #line");
         }
 
