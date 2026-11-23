@@ -174,11 +174,7 @@ impl<'a> Parser<'a> {
         if !last.is_eof() {
             tokens.push(Token {
                 kind: TokenKind::Eof,
-                span: SourceSpan {
-                    id: last.span.id,
-                    offset: last.span.offset + last.span.len,
-                    len: 0,
-                },
+                span: last.span.end(),
             });
         }
 

@@ -30,11 +30,7 @@ impl TokenStream {
         if !last.is_eof() {
             tokens.push_back(PreToken {
                 kind: PreTokenKind::Eof,
-                span: SourceSpan {
-                    id: last.span.id,
-                    offset: last.span.offset + last.span.len,
-                    len: 0,
-                },
+                span: last.span.end(),
                 at_bol: false,
                 follows_space: false,
                 hideset: None,
@@ -106,6 +102,17 @@ struct IncludeFilename {
     is_quoted: bool,
 }
 
+/// Append `s` into `out` with proper escapes for a C string literal.
+fn push_c_escaped(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            ch => out.push(ch),
+        }
+    }
+}
+
 /// Handler for builtin macros that cannot be represented as simple replacement.
 #[derive(Debug, Clone, Copy)]
 enum MacroHandler {
@@ -117,19 +124,12 @@ enum MacroHandler {
 impl MacroHandler {
     /// Call this macro handler on the given token.
     fn call(self, token: &PreToken, source_map: &SourceMap, counter: &mut u64) -> Vec<PreToken> {
-        let span = token.origin.unwrap_or(token.span);
+        let span = token.effective_span();
 
         match self {
             Self::File => {
-                let mut filename = String::new();
-                filename.push('"');
-                for ch in source_map.get(span.id).name.chars() {
-                    match ch {
-                        '\\' => filename.push_str("\\\\"),
-                        '"' => filename.push_str("\\\""),
-                        ch => filename.push(ch),
-                    }
-                }
+                let mut filename = String::from('"');
+                push_c_escaped(&mut filename, source_map.loc(span).file);
                 filename.push('"');
                 vec![PreToken::synthetic(
                     PreTokenKind::StrLit,
@@ -140,7 +140,7 @@ impl MacroHandler {
                 )]
             },
             Self::Line => {
-                let (_, line, _) = source_map.file_line_col(span);
+                let line = source_map.loc(span).line;
                 vec![PreToken::synthetic(
                     PreTokenKind::NumLit,
                     span,
@@ -274,22 +274,14 @@ impl<'a> MacroExpander<'a> {
     /// The provided `hash` should be the triggering "#" token.
     fn stringize(&self, hash: &PreToken, arg: &[PreToken]) -> PreToken {
         let resolver = PreTokenResolver::new(self.source_map);
-        let mut content = String::new();
-        content.push('"');
+        let mut content = String::from('"');
 
         for (i, token) in arg.iter().enumerate() {
             if i > 0 && token.follows_space {
                 content.push(' ');
             }
 
-            let spelling = resolver.spelling(token);
-            for ch in spelling.chars() {
-                match ch {
-                    '\\' => content.push_str("\\\\"),
-                    '"' => content.push_str("\\\""),
-                    ch => content.push(ch),
-                }
-            }
+            push_c_escaped(&mut content, &resolver.spelling(token));
         }
 
         content.push('"');
@@ -567,7 +559,7 @@ impl<'a> MacroExpander<'a> {
             first.follows_space = token.follows_space;
         }
 
-        let origin = token.origin.unwrap_or(token.span);
+        let origin = token.effective_span();
         for token in &mut body {
             token.origin = Some(origin);
         }
@@ -779,9 +771,10 @@ where
                 {
                     same = false;
                 } else {
+                    let resolver = PreTokenResolver::new(self.source_map);
                     for (old, new) in old_macro.body.iter().zip(&body) {
                         if old.follows_space != new.follows_space
-                            || self.source_map.text(old.span) != self.source_map.text(new.span)
+                            || resolver.spelling(old) != resolver.spelling(new)
                         {
                             same = false;
                             break;
@@ -1009,7 +1002,8 @@ where
             self.source_map
                 .get(span.id)
                 .path
-                .parent()
+                .as_deref()
+                .and_then(Path::parent)
                 .unwrap_or_else(|| Path::new("."))
         });
 

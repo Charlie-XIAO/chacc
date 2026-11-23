@@ -2,6 +2,7 @@
 
 use std::io::Write;
 
+use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
 
 use crate::ast::{
@@ -9,7 +10,7 @@ use crate::ast::{
     NodeKind, Program, Stmt, StmtKind,
 };
 use crate::error::Result;
-use crate::source::{SourceMap, SourceSpan};
+use crate::source::{SourceLoc, SourceMap, SourceSpan};
 use crate::types::{Type, TypeStore};
 use crate::utils::{MAX_FP_ARG_REGS, MAX_GP_ARG_REGS, VA_AREA_SIZE, align_up_to};
 
@@ -179,27 +180,29 @@ struct FunctionState {
 pub struct Codegen<'a> {
     source_map: &'a SourceMap,
     out: Vec<u8>,
+    debug_files: FxHashMap<SmolStr, usize>,
     types: TypeStore,
     functions: Vec<FunctionData>,
     globals: Vec<GlobalVar>,
     next_label: usize,
-    last_loc: Option<(usize, u32, u32)>,
+    last_loc: Option<SourceLoc<'a>>,
     function: Option<FunctionState>,
 }
 
 impl<'a> Codegen<'a> {
     /// Create a code generator from source.
-    pub fn new(source_map: &'a SourceMap) -> Result<Self> {
-        Ok(Self {
+    pub fn new(source_map: &'a SourceMap) -> Self {
+        Self {
             source_map,
             out: Vec::new(),
+            debug_files: FxHashMap::default(),
             types: TypeStore::default(),
             functions: Vec::new(),
             globals: Vec::new(),
             next_label: 1,
             last_loc: None,
             function: None,
-        })
+        }
     }
 
     /// Get a reference of function state, expecting it to be set.
@@ -224,10 +227,6 @@ impl<'a> Codegen<'a> {
             globals,
         } = program;
 
-        for source in self.source_map.iter() {
-            writeln!(self.out, "  .file {} \"{}\"", source.id + 1, source.name)?;
-        }
-
         self.types = types;
         self.types.frozen = true;
         self.functions = functions.iter().map(Into::into).collect();
@@ -239,7 +238,25 @@ impl<'a> Codegen<'a> {
             self.gen_function(function)?;
         }
 
-        Ok(self.out)
+        if self.debug_files.is_empty() {
+            return Ok(self.out);
+        }
+
+        let mut files: Vec<_> = self
+            .debug_files
+            .iter()
+            .map(|(name, &id)| (id, name.as_str()))
+            .collect();
+        files.sort_unstable_by_key(|&(id, _)| id);
+
+        let mut out = Vec::with_capacity(self.out.len() + files.len() * 32);
+        for (id, name) in files {
+            write!(out, "  .file {id} \"")?;
+            write_asm_escaped(&mut out, name)?;
+            writeln!(out, "\"")?;
+        }
+        out.extend_from_slice(&self.out);
+        Ok(out)
     }
 
     /// Generate assembly for global variables.
@@ -1163,14 +1180,25 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Intern a logical filename and return its 1-based DWARF `.file` number.
+    fn debug_file_no(&mut self, name: &str) -> usize {
+        if let Some(&id) = self.debug_files.get(name) {
+            return id;
+        }
+        let id = self.debug_files.len() + 1;
+        self.debug_files.insert(name.into(), id);
+        id
+    }
+
     /// Generate a `.loc` directive if the source location changed.
     fn gen_loc(&mut self, span: SourceSpan) -> Result<()> {
-        let loc = self.source_map.file_line_col(span);
+        let loc = self.source_map.loc(span);
         if self.last_loc == Some(loc) {
             return Ok(());
         }
         self.last_loc = Some(loc);
-        writeln!(self.out, "  .loc {} {} {}", loc.0, loc.1, loc.2)?;
+        let file_no = self.debug_file_no(loc.file);
+        writeln!(self.out, "  .loc {} {} {}", file_no, loc.line, loc.col)?;
         Ok(())
     }
 
@@ -1546,4 +1574,20 @@ fn fp_mnemonic_sz_from_size(size: u64) -> &'static str {
         8 => "d",
         _ => unreachable!("invalid floating-point argument chunk size: {size}"),
     }
+}
+
+/// Write a string with GAS string literal escapes.
+fn write_asm_escaped(out: &mut impl Write, s: &str) -> Result<()> {
+    for b in s.bytes() {
+        match b {
+            b'\\' => out.write_all(b"\\\\")?,
+            b'"' => out.write_all(b"\\\"")?,
+            b'\n' => out.write_all(b"\\n")?,
+            b'\r' => out.write_all(b"\\r")?,
+            b'\t' => out.write_all(b"\\t")?,
+            0x20..=0x7e => out.write_all(&[b])?,
+            _ => write!(out, "\\{b:03o}")?,
+        }
+    }
+    Ok(())
 }

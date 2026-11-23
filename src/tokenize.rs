@@ -147,16 +147,17 @@ impl PreToken {
         }
     }
 
+    /// Return the expansion-origin span if present, or this token's own span.
+    pub fn effective_span(&self) -> SourceSpan {
+        self.origin.unwrap_or(self.span)
+    }
+
     /// Return a source span for a substring of this token.
     fn span_at(&self, offset: usize, len: usize) -> SourceSpan {
         if self.synthetic.is_some() {
             self.span // Not meaningful, return as is
         } else {
-            SourceSpan {
-                id: self.span.id,
-                offset: self.span.offset + offset,
-                len,
-            }
+            self.span.subspan(offset, len)
         }
     }
 }
@@ -341,7 +342,7 @@ impl<'a> Tokenizer<'a> {
     /// instead of being skipped. If `emit_eof` is false, no EOF sentinel will
     /// be emitted at the end of the token stream.
     pub fn tokenize(mut self, allow_comment: bool, emit_eof: bool) -> Result<Vec<PreToken>> {
-        let content = &self.source.content;
+        let content = self.source.content();
         let bytes = content.as_bytes();
 
         while self.pos < content.len() {
@@ -382,7 +383,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an inline or block comment, returning whether there is one.
     fn read_comment(&mut self) -> Result<bool> {
         let offset = self.pos;
-        let content = &self.source.content;
+        let content = self.source.content();
         let bytes = content.as_bytes();
         let rest = &content[offset..];
 
@@ -411,7 +412,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a numeric literal token.
     fn read_numeric_literal(&mut self) {
-        let content = &self.source.content;
+        let content = self.source.content();
         let bytes = content.as_bytes();
         let offset = self.pos;
 
@@ -437,7 +438,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Read a string or char literal token.
     fn read_string_char_literal(&mut self, is_char: bool, prefix_len: usize) -> Result<()> {
-        let bytes = self.source.content.as_bytes();
+        let bytes = self.source.content().as_bytes();
         let mut i = self.pos + prefix_len + 1; // Skip prefix and opening quote
 
         while i < bytes.len() {
@@ -477,7 +478,7 @@ impl<'a> Tokenizer<'a> {
     /// Read an identifier token.
     fn read_ident(&mut self) -> bool {
         let offset = self.pos;
-        let content = &self.source.content;
+        let content = self.source.content();
         let rest = &content[offset..];
 
         /// Whether the codepoint can start an identifier.
@@ -576,7 +577,7 @@ impl<'a> Tokenizer<'a> {
     /// Read a punctuator token, returning whether there is one.
     fn read_punct(&mut self) -> bool {
         let offset = self.pos;
-        let rest = &self.source.content[offset..];
+        let rest = &self.source.content()[offset..];
 
         const PUNCTUATORS: &[&str] = &[
             "<<=", ">>=", "...", "==", "!=", "<=", ">=", "<<", ">>", "->", "+=", "-=", "*=", "/=",

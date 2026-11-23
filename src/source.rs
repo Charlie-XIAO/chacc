@@ -2,18 +2,27 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use line_index::{LineCol, LineIndex, TextSize};
+use rustc_hash::FxHashMap;
 use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use unicode_width::UnicodeWidthStr;
 
 use crate::error::{Diagnostic, DiagnosticLevel, Error, Result};
 
+/// An identifier for a [`Source`] in a [`SourceMap`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceId(usize);
+
+impl SourceId {
+    const FAKE: Self = Self(usize::MAX);
+}
+
 /// A span in a [`Source`].
 #[derive(Clone, Copy, Debug)]
 pub struct SourceSpan {
-    /// The source ID, corresponding to [`Source::id`].
-    pub id: usize,
+    pub id: SourceId,
     pub offset: usize,
     pub len: usize,
 }
@@ -22,23 +31,49 @@ impl SourceSpan {
     /// Return a fake invalid source span.
     pub fn fake() -> Self {
         Self {
-            id: usize::MAX,
+            id: SourceId::FAKE,
             offset: 0,
             len: 0,
         }
     }
+
+    /// Return a zero-length span pointing right after this span.
+    pub fn end(self) -> Self {
+        Self {
+            id: self.id,
+            offset: self.offset + self.len,
+            len: 0,
+        }
+    }
+
+    /// Return a subspan relative to the start of this span.
+    pub fn subspan(self, offset: usize, len: usize) -> Self {
+        Self {
+            id: self.id,
+            offset: self.offset + offset,
+            len,
+        }
+    }
 }
 
-/// A C program source to be compiled.
+/// A resolved logical source location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceLoc<'a> {
+    /// The file name of the source.
+    pub file: &'a str,
+    /// 1-based line number.
+    pub line: u32,
+    /// 1-based column number.
+    pub col: u32,
+}
+
+/// Shared, immutable physical buffer of a source file or virtual text.
 #[derive(Debug)]
-pub struct Source {
-    pub id: usize,
-    pub path: PathBuf,
-    pub name: SmolStr,
-    /// The normalized (logical) source content for tokenization.
-    pub content: SmolStr,
+struct SourceBuffer {
     /// The original (physical) source text.
     original: SmolStr,
+    /// The normalized (logical) source content for tokenization.
+    content: SmolStr,
     /// The line index on the original source.
     line_index: LineIndex,
     /// The mapping from logical offsets to physical offsets.
@@ -50,8 +85,8 @@ pub struct Source {
     shifts: Vec<(usize, usize)>,
 }
 
-impl Source {
-    fn new(id: usize, path: PathBuf, name: SmolStr, original: SmolStr) -> Self {
+impl SourceBuffer {
+    fn new(original: SmolStr) -> Self {
         let bytes = original.as_bytes();
         let mut content = String::new();
         let mut shifts: Vec<(usize, usize)> = Vec::new();
@@ -136,18 +171,15 @@ impl Source {
         let line_index = LineIndex::new(&original);
 
         Self {
-            id,
-            path,
-            name,
-            content,
             original,
+            content,
             line_index,
             shifts,
         }
     }
 
     /// Return the [`LineCol`] in original source of the given logical offset.
-    fn line_col(&self, mut offset: usize) -> LineCol {
+    fn physical_line_col(&self, mut offset: usize) -> LineCol {
         let idx = self.shifts.partition_point(|shift| shift.0 <= offset);
         if idx > 0 {
             offset += self.shifts[idx - 1].1;
@@ -158,37 +190,20 @@ impl Source {
             .expect("invalid byte offset")
     }
 
-    /// Emit an error at the given span and return an error.
-    pub fn error(&self, offset: usize, len: usize, message: impl Into<String>) -> Error {
-        eprintln!(
-            "{}",
-            self.diagnostic(offset, len, DiagnosticLevel::Error, message)
-        );
-        Error::Terminate
-    }
-
-    /// Emit a warning at the given span.
-    pub fn warn(&self, offset: usize, len: usize, message: impl Into<String>) {
-        eprintln!(
-            "{}",
-            self.diagnostic(offset, len, DiagnosticLevel::Warning, message)
-        );
-    }
-
-    fn diagnostic(
-        &self,
-        offset: usize,
+    fn diagnostic<'a>(
+        &'a self,
+        line_col: LineCol,
         len: usize,
         level: DiagnosticLevel,
         message: impl Into<String>,
-    ) -> Diagnostic<'_> {
-        let line_col = self.line_col(offset);
+        file: &'a str,
+        line_no: u32,
+    ) -> Diagnostic<'a> {
         let range = self
             .line_index
             .line(line_col.line)
             .expect("invalid line index");
 
-        let line_no = line_col.line as usize;
         let col_no = line_col.col as usize;
 
         let line_start = usize::from(range.start());
@@ -207,18 +222,64 @@ impl Source {
         Diagnostic {
             level,
             message: message.into(),
-            file: &self.name,
+            file,
             line,
-            line_no: line_no + 1,
+            line_no,
             col_no: col_no + 1,
             span_len,
         }
     }
 }
 
-/// The collection of source files known to the compiler.
+/// A C program source unit.
+///
+/// This could be a source file, an `#include` occurrence, or a virtual buffer.
+#[derive(Debug)]
+pub struct Source {
+    pub id: SourceId,
+    /// The path if this is a real source file.
+    pub path: Option<PathBuf>,
+    /// The display name of this source.
+    pub name: SmolStr,
+    /// The shared immutable buffer for this source.
+    buffer: Rc<SourceBuffer>,
+}
+
+impl Source {
+    /// Return the normalized (logical) source content for tokenization.
+    pub fn content(&self) -> &str {
+        &self.buffer.content
+    }
+
+    /// Return the [`LineCol`] in original source of the given logical offset.
+    fn physical_line_col(&self, offset: usize) -> LineCol {
+        self.buffer.physical_line_col(offset)
+    }
+
+    /// Emit an error at the given span and return an error.
+    pub fn error(&self, offset: usize, len: usize, message: impl Into<String>) -> Error {
+        let line_col = self.physical_line_col(offset);
+        eprintln!(
+            "{}",
+            self.buffer.diagnostic(
+                line_col,
+                len,
+                DiagnosticLevel::Error,
+                message,
+                &self.name,
+                line_col.line + 1,
+            )
+        );
+        Error::Terminate
+    }
+}
+
+/// The collection of sources known to the compiler.
 #[derive(Debug, Default)]
-pub struct SourceMap(Vec<Source>);
+pub struct SourceMap {
+    sources: Vec<Source>,
+    buffer_cache: FxHashMap<PathBuf, Rc<SourceBuffer>>,
+}
 
 impl SourceMap {
     /// Push a new source file by its path.
@@ -227,19 +288,37 @@ impl SourceMap {
     pub fn push(&mut self, path: impl Into<PathBuf>) -> Result<&Source> {
         let path = path.into();
 
-        let (original, name) = if path.as_os_str() == "-" {
+        let (buffer, path, name) = if path.as_os_str() == "-" {
             let mut content = String::new();
             std::io::stdin().read_to_string(&mut content)?;
-            (content, "<stdin>".to_smolstr())
+            (
+                Rc::new(SourceBuffer::new(content.into())),
+                None,
+                "<stdin>".to_smolstr(),
+            )
         } else {
-            let content =
-                std::fs::read_to_string(&path).map_err(|e| Error::IoWithPath(path.clone(), e))?;
-            (content, path.display().to_smolstr())
+            let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let buffer = if let Some(cached) = self.buffer_cache.get(&key) {
+                cached.clone()
+            } else {
+                let content = std::fs::read_to_string(&path)
+                    .map_err(|e| Error::IoWithPath(path.clone(), e))?;
+                let buffer = Rc::new(SourceBuffer::new(content.into()));
+                self.buffer_cache.insert(key, buffer.clone());
+                buffer
+            };
+            let name = path.display().to_smolstr();
+            (buffer, Some(path), name)
         };
 
-        let source = Source::new(self.0.len(), path, name, original.into());
-        self.0.push(source);
-        Ok(self.0.last().unwrap())
+        let id = SourceId(self.sources.len());
+        self.sources.push(Source {
+            id,
+            path,
+            name,
+            buffer,
+        });
+        Ok(self.sources.last().unwrap())
     }
 
     /// Push a new virtual source file with the given content.
@@ -247,50 +326,72 @@ impl SourceMap {
     /// If the name is not provided, a default virtual name will be generated
     /// uniquely. Returns a reference to the newly created source.
     pub fn push_virtual(&mut self, content: SmolStr, name: Option<SmolStr>) -> &Source {
-        let id = self.0.len();
-        let source = Source::new(
+        let id = SourceId(self.sources.len());
+        let name = name.unwrap_or_else(|| format_smolstr!("<virtual:{}>", id.0));
+        let buffer = Rc::new(SourceBuffer::new(content));
+        self.sources.push(Source {
             id,
-            PathBuf::new(),
-            name.unwrap_or_else(|| format_smolstr!("<virtual:{}>", id)),
-            content,
-        );
-        self.0.push(source);
-        self.0.last().unwrap()
+            path: None,
+            name,
+            buffer,
+        });
+        self.sources.last().unwrap()
     }
 
     /// Return the source corresponding to the given ID.
-    pub fn get(&self, id: usize) -> &Source {
-        debug_assert!(id != usize::MAX, "fake source id leaked here");
-        self.0.get(id).expect("invalid source id")
-    }
-
-    /// Iterate over all sources.
-    pub fn iter(&self) -> impl Iterator<Item = &Source> {
-        self.0.iter()
+    pub fn get(&self, id: SourceId) -> &Source {
+        debug_assert!(id != SourceId::FAKE, "fake source id leaked here");
+        self.sources.get(id.0).expect("invalid source id")
     }
 
     /// Get the text corresponding to the given span.
     pub fn text(&self, span: SourceSpan) -> &str {
         self.get(span.id)
-            .content
+            .content()
             .get(span.offset..span.offset + span.len)
             .expect("span out of range")
     }
 
-    /// Get the file/line/column numbers (1-based) of the given span.
-    pub fn file_line_col(&self, span: SourceSpan) -> (usize, u32, u32) {
+    /// Resolve the logical source location of the given span.
+    pub fn loc(&self, span: SourceSpan) -> SourceLoc<'_> {
         let source = self.get(span.id);
-        let line_col = source.line_col(span.offset);
-        (span.id + 1, line_col.line + 1, line_col.col + 1)
+        let line_col = source.physical_line_col(span.offset);
+        self.loc_at(source, line_col)
+    }
+
+    fn loc_at<'a>(&'a self, source: &'a Source, line_col: LineCol) -> SourceLoc<'a> {
+        SourceLoc {
+            file: &source.name,
+            line: line_col.line + 1,
+            col: line_col.col + 1,
+        }
     }
 
     /// Emit an error at the given span and return an error.
     pub fn error(&self, span: SourceSpan, message: impl Into<String>) -> Error {
-        self.get(span.id).error(span.offset, span.len, message)
+        eprintln!("{}", self.diagnostic(span, DiagnosticLevel::Error, message));
+        Error::Terminate
     }
 
     /// Emit a warning at the given span.
     pub fn warn(&self, span: SourceSpan, message: impl Into<String>) {
-        self.get(span.id).warn(span.offset, span.len, message);
+        eprintln!(
+            "{}",
+            self.diagnostic(span, DiagnosticLevel::Warning, message)
+        );
+    }
+
+    fn diagnostic(
+        &self,
+        span: SourceSpan,
+        level: DiagnosticLevel,
+        message: impl Into<String>,
+    ) -> Diagnostic<'_> {
+        let source = self.get(span.id);
+        let line_col = source.physical_line_col(span.offset);
+        let loc = self.loc_at(source, line_col);
+        source
+            .buffer
+            .diagnostic(line_col, span.len, level, message, loc.file, loc.line)
     }
 }

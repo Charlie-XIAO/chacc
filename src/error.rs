@@ -17,7 +17,7 @@ pub struct Diagnostic<'a> {
     pub message: String,
     pub file: &'a str,
     pub line: &'a str,
-    pub line_no: usize,
+    pub line_no: u32,
     pub col_no: usize,
     pub span_len: usize,
 }

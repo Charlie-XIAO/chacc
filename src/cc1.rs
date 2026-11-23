@@ -49,7 +49,7 @@ impl<'a> CC1<'a> {
 
         let tokens = sink.lower(&source_map)?;
         let program = Parser::new(&source_map, tokens, false).parse_program()?;
-        Codegen::new(&source_map)?.generate(program)
+        Codegen::new(&source_map).generate(program)
     }
 
     /// Return the include paths in precedence order.
