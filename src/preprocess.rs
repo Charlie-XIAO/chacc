@@ -114,6 +114,15 @@ fn push_c_escaped(out: &mut String, s: &str) {
     }
 }
 
+/// Format `s` as a quoted C string literal.
+fn quote_c_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    push_c_escaped(&mut out, s);
+    out.push('"');
+    out
+}
+
 /// Handler for builtin macros that cannot be represented as simple replacement.
 #[derive(Debug, Clone, Copy)]
 enum MacroHandler {
@@ -129,18 +138,13 @@ impl MacroHandler {
         let span = token.effective_span();
 
         match self {
-            Self::File => {
-                let mut filename = String::from('"');
-                push_c_escaped(&mut filename, source_map.loc(span).file);
-                filename.push('"');
-                vec![PreToken::synthetic(
-                    PreTokenKind::StrLit,
-                    span,
-                    token.at_bol,
-                    token.follows_space,
-                    filename,
-                )]
-            },
+            Self::File => vec![PreToken::synthetic(
+                PreTokenKind::StrLit,
+                span,
+                token.at_bol,
+                token.follows_space,
+                quote_c_string(source_map.loc(span).file),
+            )],
             Self::Line => {
                 let line = source_map.loc(span).line;
                 vec![PreToken::synthetic(
@@ -296,7 +300,6 @@ impl<'a> MacroExpander<'a> {
             if i > 0 && token.follows_space {
                 content.push(' ');
             }
-
             push_c_escaped(&mut content, &resolver.spelling(token));
         }
 
@@ -635,6 +638,7 @@ where
     /// Create a new preprocessor for the given token stream.
     pub fn new(
         source_map: &'a mut SourceMap,
+        base_file: &str,
         includes: &'a [PathBuf],
         macro_ops: &'a [(SmolStr, bool)],
         tokens: Vec<PreToken>,
@@ -694,6 +698,7 @@ where
             ("__x86_64__", "1"),
             ("__DATE__", &format!("\"{now_date}\"")),
             ("__TIME__", &format!("\"{now_time}\"")),
+            ("__BASE_FILE__", &quote_c_string(base_file)),
         ] {
             macros.insert(name.into(), Macro::obj(replacement, source_map));
         }

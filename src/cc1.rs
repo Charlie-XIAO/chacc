@@ -20,6 +20,7 @@ impl<'a> CC1<'a> {
     pub fn run(&mut self, input: &Path) -> Result<Vec<u8>> {
         let mut source_map = SourceMap::default();
         let source = source_map.push(input)?;
+        let base_file = source.name.clone();
         let tokens = Tokenizer::new(source).tokenize(true, true)?;
 
         let includes = self.include_paths()?;
@@ -28,6 +29,7 @@ impl<'a> CC1<'a> {
             let mut sink = PreprocessedWriter::new();
             Preprocessor::new(
                 &mut source_map,
+                &base_file,
                 &includes,
                 &self.0.macro_ops,
                 tokens,
@@ -40,6 +42,7 @@ impl<'a> CC1<'a> {
         let mut sink = PreprocessedTokens::default();
         Preprocessor::new(
             &mut source_map,
+            &base_file,
             &includes,
             &self.0.macro_ops,
             tokens,

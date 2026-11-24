@@ -1414,7 +1414,7 @@ fn test_literal() {
 #[test]
 fn test_macro() {
     let mut f = Fixture::new();
-    f.includes.insert("include1.h", "#include \"include2.h\"\nchar *include1_filename = __FILE__;\nint include1_line = __LINE__;\nint include1 = 5;");
+    f.includes.insert("include1.h", "#include \"include2.h\"\nchar *include1_filename = __FILE__;\nint include1_line = __LINE__;\nchar *include1_base_file = __BASE_FILE__;\nint include1 = 5;");
     f.includes.insert("include2.h", "int include2 = 7;");
     f.includes.insert("include3.h", "#define foo 3");
     f.includes.insert("include4.h", "#define foo 4");
@@ -1804,6 +1804,9 @@ fn test_macro() {
     f.assert(2, "__COUNTER__");
 
     f.assert(24, "strlen(__TIMESTAMP__)");
+
+    f.assert(0, &format!("strcmp(__BASE_FILE__, \"{}\")", f.tmp.path().join("macro.c").display()));
+    f.assert(0, &format!("strcmp(include1_base_file, \"{}\")", f.tmp.path().join("macro.c").display()));
 
     f.finish();
     f.run("macro");
