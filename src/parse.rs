@@ -1880,8 +1880,8 @@ impl<'a> Parser<'a> {
                     }
 
                     // A block-scope static object is backed by a hidden global
-                    // storage, then its spelled local name is bound to that storage
-                    // (with no linkage)
+                    // storage, then its spelled local name is bound to that
+                    // storage (with no linkage)
                     let label = self.unique_label();
                     let global_id = self.create_global(label, ty, declspec.align, storage, true);
                     self.push_scope_ident(name, OrdinaryIdent::Global(global_id, false));
@@ -3844,8 +3844,8 @@ impl<'a> Parser<'a> {
                 },
                 GlobalInitValue::Reloc(label, addend) => {
                     if self.types.size(init.ty) != 8 {
-                        // Global relocations are emitted as ".quad" so they must
-                        // occpy one pointer-sized slot
+                        // Global relocations are emitted as ".quad" so they
+                        // must occpy one pointer-sized slot
                         return Err(self.error(rhs.span, "invalid initializer"));
                     }
                     clear_overlapping_relocations(8);

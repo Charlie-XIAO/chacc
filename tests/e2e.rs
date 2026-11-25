@@ -1431,6 +1431,7 @@ fn test_macro() {
     f.line("int dbl(int x) { return x*x; }");
     f.line("int add2(int x, int y) { return x+y; }");
     f.line("int add6(int a, int b, int c, int d, int e, int f) { return a+b+c+d+e+f; }");
+    f.line("int sprintf(char *buf, char *fmt, ...);");
     f.main();
 
     f.line("#line 500 \"foo\"");
@@ -1807,6 +1808,25 @@ fn test_macro() {
 
     f.assert(0, &format!("strcmp(__BASE_FILE__, \"{}\")", f.tmp.path().join("macro.c").display()));
     f.assert(0, &format!("strcmp(include1_base_file, \"{}\")", f.tmp.path().join("macro.c").display()));
+
+    f.line("#define M30(buf, fmt, ...) sprintf(buf, fmt __VA_OPT__(,) __VA_ARGS__)");
+    f.assert(0, r#"({ char buf[100]; M30(buf, "foo"); strcmp(buf, "foo"); })"#);
+    f.assert(0, r#"({ char buf[100]; M30(buf, "foo%d", 3); strcmp(buf, "foo3"); })"#);
+    f.assert(0, r#"({ char buf[100]; M30(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); })"#);
+
+    f.line("#define EMPTY");
+    f.line("#define M31(...) (1 __VA_OPT__(+ 2))");
+    f.assert(1, "M31()");
+    f.assert(1, "M31(EMPTY)");
+    f.assert(3, "M31(0)");
+
+    f.line("#define M32(x, ...) (1 __VA_OPT__(+ x + __VA_ARGS__))");
+    f.assert(1, "M32(10)");
+    f.assert(16, "M32(10, 5)");
+
+    f.line("#define M33(x, ...) x ## __VA_OPT__(2)");
+    f.assert(3, "M33(ret3)()");
+    f.assert(8, "M33(add, 1)(3, 5)");
 
     f.finish();
     f.run("macro");

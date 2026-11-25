@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -350,16 +351,62 @@ impl<'a> MacroExpander<'a> {
         ))
     }
 
-    /// Substitute one replacement-list token if it names a macro parameter.
+    /// Expand a `__VA_OPT__(...)` construct in a variadic macro body.
+    fn expand_va_opt(
+        &mut self,
+        span: SourceSpan,
+        iter: &mut impl Iterator<Item = PreToken>,
+        args: &FxHashMap<SmolStr, Vec<PreToken>>,
+    ) -> Result<Vec<PreToken>> {
+        let mut inner = Vec::new();
+        let mut depth = 0;
+        let mut closed = false;
+
+        for tok in iter.by_ref() {
+            if tok.as_ident().as_deref() == Some("__VA_OPT__") {
+                return Err(self
+                    .source_map
+                    .error(tok.span, "__VA_OPT__ cannot be nested"));
+            }
+            if tok.is_punct("(") {
+                depth += 1;
+            } else if tok.is_punct(")") {
+                if depth == 0 {
+                    closed = true;
+                    break;
+                }
+                depth -= 1;
+            }
+            inner.push(tok);
+        }
+
+        if !closed {
+            return Err(self.source_map.error(span, "unterminated __VA_OPT__"));
+        }
+
+        let va_args = &args["__VA_ARGS__"];
+        if va_args.is_empty() || self.expand_all(va_args.clone())?.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.expand_replacement(&mut inner, Some(args))?;
+        Ok(inner)
+    }
+
+    /// Substitute one replacement-list token if applicable.
     ///
-    /// `args` should be `None` for object-like macros, and the token will be
-    /// returned unchanged. Otherwise, a non-parameter token will be returned
-    /// unchanged, and a parameter token will be replaced with the corresponding
-    /// argument. If `expand_arg` is true, the argument will be fully expanded
-    /// via [`Self::expand_all`].
-    fn subst_param(
+    /// - If `args` is `None` (an object-like macro), the token is returned
+    ///   unchanged.
+    /// - `__VA_OPT__(...)` in a variadic macro is expanded via
+    ///   [`Self::expand_va_opt`].
+    /// - A parameter token is replaced with its argument. If `expand_arg` is
+    ///   true, the argument is expanded via [`Self::expand_all`] before
+    ///   substitution.
+    /// - Any other token is returned unchanged.
+    fn subst_token(
         &mut self,
         token: PreToken,
+        iter: &mut Peekable<impl Iterator<Item = PreToken>>,
         args: Option<&FxHashMap<SmolStr, Vec<PreToken>>>,
         expand_arg: bool,
     ) -> Result<Vec<PreToken>> {
@@ -370,14 +417,20 @@ impl<'a> MacroExpander<'a> {
         let PreTokenKind::Ident(name) = &token.kind else {
             return Ok(vec![token]);
         };
-        let Some(arg) = args.get(name) else {
-            return Ok(vec![token]);
-        };
 
-        let mut tokens = if arg.is_empty() || !expand_arg {
-            arg.clone()
+        let mut tokens = if name == "__VA_OPT__"
+            && args.contains_key("__VA_ARGS__")
+            && iter.next_if(|tok| tok.is_punct("(")).is_some()
+        {
+            self.expand_va_opt(token.span, iter, args)?
+        } else if let Some(arg) = args.get(name) {
+            if arg.is_empty() || !expand_arg {
+                arg.clone()
+            } else {
+                self.expand_all(arg.clone())?
+            }
         } else {
-            self.expand_all(arg.clone())?
+            return Ok(vec![token]);
         };
 
         if let Some(first) = tokens.first_mut() {
@@ -426,7 +479,7 @@ impl<'a> MacroExpander<'a> {
                 // immediately followed by "##" must be substituted as is (not
                 // expanded) as it participates in token pasting later
                 let has_pending_paste = iter.peek().is_some_and(|tok| tok.is_punct("##"));
-                self.subst_param(token, args, !has_pending_paste)?
+                self.subst_token(token, &mut iter, args, !has_pending_paste)?
             };
 
             let mut current = VecDeque::from(current);
@@ -438,7 +491,7 @@ impl<'a> MacroExpander<'a> {
                         .source_map
                         .error(token.span, "'##' cannot appear at end of macro expansion"));
                 };
-                let mut rhs = VecDeque::from(self.subst_param(next, args, false)?);
+                let mut rhs = VecDeque::from(self.subst_token(next, &mut iter, args, false)?);
 
                 // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]" becomes
                 // "[a, paste(b,c), d]"
