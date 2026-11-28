@@ -1018,6 +1018,7 @@ where
                 Some("endif") => self.process_endif(token.span)?,
                 Some("error") => self.process_warning_error(directive.span, true)?,
                 Some("warning") => self.process_warning_error(directive.span, false)?,
+                Some("pragma") => self.process_pragma(),
                 _ => {
                     return Err(self.error(directive.span, "invalid preprocessor directive"));
                 },
@@ -1431,6 +1432,11 @@ where
             self.warn(span, message);
             Ok(())
         }
+    }
+
+    /// Process a "#pragma" directive.
+    fn process_pragma(&mut self) {
+        self.skip_line();
     }
 }
 
