@@ -229,6 +229,15 @@ impl Macro {
     }
 }
 
+/// Arguments of a function-like macro invocation.
+#[derive(Debug, Default)]
+struct MacroArgs {
+    /// The mapping from parameter names to argument tokens.
+    map: FxHashMap<SmolStr, Vec<PreToken>>,
+    /// Whether the variadic argument was omitted at the call site.
+    va_omitted: bool,
+}
+
 /// Helper struct for macro expansion utilities.
 struct MacroExpander<'a> {
     source_map: &'a mut SourceMap,
@@ -356,7 +365,7 @@ impl<'a> MacroExpander<'a> {
         &mut self,
         span: SourceSpan,
         iter: &mut impl Iterator<Item = PreToken>,
-        args: &FxHashMap<SmolStr, Vec<PreToken>>,
+        args: &MacroArgs,
     ) -> Result<Vec<PreToken>> {
         let mut inner = Vec::new();
         let mut depth = 0;
@@ -384,7 +393,7 @@ impl<'a> MacroExpander<'a> {
             return Err(self.source_map.error(span, "unterminated __VA_OPT__"));
         }
 
-        let va_args = &args["__VA_ARGS__"];
+        let va_args = &args.map["__VA_ARGS__"];
         if va_args.is_empty() || self.expand_all(va_args.clone())?.is_empty() {
             return Ok(Vec::new());
         }
@@ -407,7 +416,7 @@ impl<'a> MacroExpander<'a> {
         &mut self,
         token: PreToken,
         iter: &mut Peekable<impl Iterator<Item = PreToken>>,
-        args: Option<&FxHashMap<SmolStr, Vec<PreToken>>>,
+        args: Option<&MacroArgs>,
         expand_arg: bool,
     ) -> Result<Vec<PreToken>> {
         let Some(args) = args else {
@@ -419,11 +428,11 @@ impl<'a> MacroExpander<'a> {
         };
 
         let mut tokens = if name == "__VA_OPT__"
-            && args.contains_key("__VA_ARGS__")
+            && args.map.contains_key("__VA_ARGS__")
             && iter.next_if(|tok| tok.is_punct("(")).is_some()
         {
             self.expand_va_opt(token.span, iter, args)?
-        } else if let Some(arg) = args.get(name) {
+        } else if let Some(arg) = args.map.get(name) {
             if arg.is_empty() || !expand_arg {
                 arg.clone()
             } else {
@@ -446,7 +455,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_replacement(
         &mut self,
         body: &mut Vec<PreToken>,
-        args: Option<&FxHashMap<SmolStr, Vec<PreToken>>>,
+        args: Option<&MacroArgs>,
     ) -> Result<()> {
         let mut iter = std::mem::take(body).into_iter().peekable();
 
@@ -461,7 +470,7 @@ impl<'a> MacroExpander<'a> {
                         .source_map
                         .error(token.span, "'#' is not followed by a macro parameter"));
                 };
-                let Some(arg) = next.as_ident().and_then(|name| args.get(&name)) else {
+                let Some(arg) = next.as_ident().and_then(|name| args.map.get(&name)) else {
                     return Err(self
                         .source_map
                         .error(next.span, "'#' is not followed by a macro parameter"));
@@ -491,6 +500,30 @@ impl<'a> MacroExpander<'a> {
                         .source_map
                         .error(token.span, "'##' cannot appear at end of macro expansion"));
                 };
+
+                // [GNU] https://gcc.gnu.org/onlinedocs/gcc/Variadic-Macros.html
+                // ", ## __VA_ARGS__" drops the comma if "__VA_ARGS__" was
+                // omitted, otherwise keeps the comma and substitutes
+                // "__VA_ARGS__" without pasting
+                if let Some(args) = args
+                    && current.back().is_some_and(|tok| tok.is_punct(","))
+                    && next.as_ident().as_deref() == Some("__VA_ARGS__")
+                    && args.map.contains_key("__VA_ARGS__")
+                {
+                    if args.va_omitted {
+                        current.pop_back();
+                    } else {
+                        let has_pending_paste = iter.peek().is_some_and(|tok| tok.is_punct("##"));
+                        current.extend(self.subst_token(
+                            next,
+                            &mut iter,
+                            Some(args),
+                            !has_pending_paste,
+                        )?);
+                    }
+                    continue;
+                }
+
                 let mut rhs = VecDeque::from(self.subst_token(next, &mut iter, args, false)?);
 
                 // Paste the boundary tokens, e.g., "[a,b]" ## "[c,d]" becomes
@@ -566,7 +599,7 @@ impl<'a> MacroExpander<'a> {
             input.next();
 
             let n_params = params.len();
-            let mut args = FxHashMap::default();
+            let mut args = MacroArgs::default();
 
             for (index, param) in params.iter().enumerate() {
                 if index > 0 {
@@ -580,19 +613,20 @@ impl<'a> MacroExpander<'a> {
                     input.next();
                 }
                 let arg = self.read_arg(input, false, token.span)?;
-                args.insert(param.clone(), arg);
+                args.map.insert(param.clone(), arg);
             }
 
             if is_variadic {
                 if input.current().is_punct(")") {
-                    args.insert("__VA_ARGS__".into(), Vec::new());
+                    args.map.insert("__VA_ARGS__".into(), Vec::new());
+                    args.va_omitted = true;
                 } else {
                     if n_params > 0 {
                         debug_assert!(input.current().is_punct(","));
                         input.next();
                     }
                     let arg = self.read_arg(input, true, token.span)?;
-                    args.insert("__VA_ARGS__".into(), arg);
+                    args.map.insert("__VA_ARGS__".into(), arg);
                 }
             } else if !input.current().is_punct(")") {
                 return Err(self.source_map.error(

@@ -1828,6 +1828,14 @@ fn test_macro() {
     f.assert(3, "M33(ret3)()");
     f.assert(8, "M33(add, 1)(3, 5)");
 
+    f.line("#define M34(buf, fmt, ...) sprintf(buf, fmt, ## __VA_ARGS__)");
+    f.assert(0, r#"({ char buf[100]; M34(buf, "foo"); strcmp(buf, "foo"); })"#);
+    f.assert(0, r#"({ char buf[100]; M34(buf, "foo%d", 3); strcmp(buf, "foo3"); })"#);
+    f.assert(0, r#"({ char buf[100]; M34(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); })"#);
+
+    f.line("#define M35(x, y) (1, ##x y)");
+    f.assert(3, "M35(, 3)");
+
     f.finish();
     f.run("macro");
 }
